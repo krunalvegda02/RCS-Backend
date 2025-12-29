@@ -1,0 +1,409 @@
+import User from '../models/user.model.js';
+import jwt from 'jsonwebtoken';
+
+// Generate JWT Token
+const generateToken = (userId) => {
+  return jwt.sign({ userId }, process.env.JWT_SECRET, {
+    expiresIn: process.env.JWT_EXPIRES_IN || '7d',
+  });
+};
+
+// Login user
+export const login = async (req, res) => {
+  try {
+    const { emailorphone, password } = req.body;
+
+    if (!emailorphone || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email/phone and password are required',
+      });
+    }
+
+    // Find user by email or phone
+    const user = await User.findByEmailOrPhone(emailorphone);
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials',
+      });
+    }
+
+    // Check if account is locked
+    if (user.isLocked) {
+      return res.status(423).json({
+        success: false,
+        message: 'Account is temporarily locked due to too many failed login attempts',
+      });
+    }
+
+    // Check if account is active
+    if (!user.isActive) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account is deactivated. Please contact administrator.',
+      });
+    }
+
+    // Verify password
+    const isPasswordValid = await user.comparePassword(password);
+
+    if (!isPasswordValid) {
+      await user.incrementLoginAttempts();
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials',
+      });
+    }
+
+    // Reset login attempts on successful login
+    await user.resetLoginAttempts();
+
+    // Generate token
+    const token = generateToken(user._id);
+
+    // Update last login
+    user.lastLogin = new Date();
+    await user.save();
+
+    // Remove sensitive data
+    const userResponse = user.toJSON();
+
+    res.json({
+      success: true,
+      message: 'Login successful',
+      user: userResponse,
+      jio_token: token,
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// Register user
+export const register = async (req, res) => {
+  try {
+    const { name, email, phone, password, companyname } = req.body;
+
+    // Validation
+    if (!name || !email || !phone || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Name, email, phone, and password are required',
+      });
+    }
+
+    // Check if user already exists
+    const existingUser = await User.findOne({
+      $or: [{ email: email.toLowerCase() }, { phone }],
+    });
+
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        message: 'User with this email or phone already exists',
+      });
+    }
+
+    // Create user
+    const userData = {
+      name: name.trim(),
+      email: email.toLowerCase().trim(),
+      phone: phone.trim(),
+      password,
+      companyname: companyname?.trim(),
+      wallet: {
+        balance: 0,
+        currency: 'INR',
+      },
+    };
+
+    const user = await User.createUser(userData);
+
+    // Generate token
+    const token = generateToken(user._id);
+
+    res.status(201).json({
+      success: true,
+      message: 'User registered successfully',
+      user,
+      jio_token: token,
+    });
+  } catch (error) {
+    console.error('Registration error:', error);
+    
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern)[0];
+      return res.status(409).json({
+        success: false,
+        message: `${field} already exists`,
+      });
+    }
+
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({
+        success: false,
+        message: messages.join(', '),
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// Get current user profile
+export const getProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    res.json({
+      success: true,
+      data: user.toJSON(),
+    });
+  } catch (error) {
+    console.error('Get profile error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// Update user profile
+export const updateProfile = async (req, res) => {
+  try {
+    const { name, companyname, phone } = req.body;
+    const userId = req.user._id;
+
+    const updateData = {};
+    if (name) updateData.name = name.trim();
+    if (companyname) updateData.companyname = companyname.trim();
+    if (phone) updateData.phone = phone.trim();
+
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { ...updateData, updatedBy: userId },
+      { new: true, runValidators: true }
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Profile updated successfully',
+      data: user.toJSON(),
+    });
+  } catch (error) {
+    console.error('Update profile error:', error);
+    
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern)[0];
+      return res.status(409).json({
+        success: false,
+        message: `${field} already exists`,
+      });
+    }
+
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({
+        success: false,
+        message: messages.join(', '),
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// Admin: Create user
+export const createUser = async (req, res) => {
+  try {
+    const { name, email, phone, password, role, companyname, jioId, jioSecret, walletBalance } = req.body;
+
+    // Validation
+    if (!name || !email || !phone || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Name, email, phone, and password are required',
+      });
+    }
+
+    // Check if user already exists
+    const existingUser = await User.findOne({
+      $or: [{ email: email.toLowerCase() }, { phone }],
+    });
+
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        message: 'User with this email or phone already exists',
+      });
+    }
+
+    // Create user data
+    const userData = {
+      name: name.trim(),
+      email: email.toLowerCase().trim(),
+      phone: phone.trim(),
+      password,
+      role: role || 'user',
+      companyname: companyname?.trim(),
+      createdBy: req.user._id,
+      wallet: {
+        balance: walletBalance || 0,
+        currency: 'INR',
+      },
+    };
+
+    // Add Jio configuration if provided
+    if (jioId || jioSecret) {
+      userData.jioConfig = {
+        clientId: jioId?.trim(),
+        clientSecret: jioSecret?.trim(),
+        isConfigured: !!(jioId && jioSecret),
+      };
+    }
+
+    const user = await User.createUser(userData);
+
+    res.status(201).json({
+      success: true,
+      message: 'User created successfully',
+      data: user,
+    });
+  } catch (error) {
+    console.error('Create user error:', error);
+    
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern)[0];
+      return res.status(409).json({
+        success: false,
+        message: `${field} already exists`,
+      });
+    }
+
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({
+        success: false,
+        message: messages.join(', '),
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// Admin: Get all users
+export const getAllUsers = async (req, res) => {
+  try {
+    const { page = 1, limit = 10, role, isActive, search } = req.query;
+
+    const query = {};
+    if (role) query.role = role;
+    if (isActive !== undefined) query.isActive = isActive === 'true';
+    
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } },
+        { companyname: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    const users = await User.find(query)
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const total = await User.countDocuments(query);
+
+    res.json({
+      success: true,
+      data: users,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error('Get all users error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// Admin: Update user wallet
+export const updateWallet = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { amount, operation = 'add' } = req.body;
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid amount is required',
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    const newBalance = await user.updateWallet(amount, operation);
+
+    res.json({
+      success: true,
+      message: `Wallet ${operation === 'add' ? 'credited' : 'debited'} successfully`,
+      data: {
+        userId: user._id,
+        newBalance,
+        operation,
+        amount,
+      },
+    });
+  } catch (error) {
+    console.error('Update wallet error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Internal server error',
+    });
+  }
+};

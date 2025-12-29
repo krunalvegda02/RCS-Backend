@@ -1,0 +1,21 @@
+import express from 'express';
+import * as CampaignController from '../controller/campaign.controller.js';
+import { authenticateToken, requireUser, checkWalletBalance } from '../middlewares/auth.middleware.js';
+
+const router = express.Router();
+
+// All campaign routes require authentication
+router.use(authenticateToken);
+router.use(requireUser);
+
+// Check RCS capability for batch of numbers
+router.post('/check-capability', CampaignController.checkCapability);
+
+router.post('/', checkWalletBalance(1), CampaignController.create);
+router.get('/', CampaignController.getAll);
+router.get('/:id', CampaignController.getById);
+router.get('/:id/stats', CampaignController.getStats);
+router.post('/:id/start', CampaignController.start);
+router.post('/:id/pause', CampaignController.pause);
+
+export default router;

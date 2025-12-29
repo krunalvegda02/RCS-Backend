@@ -1,0 +1,63 @@
+# Docker Compose for Background Workers
+version: '3.8'
+
+services:
+  # Main API Server
+  api:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongo:27017/rcs_messaging
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - mongo
+      - redis
+
+  # Background Workers (can scale multiple instances)
+  worker:
+    build: .
+    command: node src/workers/worker.js
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongo:27017/rcs_messaging
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - mongo
+      - redis
+    deploy:
+      replicas: 3  # Run 3 worker instances
+
+  # MongoDB
+  mongo:
+    image: mongo:5.0
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # Bull Dashboard (optional - for monitoring queues)
+  bull-dashboard:
+    image: deadly0/bull-board
+    ports:
+      - "3001:3000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
+
+volumes:
+  mongo_data:
+  redis_data:

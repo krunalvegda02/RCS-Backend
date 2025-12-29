@@ -1,0 +1,215 @@
+
+import mongoose from 'mongoose';
+
+const messageSchema = new mongoose.Schema(
+  {
+    // Message Identification
+    messageId: {
+      type: String,
+      required: true,
+      unique: true,
+      index: true,
+    },
+    campaignId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Campaign',
+      index: true,
+    },
+
+    // Sender & Recipient
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+      index: true,
+    },
+    recipientPhoneNumber: {
+      type: String,
+      required: true,
+      match: /^[0-9]{10,15}$/,
+      index: true,
+    },
+
+    // Template Information
+    templateId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Template',
+      required: true,
+    },
+    templateType: {
+      type: String,
+      enum: ['richCard', 'carousel', 'textWithAction', 'plainText'],
+      required: true,
+    },
+
+    // Message Content
+    content: mongoose.Schema.Types.Mixed,
+    variables: mongoose.Schema.Types.Mixed, // Dynamic replacements
+
+    // Jio RCS Specific
+    jioCapabilityToken: String,
+    assistantId: String,
+    rcsMessageId: String,
+
+    // Status Tracking
+    status: {
+      type: String,
+      enum: [
+        'draft',
+        'queued',
+        'sent',
+        'delivered',
+        'failed',
+        'bounced',
+        'read',
+        'replied',
+      ],
+      default: 'draft',
+      index: true,
+    },
+
+    // Timestamps
+    createdAt: {
+      type: Date,
+      default: Date.now,
+      index: true,
+    },
+    queuedAt: Date,
+    sentAt: Date,
+    deliveredAt: Date,
+    failedAt: Date,
+
+    // Error Handling
+    errorCode: String,
+    errorMessage: String,
+    retryCount: {
+      type: Number,
+      default: 0,
+    },
+    nextRetryAt: Date,
+
+    // Engagement Tracking
+    clickedAt: Date,
+    clickedAction: String,
+    clickedUri: String,
+
+    // Metadata
+    deviceType: String,
+    ipAddress: String,
+    userAgent: String,
+
+    // Cost
+    cost: Number,
+    currency: {
+      type: String,
+      default: 'INR',
+    },
+
+    // Audit
+    notes: String,
+  },
+  {
+    timestamps: true,
+    collection: 'messages',
+  }
+);
+
+// Indexes for high-volume queries
+messageSchema.index({ userId: 1, createdAt: -1 });
+messageSchema.index({ status: 1, createdAt: -1 });
+messageSchema.index({ campaignId: 1, status: 1 });
+messageSchema.index({ recipientPhoneNumber: 1, sentAt: -1 });
+messageSchema.index({ userId: 1, status: 1, createdAt: -1 });
+
+// TTL Index for automatic cleanup of old messages (optional)
+messageSchema.index(
+  { createdAt: 1 },
+  { expireAfterSeconds: 7776000 } // 90 days
+);
+
+// Virtual for quick status check
+messageSchema.virtual('isSent').get(function () {
+  return ['sent', 'delivered', 'read', 'replied'].includes(this.status);
+});
+
+messageSchema.virtual('isFailed').get(function () {
+  return ['failed', 'bounced'].includes(this.status);
+});
+
+// Methods
+messageSchema.methods.markAsSent = async function (rcsMessageId) {
+  this.status = 'sent';
+  this.sentAt = new Date();
+  this.rcsMessageId = rcsMessageId;
+  await this.save();
+};
+
+messageSchema.methods.markAsDelivered = async function () {
+  this.status = 'delivered';
+  this.deliveredAt = new Date();
+  await this.save();
+};
+
+messageSchema.methods.markAsFailed = async function (errorCode, errorMessage) {
+  this.status = 'failed';
+  this.failedAt = new Date();
+  this.errorCode = errorCode;
+  this.errorMessage = errorMessage;
+  await this.save();
+};
+
+messageSchema.methods.scheduleRetry = async function (delayMs = 60000) {
+  this.retryCount += 1;
+  this.nextRetryAt = new Date(Date.now() + delayMs);
+  await this.save();
+};
+
+messageSchema.methods.recordClick = async function (action, uri) {
+  this.status = 'replied';
+  this.clickedAt = new Date();
+  this.clickedAction = action;
+  this.clickedUri = uri;
+  await this.save();
+};
+
+// Statics
+messageSchema.statics.findByMessageId = function (messageId) {
+  return this.findOne({ messageId });
+};
+
+messageSchema.statics.findPendingMessages = function (limit = 1000) {
+  return this.find({
+    status: 'queued',
+    $or: [
+      { nextRetryAt: { $lte: new Date() } },
+      { nextRetryAt: { $exists: false } },
+    ],
+  })
+    .limit(limit)
+    .sort({ createdAt: 1 });
+};
+
+messageSchema.statics.getDailyStats = async function (userId, date) {
+  const startOfDay = new Date(date);
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const endOfDay = new Date(date);
+  endOfDay.setHours(23, 59, 59, 999);
+
+  return this.aggregate([
+    {
+      $match: {
+        userId: mongoose.Types.ObjectId(userId),
+        createdAt: { $gte: startOfDay, $lte: endOfDay },
+      },
+    },
+    {
+      $group: {
+        _id: '$status',
+        count: { $sum: 1 },
+      },
+    },
+  ]);
+};
+
+export default mongoose.model('Message', messageSchema);
