@@ -3,6 +3,8 @@ import * as WebhookController from '../controller/webhook.controller.js';
 
 const router = express.Router();
 
+router.post('/jio/rcs', WebhookController.webhookReceiver);
+
 router.post('/jio/status', WebhookController.handleStatusUpdate);
 router.post('/jio/delivery', WebhookController.handleDelivery);
 router.post('/jio/read', WebhookController.handleRead);

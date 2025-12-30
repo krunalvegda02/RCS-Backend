@@ -99,8 +99,13 @@ export const create = async (req, res) => {
 
     // Auto-start campaign processing if requested
     if (autoStart) {
+      console.log(`[Campaign] Starting background processing for campaign ${campaign._id}`);
       setImmediate(() => {
-        jioRCSService.processCampaignBatch(campaign._id, campaign.batchSize, 1000);
+        console.log(`[Campaign] Calling processCampaignBatch for ${campaign._id}`);
+        jioRCSService.processCampaignBatch(campaign._id, campaign.batchSize, 1000)
+          .catch(error => {
+            console.error(`[Campaign] Background processing failed for ${campaign._id}:`, error);
+          });
       });
     }
 

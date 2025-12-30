@@ -5,7 +5,11 @@ import User from '../models/user.model.js';
 export const authenticateToken = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
+
+    console.log(authHeader)
     const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+
+    console.log("======token======", token);
 
     if (!token) {
       return res.status(401).json({
@@ -14,12 +18,22 @@ export const authenticateToken = async (req, res, next) => {
       });
     }
 
-    // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
+    // Verify token - try access token first, then refresh token
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (error) {
+      // If access token fails, try refresh token secret
+      if (error.name === 'JsonWebTokenError') {
+        decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET);
+      } else {
+        throw error;
+      }
+    }
+
     // Get user from database
     const user = await User.findById(decoded.userId);
-    
+
     if (!user) {
       return res.status(401).json({
         success: false,
@@ -44,7 +58,7 @@ export const authenticateToken = async (req, res, next) => {
         message: 'Invalid token',
       });
     }
-    
+
     if (error.name === 'TokenExpiredError') {
       return res.status(401).json({
         success: false,
@@ -62,7 +76,7 @@ export const authenticateToken = async (req, res, next) => {
 
 // Require admin role
 export const requireAdmin = (req, res, next) => {
-  if (req.user.role !== 'admin') {
+  if (req.user.role !== 'ADMIN') {
     return res.status(403).json({
       success: false,
       message: 'Admin access required',
@@ -73,7 +87,7 @@ export const requireAdmin = (req, res, next) => {
 
 // Require user role (user or admin)
 export const requireUser = (req, res, next) => {
-  if (!['user', 'admin'].includes(req.user.role)) {
+  if (!['USER', 'ADMIN'].includes(req.user.role)) {
     return res.status(403).json({
       success: false,
       message: 'User access required',

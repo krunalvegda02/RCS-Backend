@@ -43,7 +43,7 @@ const userSchema = new mongoose.Schema(
     // Role & Permissions
     role: {
       type: String,
-      enum: ['user', 'admin'],
+      enum: ['USER', 'ADMIN'],
       default: 'user',
       index: true,
     },
@@ -211,7 +211,7 @@ userSchema.pre('save', function (next) {
 // Instance Methods
 userSchema.methods.comparePassword = async function (candidatePassword) {
   if (!this.password) return false;
-  return bcrypt.compare(candidatePassword, this.password);
+  return bcrypt.compare(String(candidatePassword), this.password);
 };
 
 userSchema.methods.incrementLoginAttempts = async function () {
@@ -305,8 +305,8 @@ userSchema.methods.incrementUsage = async function (type = 'messages', count = 1
 userSchema.statics.findByEmailOrPhone = function (identifier) {
   return this.findOne({
     $or: [
-      { email: identifier.toLowerCase() },
-      { phone: identifier }
+      { email: String(identifier) },
+      { phone: String(identifier) }
     ],
     isActive: true,
   }).select('+password');

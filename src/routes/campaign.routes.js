@@ -11,6 +11,9 @@ router.use(requireUser);
 // Check RCS capability for batch of numbers
 router.post('/check-capability', CampaignController.checkCapability);
 
+// Send bulk messages (create and start campaign)
+router.post('/send-bulk', checkWalletBalance(1), CampaignController.create);
+
 router.post('/', checkWalletBalance(1), CampaignController.create);
 router.get('/', CampaignController.getAll);
 router.get('/:id', CampaignController.getById);

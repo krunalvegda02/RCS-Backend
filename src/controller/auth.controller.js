@@ -1,11 +1,17 @@
 import User from '../models/user.model.js';
 import jwt from 'jsonwebtoken';
 
-// Generate JWT Token
-const generateToken = (userId) => {
-  return jwt.sign({ userId }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRES_IN || '7d',
+// Generate JWT Tokens
+const generateTokens = (userId) => {
+  const accessToken = jwt.sign({ userId }, process.env.JWT_SECRET, {
+    expiresIn: process.env.JWT_EXPIRES_IN || '15m',
   });
+  
+  const refreshToken = jwt.sign({ userId }, process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET, {
+    expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
+  });
+  
+  return { accessToken, refreshToken };
 };
 
 // Login user
@@ -60,8 +66,8 @@ export const login = async (req, res) => {
     // Reset login attempts on successful login
     await user.resetLoginAttempts();
 
-    // Generate token
-    const token = generateToken(user._id);
+    // Generate tokens
+    const { accessToken, refreshToken } = generateTokens(user._id);
 
     // Update last login
     user.lastLogin = new Date();
@@ -74,7 +80,8 @@ export const login = async (req, res) => {
       success: true,
       message: 'Login successful',
       user: userResponse,
-      jio_token: token,
+      jio_token: accessToken,
+      refresh_token: refreshToken,
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -125,14 +132,15 @@ export const register = async (req, res) => {
 
     const user = await User.createUser(userData);
 
-    // Generate token
-    const token = generateToken(user._id);
+    // Generate tokens
+    const { accessToken, refreshToken } = generateTokens(user._id);
 
     res.status(201).json({
       success: true,
       message: 'User registered successfully',
       user,
-      jio_token: token,
+      jio_token: accessToken,
+      refresh_token: refreshToken,
     });
   } catch (error) {
     console.error('Registration error:', error);
@@ -243,7 +251,7 @@ export const updateProfile = async (req, res) => {
 // Admin: Create user
 export const createUser = async (req, res) => {
   try {
-    const { name, email, phone, password, role, companyname, jioId, jioSecret, walletBalance } = req.body;
+    const { name, email, phone, password, role, companyname, clientId, clientSecret, assistantId, walletBalance } = req.body;
 
     // Validation
     if (!name || !email || !phone || !password) {
@@ -281,11 +289,12 @@ export const createUser = async (req, res) => {
     };
 
     // Add Jio configuration if provided
-    if (jioId || jioSecret) {
+    if (clientId || clientSecret || assistantId) {
       userData.jioConfig = {
-        clientId: jioId?.trim(),
-        clientSecret: jioSecret?.trim(),
-        isConfigured: !!(jioId && jioSecret),
+        clientId: clientId?.trim() || '',
+        clientSecret: clientSecret?.trim() || '',
+        assistantId: assistantId?.trim() || '',
+        isConfigured: !!(clientId && clientSecret),
       };
     }
 
@@ -366,7 +375,125 @@ export const getAllUsers = async (req, res) => {
   }
 };
 
-// Admin: Update user wallet
+// Refresh token endpoint
+export const refreshToken = async (req, res) => {
+  try {
+    const { refresh_token } = req.body;
+
+    if (!refresh_token) {
+      return res.status(401).json({
+        success: false,
+        message: 'Refresh token is required',
+      });
+    }
+
+    // Verify refresh token
+    const decoded = jwt.verify(refresh_token, process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET);
+    
+    // Find user
+    const user = await User.findById(decoded.userId);
+    if (!user || !user.isActive) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid refresh token',
+      });
+    }
+
+    // Generate new tokens
+    const { accessToken, refreshToken: newRefreshToken } = generateTokens(user._id);
+
+    res.json({
+      success: true,
+      jio_token: accessToken,
+      refresh_token: newRefreshToken,
+    });
+  } catch (error) {
+    console.error('Refresh token error:', error);
+    res.status(401).json({
+      success: false,
+      message: 'Invalid or expired refresh token',
+    });
+  }
+};
+// Update Jio RCS Configuration
+export const updateJioConfig = async (req, res) => {
+  try {
+    const { clientId, clientSecret, assistantId } = req.body;
+    const userId = req.user._id;
+
+    if (!clientId || !clientSecret) {
+      return res.status(400).json({
+        success: false,
+        message: 'Client ID and Client Secret are required',
+      });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      userId,
+      {
+        'jioConfig.clientId': clientId.trim(),
+        'jioConfig.clientSecret': clientSecret.trim(),
+        'jioConfig.assistantId': assistantId?.trim() || '',
+        'jioConfig.isConfigured': true,
+        updatedBy: userId,
+      },
+      { new: true, runValidators: true }
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Jio RCS configuration updated successfully',
+      data: {
+        clientId: user.jioConfig.clientId,
+        assistantId: user.jioConfig.assistantId,
+        isConfigured: user.jioConfig.isConfigured,
+      },
+    });
+  } catch (error) {
+    console.error('Update Jio config error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// Get Jio RCS Configuration
+export const getJioConfig = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        clientId: user.jioConfig?.clientId || '',
+        assistantId: user.jioConfig?.assistantId || '',
+        isConfigured: user.jioConfig?.isConfigured || false,
+      },
+    });
+  } catch (error) {
+    console.error('Get Jio config error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
 export const updateWallet = async (req, res) => {
   try {
     const { userId } = req.params;

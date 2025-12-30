@@ -47,12 +47,11 @@ export const UPLOAD_CONFIG = {
 
   // Cloudinary folders for organization
   CLOUDINARY_FOLDERS: {
-    ads_banner: 'ads/banners',
-    ads_rewarded: 'ads/rewarded',
-    ads_interstitial: 'ads/interstitial',
+    templates: 'rcs-templates',
+    richcards: 'rcs-templates/richcards',
+    carousel: 'rcs-templates/carousel',
     campaigns: 'campaigns',
-    kyc: 'kyc',
-    viewer_screenshots: 'viewer/screenshots'
+    kyc: 'kyc'
   },
 
   // Retry configuration
@@ -73,22 +72,20 @@ export const validateFile = (file, uploadType) => {
     throw new Error('No file provided');
   }
 
-  // Get limits based on upload type
-
+  const allowedTypes = UPLOAD_CONFIG.ALLOWED_MIME_TYPES[uploadType] || UPLOAD_CONFIG.ALLOWED_MIME_TYPES.image;
+  const sizeLimits = UPLOAD_CONFIG.FILE_SIZE_LIMITS[uploadType] || UPLOAD_CONFIG.FILE_SIZE_LIMITS.image;
 
   // Validate size
-  const sizeLimit = sizeLimits[uploadType];
-  if (file.size > sizeLimit) {
+  if (file.size > sizeLimits) {
     throw new Error(
-      `File too large (${uploadType}). Max: ${(sizeLimit / 1024 / 1024).toFixed(2)}MB, Got: ${(file.size / 1024 / 1024).toFixed(2)}MB`
+      `File too large (${uploadType}). Max: ${(sizeLimits / 1024 / 1024).toFixed(2)}MB, Got: ${(file.size / 1024 / 1024).toFixed(2)}MB`
     );
   }
 
   // Validate MIME type
-  const allowed = allowedTypes[uploadType];
-  if (!allowed.includes(file.mimetype)) {
+  if (!allowedTypes.includes(file.mimetype)) {
     throw new Error(
-      `Invalid file type (${uploadType}). Allowed: ${allowed.join(', ')}`
+      `Invalid file type (${uploadType}). Allowed: ${allowedTypes.join(', ')}`
     );
   }
 
@@ -124,7 +121,7 @@ export const uploadOnCloudinary = async (
         resource_type: isVideo ? 'video' : options.resource_type || 'image',
 
         // Folder organization
-        folder: options.folder || UPLOAD_CONFIG.CLOUDINARY_FOLDERS.ads_banner,
+        folder: options.folder || UPLOAD_CONFIG.CLOUDINARY_FOLDERS.templates,
 
         // Versioning for cache busting
         version: true,

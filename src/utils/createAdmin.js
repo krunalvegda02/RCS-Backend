@@ -1,38 +1,40 @@
 import User from "../models/user.model.js";
-import MESSAGE from "../constants/message.js";
 
 export const createAdmin = async () => {
     try {
-        const admin = await User.findOne({ email: "admin@gmail.com" });
+        const existingAdmin = await User.findOne({ role: "ADMIN" });
 
-        if (!admin) {
-            console.log("Admin Not Registered, Creating Admin: Email = admin@gmail.com, Password: 123456");
+        if (!existingAdmin) {
+            console.log("No admin found, creating default admin...");
 
-            const registerAdmin = await User.create({
+            const adminUser = await User.create({
                 email: "admin@gmail.com",
                 password: "123456",
-                role: "SUPER_ADMIN",
-                name: "Super Admin",
+                role: "ADMIN",
+                name: "Admin",
                 phone: "1234567890",
-                status: "ACTIVE"
+                status: "ACTIVE",
+                wallet: { balance: 10000 },
+                jioRcsConfig: {
+                    secretKey: process.env.JIO_SECRET_KEY || '',
+                    secretId: process.env.JIO_SECRET_ID || '',
+                    assistantId: process.env.JIO_ASSISTANT_ID || ''
+                }
             });
 
-            console.log("Admin registered successfully:", {
-                _id: registerAdmin._id,
-                name: registerAdmin.name,
-                email: registerAdmin.email,
-                role: registerAdmin.role
+            console.log("✅ Admin created successfully:", {
+                id: adminUser._id,
+                email: adminUser.email,
+                role: adminUser.role
             });
         } else {
-            console.log("Admin already exists:", {
-                _id: admin._id,
-                name: admin.name,
-                email: admin.email,
-                role: admin.role
+            console.log("✅ Admin already exists:", {
+                id: existingAdmin._id,
+                email: existingAdmin.email,
+                role: existingAdmin.role
             });
         }
     } catch (error) {
-        console.error("Admin Registration error:", error.message);
-        console.error(MESSAGE.ADMIN_REGISTER_FAILED);
+        console.error("❌ Admin creation failed:", error.message);
     }
 }
