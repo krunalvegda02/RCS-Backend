@@ -141,6 +141,11 @@ export async function processWebhookData(data, timestamp) {
         const totalMessages = await Message.countDocuments();
         console.log(`[Webhook] Total messages in DB: ${totalMessages}`);
         
+        if (totalMessages === 0) {
+          console.log('[Webhook] Database appears empty - connection issue?');
+          return;
+        }
+        
         // Check recent messages
         const recent = await Message.find({})
           .sort({ createdAt: -1 })
@@ -148,8 +153,23 @@ export async function processWebhookData(data, timestamp) {
           .select('messageId rcsMessageId status createdAt')
           .lean();
         console.log('[Webhook] Recent messages:', recent);
+        
+        // Try exact match with the specific messageId
+        const exactMatch = await Message.findOne({ messageId: '1767202249286_txyuhlwx' });
+        console.log('[Webhook] Test exact match for known message:', exactMatch ? 'FOUND' : 'NOT FOUND');
+        
+        // Check if current messageId exists anywhere
+        const anyMatch = await Message.findOne({
+          $or: [
+            { messageId: messageId },
+            { rcsMessageId: messageId }
+          ]
+        });
+        console.log(`[Webhook] Any match for ${messageId}:`, anyMatch ? 'FOUND' : 'NOT FOUND');
+        
       } catch (dbError) {
         console.error('[Webhook] Database error:', dbError.message);
+        console.error('[Webhook] Full error:', dbError);
       }
       
       return;
