@@ -77,7 +77,7 @@ connectDB()
     server.listen(finalPort, () => {
       console.log(`🚀 Server is running on port ${finalPort}`);
       console.log(`📡 Socket.IO enabled for real-time updates`);
-      console.log(`🔗 API Base URL: http://localhost:${finalPort}/api/v1`);
+      // console.log(`🔗 API Base URL: http://localhost:${finalPort}/api/v1`);
       
       if (finalPort !== port) {
         console.log(`📝 Note: Using port ${finalPort} instead of ${port}`);

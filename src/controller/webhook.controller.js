@@ -140,14 +140,40 @@ export async function processWebhookData(data, timestamp) {
     
     if (!currentMessage) {
       console.log(`[Webhook] Message not found: ${messageId}`);
-      // Show recent messages for debugging
-      const recent = await Message.find({})
-        .sort({ createdAt: -1 })
-        .limit(3)
-        .select('messageId jioMessageId rcsMessageId externalMessageId createdAt')
-        .lean();
-      console.log('[Webhook] Recent messages:', recent);
-      return;
+      // Enhanced debugging with phone number matching
+      const phoneWithoutCountryCode = userPhoneNumber?.replace(/^\+91/, '') || '';
+      const phoneWithCountryCode = userPhoneNumber?.startsWith('+91') ? userPhoneNumber : `+91${userPhoneNumber}`;
+      
+      // Try finding by phone number if message ID lookup fails
+      currentMessage = await Message.findOne({
+        $and: [
+          {
+            $or: [
+              { recipientPhoneNumber: userPhoneNumber },
+              { recipientPhoneNumber: phoneWithoutCountryCode },
+              { recipientPhoneNumber: phoneWithCountryCode }
+            ]
+          },
+          { createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } } // Last 24h
+        ]
+      }, 'status messageId').lean();
+      
+      if (currentMessage) {
+        console.log(`[Webhook] Found message by phone number: ${currentMessage.messageId}`);
+        // Update the message with Jio messageId for future lookups
+        await Message.updateOne(
+          { _id: currentMessage._id },
+          { jioMessageId: messageId, rcsMessageId: messageId }
+        );
+      } else {
+        const recent = await Message.find({})
+          .sort({ createdAt: -1 })
+          .limit(3)
+          .select('messageId jioMessageId rcsMessageId externalMessageId recipientPhoneNumber createdAt')
+          .lean();
+        console.log('[Webhook] Recent messages:', recent);
+        return;
+      }
     }
 
     const currentStatusLevel = statusHierarchy[currentMessage.status] || 0;

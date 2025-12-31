@@ -4,6 +4,8 @@ import jwt from 'jsonwebtoken';
 // Generate JWT Tokens
 const generateTokens = (userId) => {
   try {
+    console.log('Generating tokens for user ID:', userId);
+    
     const accessToken = jwt.sign({ userId }, process.env.JWT_SECRET, {
       expiresIn: process.env.JWT_EXPIRES_IN || '15m',
     });
@@ -11,6 +13,10 @@ const generateTokens = (userId) => {
     const refreshToken = jwt.sign({ userId }, process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET, {
       expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
     });
+    
+    // Verify the token contains correct user ID
+    const decoded = jwt.verify(accessToken, process.env.JWT_SECRET);
+    console.log('Token contains user ID:', decoded.userId);
     
     return { accessToken, refreshToken };
   } catch (error) {
@@ -85,7 +91,8 @@ export const login = async (req, res) => {
       success: true,
       message: 'Login successful',
       user: userResponse,
-      jio_token: accessToken,
+      access_token: accessToken,
+      token: accessToken, // Add this for frontend compatibility
       refresh_token: refreshToken,
     });
   } catch (error) {
@@ -144,7 +151,8 @@ export const register = async (req, res) => {
       success: true,
       message: 'User registered successfully',
       user,
-      jio_token: accessToken,
+      access_token: accessToken,
+      token: accessToken, // Add this for frontend compatibility
       refresh_token: refreshToken,
     });
   } catch (error) {
@@ -409,7 +417,8 @@ export const refreshToken = async (req, res) => {
 
     res.json({
       success: true,
-      jio_token: accessToken,
+      access_token: accessToken,
+      token: accessToken, // Add this for frontend compatibility
       refresh_token: newRefreshToken,
     });
   } catch (error) {

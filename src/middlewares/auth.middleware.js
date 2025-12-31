@@ -32,9 +32,15 @@ export const authenticateToken = async (req, res, next) => {
     }
 
     // Get user from database
+    console.log('Looking for user ID:', decoded.userId);
     const user = await User.findById(decoded.userId);
+    console.log('User found:', user ? 'Yes' : 'No');
 
     if (!user) {
+      // Check if any users exist
+      const userCount = await User.countDocuments();
+      console.log('Total users in database:', userCount);
+      
       return res.status(401).json({
         success: false,
         message: 'Invalid token - user not found',
