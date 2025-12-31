@@ -128,13 +128,30 @@ export async function processWebhookData(data, timestamp) {
       'replied': 5
     };
 
-    // Simple message lookup - webhook messageId matches rcsMessageId in database
+    // Simple message lookup - webhook messageId matches messageId in database
     let currentMessage = await Message.findOne({
-      rcsMessageId: messageId
+      messageId: messageId
     }, 'status messageId').lean();
     
     if (!currentMessage) {
-      console.log(`[Webhook] Message not found with rcsMessageId: ${messageId}`);
+      console.log(`[Webhook] Message not found with messageId: ${messageId}`);
+      
+      // Debug: Check database connection and total messages
+      try {
+        const totalMessages = await Message.countDocuments();
+        console.log(`[Webhook] Total messages in DB: ${totalMessages}`);
+        
+        // Check recent messages
+        const recent = await Message.find({})
+          .sort({ createdAt: -1 })
+          .limit(3)
+          .select('messageId rcsMessageId status createdAt')
+          .lean();
+        console.log('[Webhook] Recent messages:', recent);
+      } catch (dbError) {
+        console.error('[Webhook] Database error:', dbError.message);
+      }
+      
       return;
     }
     
@@ -150,10 +167,10 @@ export async function processWebhookData(data, timestamp) {
       return;
     }
 
-    // Update message using rcsMessageId
+    // Update message using messageId
     const [message, campaignId] = await Promise.all([
       Message.findOneAndUpdate(
-        { rcsMessageId: messageId },
+        { messageId: messageId },
         {
           status: newStatus,
           lastWebhookAt: new Date(sendTime || timestamp),
@@ -338,12 +355,7 @@ export async function processUserInteraction(data, timestamp) {
 async function getCampaignIdFromMessage(messageId) {
   try {
     const message = await Message.findOne({
-      $or: [
-        { messageId },
-        { jioMessageId: messageId },
-        { externalMessageId: messageId },
-        { rcsMessageId: messageId }
-      ]
+      messageId: messageId
     }, 'campaignId').lean();
     return message?.campaignId;
   } catch (error) {
@@ -355,12 +367,7 @@ async function getCampaignIdFromMessage(messageId) {
 async function getUserIdFromMessage(messageId) {
   try {
     const message = await Message.findOne({
-      $or: [
-        { messageId },
-        { jioMessageId: messageId },
-        { externalMessageId: messageId },
-        { rcsMessageId: messageId }
-      ]
+      messageId: messageId
     }, 'userId').lean();
     return message?.userId;
   } catch (error) {
