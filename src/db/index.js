@@ -16,9 +16,12 @@ const connectDB = async () => {
       console.log("Express Error:", error);
     });
 
+    console.log('Backend Database:', mongoose.connection.name);
+    console.log('Backend Host:', mongoose.connection.host);
+
     console.log(`\n MOngoDB connected !! DB HOST: ${connectionInstance.connection.host}`);
     // console.log("ConnectionInstance :", connectionInstance.connection);
-    
+
   } catch (error) {
     console.log("Database connectivity error:", error);
     process.exit(1);
