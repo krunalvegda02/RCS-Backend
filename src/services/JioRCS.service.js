@@ -508,44 +508,56 @@ class JioRCSService {
         break;
 
       case 'textWithAction':
-        jioContent = {
-          plainText: this.replaceVariables(content?.text, variables),
-          suggestions: (content?.buttons || []).map(btn => {
-            if (btn.actionType === 'dialPhone') {
-              return {
-                action: {
-                  plainText: btn.label,
-                  postBack: {
-                    data: btn.value,
-                  },
-                  dialerAction: {
-                    phoneNumber: btn.value.startsWith('+') ? btn.value : `+91${btn.value}`,
-                  },
-                },
-              };
-            } else if (btn.actionType === 'openUri') {
-              return {
-                action: {
-                  plainText: btn.label,
-                  postBack: {
-                    data: btn.value,
-                  },
-                  openUrl: {
-                    url: btn.value.startsWith('http') ? btn.value : `https://${btn.value}`,
-                  },
-                },
-              };
-            } else {
-              return {
-                reply: {
-                  plainText: btn.label,
-                  postBack: {
-                    data: btn.value,
-                  },
-                },
-              };
+        const textSuggestions = (content?.buttons || []).map(btn => {
+          const label = btn.label || btn.text || 'Action';
+          const value = btn.value || btn.uri || '';
+          
+          if (!label || !value) {
+            console.warn('[RCS] ⚠️ Skipping invalid button:', btn);
+            return null;
+          }
+
+          if (btn.actionType === 'dialPhone') {
+            // Clean and format phone number
+            let phoneNumber = value.replace(/\D/g, ''); // Remove non-digits
+            if (phoneNumber.length === 10) {
+              phoneNumber = `+91${phoneNumber}`;
+            } else if (!phoneNumber.startsWith('+')) {
+              phoneNumber = `+${phoneNumber}`;
             }
-          }).filter(Boolean),
+            
+            return {
+              action: {
+                plainText: label,
+                postBack: { data: value },
+                dialerAction: { phoneNumber }
+              }
+            };
+          } else if (btn.actionType === 'openUri') {
+            // Ensure URL has protocol
+            const url = value.startsWith('http') ? value : `https://${value}`;
+            
+            return {
+              action: {
+                plainText: label,
+                postBack: { data: value },
+                openUrl: { url }
+              }
+            };
+          } else {
+            // Reply/postback action
+            return {
+              reply: {
+                plainText: label,
+                postBack: { data: value }
+              }
+            };
+          }
+        }).filter(Boolean);
+
+        jioContent = {
+          plainText: this.replaceVariables(content?.text || content?.body, variables),
+          ...(textSuggestions.length > 0 ? { suggestions: textSuggestions } : {})
         };
         break;
 
@@ -642,7 +654,7 @@ class JioRCSService {
 
   // ===================== CAMPAIGN BATCH PROCESSING (OPTIMIZED FOR 1 LAKH+) =====================
   /**
-   * High-performance campaign processing with dynamic concurrency
+   * High-performance campaign processing with fixed batch size of 100
    */
   async processCampaignBatch(campaignId, batchSize = 100, delayMs = 1000) {
     try {
@@ -657,7 +669,7 @@ class JioRCSService {
         return;
       }
 
-      const pendingRecipients = campaign.getPendingRecipients(batchSize);
+      const pendingRecipients = campaign.getPendingRecipients(100);
       if (!pendingRecipients.length) {
         console.log(`[RCS] No pending recipients for campaign ${campaignId}`);
         // Mark campaign as completed if no pending recipients
@@ -668,17 +680,17 @@ class JioRCSService {
         return;
       }
 
-      console.log(`[RCS] Processing batch of ${pendingRecipients.length} recipients for campaign ${campaignId}`);
+      console.log(`[RCS] Processing batch of ${pendingRecipients.length} recipients (max 100) for campaign ${campaignId}`);
 
-      // Process recipients in parallel with controlled concurrency
-      const concurrency = Math.min(50, Math.max(5, Math.floor(batchSize / 10)));
+      // Process recipients in parallel with controlled concurrency (fixed for batch of 100)
+      const concurrency = 10; // Fixed concurrency for batch of 100
       const chunks = this.chunkArray(pendingRecipients, concurrency);
 
       for (const chunk of chunks) {
         const promises = chunk.map(async (recipient) => {
           try {
-            // Mark as processing to prevent duplicate processing
-            await Campaign.updateOne(
+            // Mark as processing to prevent duplicate processing (atomic update)
+            const processingUpdate = await Campaign.updateOne(
               { 
                 _id: campaignId,
                 'recipients.phoneNumber': recipient.phoneNumber,
@@ -688,6 +700,12 @@ class JioRCSService {
                 $set: { 'recipients.$.status': 'processing' }
               }
             );
+            
+            // Skip if already being processed by another worker
+            if (processingUpdate.modifiedCount === 0) {
+              console.log(`[RCS] Recipient ${recipient.phoneNumber} already being processed, skipping`);
+              return;
+            }
 
             // Skip capability check since frontend sends pre-validated contacts
             if (recipient.isRcsCapable === false) {
@@ -770,13 +788,15 @@ class JioRCSService {
               cost: 1, // ₹1 per RCS message
             };
 
+            // Create message and update recipient atomically to prevent duplicates
             await Message.create(messageDoc);
 
-            // Update campaign recipient with messageId
+            // Update campaign recipient with messageId (only if still in processing state)
             await Campaign.updateOne(
               { 
                 _id: campaignId,
-                'recipients.phoneNumber': recipient.phoneNumber
+                'recipients.phoneNumber': recipient.phoneNumber,
+                'recipients.status': 'processing'
               },
               { 
                 $set: { 
@@ -846,7 +866,7 @@ class JioRCSService {
       if (stillPending.length > 0) {
         const nextDelay = campaign.recipients.length > 50000 ? 1000 : 2000;
         setTimeout(() => {
-          this.processCampaignBatch(campaignId, batchSize, delayMs).catch(error => {
+          this.processCampaignBatch(campaignId, 100, delayMs).catch(error => {
             console.error(`[RCS] Batch processing error for ${campaignId}:`, error);
             // Mark campaign as failed on critical error
             Campaign.updateOne(
@@ -883,19 +903,13 @@ class JioRCSService {
       try {
         const result = await this.sendMessage(messageData);
         
-        // Increment stats in Redis for real-time updates
-        if (result.success && messageData.campaignId) {
-          const statsService = await import('./CampaignStatsService.js');
-          await statsService.default.incrementStat(messageData.campaignId, 'sent');
-        }
+        // Stats will be updated by webhook, no need to increment here
+        // to avoid double counting
         
         return result;
       } catch (error) {
-        // Increment failed stats
-        if (messageData.campaignId) {
-          const statsService = await import('./CampaignStatsService.js');
-          await statsService.default.incrementStat(messageData.campaignId, 'failed');
-        }
+        // Stats will be updated by webhook on failure too
+        // to avoid double counting
         
         // Let Bull retry if attempts remaining
         if (job.attemptsMade < job.opts.attempts) {

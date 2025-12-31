@@ -44,10 +44,9 @@ const messageSchema = new mongoose.Schema(
 
     // Message Content
     content: mongoose.Schema.Types.Mixed,
-    variables: mongoose.Schema.Types.Mixed, // Dynamic replacements
+    variables: mongoose.Schema.Types.Mixed,
 
     // Jio RCS Specific
-    jioCapabilityToken: String,
     assistantId: String,
     rcsMessageId: String,
 
@@ -108,10 +107,6 @@ const messageSchema = new mongoose.Schema(
 
     // Cost
     cost: Number,
-    currency: {
-      type: String,
-      default: 'INR',
-    },
 
     // Audit
     notes: String,

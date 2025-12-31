@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 
 // ===== REPORT MODEL =====
 const reportSchema = new mongoose.Schema(
@@ -150,5 +151,4 @@ reportSchema.index({ userId: 1, reportType: 1, startDate: -1 });
 reportSchema.index({ campaignId: 1 });
 reportSchema.index({ generatedAt: -1 });
 
-export const APIResult = mongoose.model('APIResult', apiResultSchema);
 export const Report = mongoose.model('Report', reportSchema);

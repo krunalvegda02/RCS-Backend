@@ -38,13 +38,17 @@ const webhookQueue = new Bull('webhook-processing', {
 
 // Process webhooks with high concurrency
 webhookQueue.process('status-update', 200, async (job) => {
+  console.log('[Queue] Processing status-update job:', job.id);
   const { data, timestamp } = job.data;
   await processWebhookData(data, timestamp);
+  console.log('[Queue] Completed status-update job:', job.id);
 });
 
 webhookQueue.process('user-interaction', 100, async (job) => {
+  console.log('[Queue] Processing user-interaction job:', job.id);
   const { data, timestamp } = job.data;
   await processUserInteraction(data, timestamp);
+  console.log('[Queue] Completed user-interaction job:', job.id);
 });
 
 
@@ -73,17 +77,23 @@ export const webhookReceiver = async (req, res) => {
     const entityType = data?.entityType;
     const eventType = data?.entity?.eventType;
     
+    console.log(`[Webhook] EntityType: ${entityType}, EventType: ${eventType}`);
+    
     // Process different webhook types
     if (entityType === "USER_MESSAGE") {
+      console.log('[Webhook] Queueing USER_MESSAGE for processing');
       await webhookQueue.add('user-interaction', { data, timestamp }, {
         priority: 5,
         attempts: 2
       });
-    } else if (entityType === "STATUS_EVENT" || entityType === "USER_EVENT") {
+    } else if (entityType === "STATUS_EVENT" || entityType === "USER_EVENT" || eventType) {
+      console.log('[Webhook] Queueing STATUS_EVENT for processing');
       await webhookQueue.add('status-update', { data, timestamp }, {
         priority: 10,
         attempts: 3
       });
+    } else {
+      console.warn('[Webhook] Unknown webhook type:', entityType, eventType);
     }
     
   } catch (error) {
@@ -98,17 +108,17 @@ export const webhookReceiver = async (req, res) => {
 async function processWebhookData(data, timestamp) {
   try {
     const entityType = data?.entityType;
-    const eventType = data?.entity?.eventType;
-    const messageId = data?.entity?.messageId;
-    const userPhoneNumber = data?.userPhoneNumber;
-    const sendTime = data?.entity?.sendTime;
+    const eventType = data?.entity?.eventType || data?.webhookData?.eventType || data?.eventType;
+    const messageId = data?.entity?.messageId || data?.messageId;
+    const userPhoneNumber = data?.userPhoneNumber || data?.webhookData?.phoneNumber || data?.phoneNumber;
+    const sendTime = data?.entity?.sendTime || timestamp;
     
     if (!messageId) {
       console.warn('[Webhook] No messageId found in status update');
       return;
     }
     
-    console.log(`[Webhook] Processing ${entityType}:${eventType} for ${messageId}`);
+    console.log(`[Webhook] Processing ${entityType || 'STATUS'}:${eventType} for ${messageId}`);
     
     const updateData = {
       lastWebhookAt: new Date(sendTime || timestamp),
@@ -123,10 +133,10 @@ async function processWebhookData(data, timestamp) {
     // Enhanced Jio webhook event mapping with detailed error handling
     switch (eventType) {
       case "SEND_MESSAGE_SUCCESS":
+      case "MESSAGE_SENT":
         newStatus = 'sent';
         updateData.sentAt = new Date(sendTime || timestamp);
         statType = 'sent';
-        // Store delivery latency if available
         updateData.deliveryLatency = data?.entity?.deliveryInfo?.latencyMs || null;
         console.log(`[Webhook] ✅ Message SENT: ${messageId}`);
         break;
@@ -135,7 +145,6 @@ async function processWebhookData(data, timestamp) {
         newStatus = 'delivered';
         updateData.deliveredAt = new Date(sendTime || timestamp);
         statType = 'delivered';
-        // Store device info if available
         updateData.deviceType = data?.entity?.deviceInfo?.deviceType || null;
         console.log(`[Webhook] 📦 Message DELIVERED: ${messageId}`);
         break;
@@ -198,6 +207,33 @@ async function processWebhookData(data, timestamp) {
     }
     
     updateData.status = newStatus;
+      
+    // Define valid status progressions
+    const statusHierarchy = {
+      'pending': 0,
+      'sent': 1,
+      'delivered': 2,
+      'read': 3,
+      'failed': 4,
+      'bounced': 4,
+      'replied': 5
+    };
+    
+    // Get current message to check status progression
+    const currentMessage = await Message.findOne({ messageId }, 'status').lean();
+    if (!currentMessage) {
+      console.warn(`[Webhook] Message not found: ${messageId}`);
+      return;
+    }
+    
+    const currentStatusLevel = statusHierarchy[currentMessage.status] || 0;
+    const newStatusLevel = statusHierarchy[newStatus] || 0;
+    
+    // Only update if new status is higher in hierarchy or same level (for retries)
+    if (newStatusLevel < currentStatusLevel) {
+      console.log(`[Webhook] Skipping status downgrade: ${currentMessage.status} → ${newStatus} for ${messageId}`);
+      return;
+    }
     
     // Update message, campaign recipient status, and increment Redis stats
     const [message, campaignId] = await Promise.all([
@@ -222,17 +258,17 @@ async function processWebhookData(data, timestamp) {
     ]);
     
     if (!message || !campaignId) {
-      console.warn(`[Webhook] Message or campaign not found: ${messageId}`);
+      console.warn(`[Webhook] Message or campaign not found, or status unchanged: ${messageId}`);
       return;
     }
     
-    // Update campaign recipient status and increment Redis stats
+    // Update campaign recipient status and increment Redis stats (only if message was updated)
     await Promise.all([
-      // Update recipient status in campaign
+      // Update recipient status in campaign (allow status progression)
       Campaign.updateOne(
         { 
           _id: campaignId,
-          'recipients.phoneNumber': userPhoneNumber 
+          'recipients.phoneNumber': userPhoneNumber
         },
         { 
           $set: {
@@ -281,11 +317,11 @@ async function processWebhookData(data, timestamp) {
 // Process Jio user interactions
 async function processUserInteraction(data, timestamp) {
   try {
-    const orgMsgId = data?.metaData?.orgMsgId;
-    const userMessage = data?.entity;
+    const orgMsgId = data?.metaData?.orgMsgId || data?.messageId;
+    const userMessage = data?.entity || data?.webhookData;
     const suggestionResponse = userMessage?.suggestionResponse;
     const userText = userMessage?.text;
-    const userPhoneNumber = data?.userPhoneNumber;
+    const userPhoneNumber = data?.userPhoneNumber || data?.webhookData?.phoneNumber;
     
     if (!orgMsgId) {
       console.warn('[Webhook] No orgMsgId found in user interaction');

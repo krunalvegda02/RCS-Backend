@@ -37,12 +37,8 @@ const campaignSchema = new mongoose.Schema(
           variables: mongoose.Schema.Types.Mixed, // For dynamic content
           status: {
             type: String,
-            enum: ['pending', 'processing', 'sent', 'delivered', 'read', 'replied', 'failed', 'bounced'],
+            enum: ['pending', 'queued', 'processing', 'sent', 'delivered', 'read', 'replied', 'failed', 'bounced'],
             default: 'pending',
-          },
-          isRcsCapable: {
-            type: Boolean,
-            default: false, // Track RCS capability for billing
           },
           messageId: String,
           sentAt: Date,
@@ -66,8 +62,8 @@ const campaignSchema = new mongoose.Schema(
     },
 
     // Timing
-    scheduledAt: Date,
-    startedAt: Date,
+    // scheduledAt: Date,
+    // startedAt: Date,
     completedAt: Date,
     pausedAt: Date,
 
@@ -102,6 +98,10 @@ const campaignSchema = new mongoose.Schema(
         default: 0,
       },
       pending: {
+        type: Number,
+        default: 0,
+      },
+      queued: {
         type: Number,
         default: 0,
       },
@@ -192,16 +192,41 @@ campaignSchema.index({ 'recipients.status': 1 });
 
 // Methods
 campaignSchema.methods.updateStats = async function () {
+  // Count recipients by their current status
+  const statusCounts = {
+    pending: 0,
+    queued: 0,
+    processing: 0,
+    sent: 0,
+    delivered: 0,
+    read: 0,
+    replied: 0,
+    failed: 0,
+    bounced: 0
+  };
+
+  this.recipients.forEach(r => {
+    if (statusCounts.hasOwnProperty(r.status)) {
+      statusCounts[r.status]++;
+    }
+  });
+
+  // Calculate cumulative stats (read includes delivered and sent, etc.)
   const stats = {
     total: this.recipients.length,
-    sent: this.recipients.filter(r => r.status === 'sent').length,
-    delivered: this.recipients.filter(r => r.status === 'delivered').length,
-    read: this.recipients.filter(r => r.status === 'read').length,
-    replied: this.recipients.filter(r => r.status === 'replied').length,
-    failed: this.recipients.filter(r => r.status === 'failed').length,
-    bounced: this.recipients.filter(r => r.status === 'bounced').length,
-    pending: this.recipients.filter(r => r.status === 'pending').length,
-    processing: this.recipients.filter(r => r.status === 'processing').length,
+    pending: statusCounts.pending,
+    queued: statusCounts.queued,
+    processing: statusCounts.processing,
+    // Sent = all messages that reached sent status or beyond
+    sent: statusCounts.sent + statusCounts.delivered + statusCounts.read + statusCounts.replied,
+    // Delivered = all messages that reached delivered status or beyond
+    delivered: statusCounts.delivered + statusCounts.read + statusCounts.replied,
+    // Read = all messages that reached read status or beyond
+    read: statusCounts.read + statusCounts.replied,
+    // Replied = only messages with replied status
+    replied: statusCounts.replied,
+    failed: statusCounts.failed,
+    bounced: statusCounts.bounced,
     rcsCapable: this.recipients.filter(r => r.isRcsCapable === true).length,
   };
 

@@ -10,8 +10,16 @@ export const getAll = async (req, res) => {
     const limit = parseInt(req.query.limit) || 20;
 
     let query = { userId };
-    if (status) query.status = status;
-    if (campaignId) query.campaignId = campaignId;
+    
+    // Sanitize status input - only allow string values
+    if (status && typeof status === 'string') {
+      query.status = status;
+    }
+    
+    // Sanitize campaignId - validate it's a valid ObjectId format
+    if (campaignId && typeof campaignId === 'string' && /^[0-9a-fA-F]{24}$/.test(campaignId)) {
+      query.campaignId = campaignId;
+    }
 
     const messages = await Message.find(query)
       .sort({ createdAt: -1 })

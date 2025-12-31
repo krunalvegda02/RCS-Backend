@@ -303,68 +303,88 @@ campaignReportSchema.methods.generateReport = async function () {
 };
 
 campaignReportSchema.methods.calculatePeakHour = function (messages) {
-  const hourCounts = {};
-  messages.forEach(m => {
-    const hour = new Date(m.sentAt).getHours();
-    hourCounts[hour] = (hourCounts[hour] || 0) + 1;
-  });
-  
-  return Object.entries(hourCounts).reduce((peak, [hour, count]) => {
-    return count > (hourCounts[peak] || 0) ? parseInt(hour) : peak;
-  }, 0);
+  try {
+    const hourCounts = {};
+    messages.forEach(m => {
+      const hour = new Date(m.sentAt).getHours();
+      hourCounts[hour] = (hourCounts[hour] || 0) + 1;
+    });
+    
+    return Object.entries(hourCounts).reduce((peak, [hour, count]) => {
+      return count > (hourCounts[peak] || 0) ? parseInt(hour) : peak;
+    }, 0);
+  } catch (error) {
+    console.error('Error calculating peak hour:', error);
+    return 0;
+  }
 };
 
 campaignReportSchema.methods.calculateClickTimes = function (messages) {
-  const hourCounts = {};
-  messages.forEach(m => {
-    if (m.clickedAt) {
-      const hour = new Date(m.clickedAt).getHours();
-      hourCounts[hour] = (hourCounts[hour] || 0) + 1;
-    }
-  });
-  
-  return Object.entries(hourCounts).map(([hour, count]) => ({
-    hour: parseInt(hour),
-    count,
-  })).sort((a, b) => b.count - a.count);
+  try {
+    const hourCounts = {};
+    messages.forEach(m => {
+      if (m.clickedAt) {
+        const hour = new Date(m.clickedAt).getHours();
+        hourCounts[hour] = (hourCounts[hour] || 0) + 1;
+      }
+    });
+    
+    return Object.entries(hourCounts).map(([hour, count]) => ({
+      hour: parseInt(hour),
+      count,
+    })).sort((a, b) => b.count - a.count);
+  } catch (error) {
+    console.error('Error calculating click times:', error);
+    return [];
+  }
 };
 
 campaignReportSchema.methods.calculateDeviceBreakdown = function (messages) {
-  const deviceCounts = {};
-  messages.forEach(m => {
-    if (m.deviceType) {
-      deviceCounts[m.deviceType] = (deviceCounts[m.deviceType] || 0) + 1;
-    }
-  });
-  
-  const total = Object.values(deviceCounts).reduce((sum, count) => sum + count, 0);
-  return Object.entries(deviceCounts).map(([device, count]) => ({
-    deviceType: device,
-    count,
-    percentage: total > 0 ? (count / total) * 100 : 0,
-  }));
+  try {
+    const deviceCounts = {};
+    messages.forEach(m => {
+      if (m.deviceType) {
+        deviceCounts[m.deviceType] = (deviceCounts[m.deviceType] || 0) + 1;
+      }
+    });
+    
+    const total = Object.values(deviceCounts).reduce((sum, count) => sum + count, 0);
+    return Object.entries(deviceCounts).map(([device, count]) => ({
+      deviceType: device,
+      count,
+      percentage: total > 0 ? (count / total) * 100 : 0,
+    }));
+  } catch (error) {
+    console.error('Error calculating device breakdown:', error);
+    return [];
+  }
 };
 
 // Static methods
 campaignReportSchema.statics.generateForCampaign = async function (campaignId) {
-  const Campaign = mongoose.model('Campaign');
-  const campaign = await Campaign.findById(campaignId);
-  
-  if (!campaign) throw new Error('Campaign not found');
-  
-  // Check if report already exists
-  let report = await this.findOne({ campaignId });
-  
-  if (!report) {
-    report = new this({
-      campaignId,
-      userId: campaign.userId,
-      campaignName: campaign.name,
-      templateType: campaign.templateType || 'plainText',
-    });
+  try {
+    const Campaign = mongoose.model('Campaign');
+    const campaign = await Campaign.findById(campaignId);
+    
+    if (!campaign) throw new Error('Campaign not found');
+    
+    // Check if report already exists
+    let report = await this.findOne({ campaignId });
+    
+    if (!report) {
+      report = new this({
+        campaignId,
+        userId: campaign.userId,
+        campaignName: campaign.name,
+        templateType: campaign.templateType || 'plainText',
+      });
+    }
+    
+    return await report.generateReport();
+  } catch (error) {
+    console.error('Error generating campaign report:', error);
+    throw error;
   }
-  
-  return await report.generateReport();
 };
 
 export default mongoose.model('CampaignReport', campaignReportSchema);

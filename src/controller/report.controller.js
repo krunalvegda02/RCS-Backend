@@ -1,4 +1,4 @@
-import { Report } from '../models/APIReport.model.js';
+import { Report } from '../models/report.model.js';
 import Message from '../models/message.model.js';
 
 // Generate report
@@ -22,7 +22,11 @@ export const generate = async (req, res) => {
         $lte: new Date(endDate),
       },
     };
-    if (campaignId) query.campaignId = campaignId;
+    
+    // Sanitize campaignId - validate it's a valid ObjectId format
+    if (campaignId && typeof campaignId === 'string' && /^[0-9a-fA-F]{24}$/.test(campaignId)) {
+      query.campaignId = campaignId;
+    }
 
     const messages = await Message.find(query);
     const daily = await Message.getDailyStats(userId, new Date(startDate));

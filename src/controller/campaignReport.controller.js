@@ -60,7 +60,7 @@ export const getUserCampaignReports = async (req, res) => {
       .lean();
     
     // Transform campaigns to match frontend expectations
-    const transformedCampaigns = campaigns.map(campaign => ({
+    const reports = campaigns.map(campaign => ({
       _id: campaign._id,
       CampaignName: campaign.name,
       type: 'RCS',
@@ -84,7 +84,7 @@ export const getUserCampaignReports = async (req, res) => {
     
     res.json({
       success: true,
-      data: transformedCampaigns,
+      data: reports,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -107,43 +107,45 @@ export const getCampaignMessages = async (req, res) => {
     const { campaignId } = req.params;
     const { page = 1, limit = 20 } = req.query;
     
-    const campaign = await Campaign.findById(campaignId)
-      .select('recipients name')
+      const Message = (await import('../models/message.model.js')).default;
+    
+    // Fetch messages from Message model with useful fields only
+    const messages = await Message.find({ campaignId })
+      .select('recipientPhoneNumber status templateType sentAt deliveredAt readAt clickedAt clickedAction userText suggestionResponse userClickCount userReplyCount errorMessage createdAt')
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit))
       .lean();
     
-    if (!campaign) {
-      return res.status(404).json({
-        success: false,
-        message: 'Campaign not found'
-      });
-    }
+    const total = await Message.countDocuments({ campaignId });
     
-    // Paginate recipients
-    const startIndex = (page - 1) * limit;
-    const endIndex = startIndex + parseInt(limit);
-    const paginatedRecipients = campaign.recipients.slice(startIndex, endIndex);
+    // Transform messages to include only useful reporting fields
+    const transformedMessages = messages.map(msg => ({
+      _id: msg._id,
+      phoneNumber: msg.recipientPhoneNumber,
+      status: msg.status,
+      templateType: msg.templateType,
+      sentAt: msg.sentAt,
+      deliveredAt: msg.deliveredAt,
+      readAt: msg.readAt,
+      clickedAt: msg.clickedAt,
+      clickedAction: msg.clickedAction,
+      userText: msg.userText,
+      suggestionResponse: msg.suggestionResponse,
+      interactions: msg.userClickCount || 0,
+      replies: msg.userReplyCount || 0,
+      errorMessage: msg.errorMessage,
+      createdAt: msg.createdAt
+    }));
     
     res.json({
       success: true,
-      data: {
-        campaignName: campaign.name,
-        messages: paginatedRecipients.map(recipient => ({
-          _id: recipient._id,
-          phoneNumber: recipient.phoneNumber,
-          status: recipient.status,
-          isRcsCapable: recipient.isRcsCapable,
-          sentAt: recipient.sentAt,
-          deliveredAt: recipient.deliveredAt,
-          readAt: recipient.readAt,
-          failedAt: recipient.failedAt,
-          errorMessage: recipient.errorMessage
-        }))
-      },
+      data: transformedMessages,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
-        total: campaign.recipients.length,
-        pages: Math.ceil(campaign.recipients.length / limit)
+        total,
+        pages: Math.ceil(total / limit)
       }
     });
   } catch (error) {

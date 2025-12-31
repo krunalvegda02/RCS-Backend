@@ -124,36 +124,52 @@ class CampaignStatsService {
         return null;
       }
       
-      const [campaign, redisStats] = await Promise.all([
+      const [campaign, redisStats, messages] = await Promise.all([
         Campaign.findById(campaignId).lean(),
-        redisClient?.isOpen ? redisClient.hGetAll(`campaign_stats:${campaignId}`) : {}
+        redisClient?.isOpen ? redisClient.hGetAll(`campaign_stats:${campaignId}`) : {},
+        Message.find({ campaignId }).select('status').lean()
       ]);
       
       if (!campaign) return null;
       
-      // Safe parseInt with fallback
-      const safeInt = (val) => {
-        const parsed = parseInt(val || '0', 10);
-        return isNaN(parsed) ? 0 : parsed;
+      // Count messages by current status
+      const statusCounts = {
+        pending: 0,
+        queued: 0,
+        processing: 0,
+        sent: 0,
+        delivered: 0,
+        read: 0,
+        replied: 0,
+        failed: 0,
+        bounced: 0
       };
-      
+
+      messages.forEach(msg => {
+        if (statusCounts.hasOwnProperty(msg.status)) {
+          statusCounts[msg.status]++;
+        }
+      });
+
+      // Calculate cumulative stats (read includes delivered and sent, etc.)
       const realTimeStats = {
         total: campaign.recipients?.length || 0,
-        sent: (campaign.stats?.sent || 0) + safeInt(redisStats.sent),
-        delivered: (campaign.stats?.delivered || 0) + safeInt(redisStats.delivered),
-        read: (campaign.stats?.read || 0) + safeInt(redisStats.read),
-        replied: (campaign.stats?.replied || 0) + safeInt(redisStats.replied),
-        failed: (campaign.stats?.failed || 0) + safeInt(redisStats.failed),
-        bounced: (campaign.stats?.bounced || 0) + safeInt(redisStats.bounced),
-        processing: (campaign.stats?.processing || 0) + safeInt(redisStats.processing),
+        pending: statusCounts.pending,
+        queued: statusCounts.queued,
+        processing: statusCounts.processing,
+        // Sent = all messages that reached sent status or beyond
+        sent: statusCounts.sent + statusCounts.delivered + statusCounts.read + statusCounts.replied,
+        // Delivered = all messages that reached delivered status or beyond
+        delivered: statusCounts.delivered + statusCounts.read + statusCounts.replied,
+        // Read = all messages that reached read status or beyond
+        read: statusCounts.read + statusCounts.replied,
+        // Replied = only messages with replied status
+        replied: statusCounts.replied,
+        failed: statusCounts.failed,
+        bounced: statusCounts.bounced,
+        // Interactions = replied messages (user clicked or replied)
+        interactions: statusCounts.replied
       };
-      
-      // Correct pending calculation: total - all non-pending states
-      realTimeStats.pending = Math.max(0, 
-        realTimeStats.total - realTimeStats.sent - realTimeStats.delivered - 
-        realTimeStats.read - realTimeStats.replied - realTimeStats.failed - 
-        realTimeStats.bounced - realTimeStats.processing
-      );
       
       // Success rate based on delivered vs sent
       realTimeStats.successRate = realTimeStats.sent > 0 ? 
@@ -190,6 +206,18 @@ class CampaignStatsService {
   // Get message delivery stats for real-time reporting
   async getMessageStats(userId, timeframe = '24h') {
     try {
+      // Validate userId
+      if (!userId || !this.isValidObjectId(userId)) {
+        console.warn(`[Stats] Invalid userId: ${userId}`);
+        return {
+          totalMessages: 0,
+          totalSuccessCount: 0,
+          totalFailedCount: 0,
+          pendingMessages: 0,
+          totalCost: 0
+        };
+      }
+
       const timeAgo = new Date();
       if (timeframe === '24h') timeAgo.setHours(timeAgo.getHours() - 24);
       else if (timeframe === '7d') timeAgo.setDate(timeAgo.getDate() - 7);
@@ -235,7 +263,13 @@ class CampaignStatsService {
       return result;
     } catch (error) {
       console.error('Error getting message stats:', error);
-      return null;
+      return {
+        totalMessages: 0,
+        totalSuccessCount: 0,
+        totalFailedCount: 0,
+        pendingMessages: 0,
+        totalCost: 0
+      };
     }
   }
 

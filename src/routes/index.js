@@ -17,7 +17,7 @@ const router = express.Router();
 // Direct capability check route (legacy endpoint)
 router.post('/checkAvablityNumber', authenticateToken, requireUser, CampaignController.checkCapability);
 
-router.use('/user', authRoutes);
+router.use('/auth', authRoutes);
 router.use('/templates', templateRoutes);
 router.use('/campaigns', campaignRoutes);
 router.use('/messages', messageRoutes);

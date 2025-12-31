@@ -9,7 +9,7 @@ export const authenticateToken = async (req, res, next) => {
     console.log(authHeader)
     const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
 
-    console.log("======token======", token);
+    // console.log("======token======", token);
 
     if (!token) {
       return res.status(401).json({

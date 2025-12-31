@@ -62,9 +62,6 @@ import realtimeRoutes from "./routes/realtime.routes.js";
 import { webhookReceiver } from "./controller/webhook.controller.js";
 import { authenticateToken } from "./middlewares/auth.middleware.js";
 
-
-// app.post('https://rcssender.com/api/jio/rcs/webhooks', webhookReceiver)
-
 app.use("/api/v1", router);
 app.use("/api/realtime", authenticateToken, realtimeRoutes);
 
