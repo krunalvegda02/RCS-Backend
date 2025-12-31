@@ -65,6 +65,31 @@ import { authenticateToken } from "./middlewares/auth.middleware.js";
 app.use("/api/v1", router);
 app.use("/api/realtime", authenticateToken, realtimeRoutes);
 
+// Test webhook endpoint
+app.get('/api/v1/jio/rcs/webhooks', (req, res) => {
+  console.log('🧪 Webhook GET test accessed');
+  res.json({ message: 'Webhook endpoint is working', timestamp: new Date() });
+});
+
+app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
+  console.log('🔔 WEBHOOK RECEIVED:', {
+    timestamp: new Date().toISOString(),
+    method: req.method,
+    url: req.url,
+    headers: req.headers,
+    body: req.body
+  });
+  
+  res.status(200).json({
+    success: true,
+    message: 'Webhook received',
+    timestamp: new Date().toISOString()
+  });
+  
+  // Call original webhook receiver
+  webhookReceiver(req, res);
+});
+
 
 
 

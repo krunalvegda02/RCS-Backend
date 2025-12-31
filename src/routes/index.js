@@ -32,5 +32,5 @@ router.use('/webhooks', webhookRoutes);
 
 
 // Remove the immediate response middleware since webhook handles it internally
-router.post('/jio/rcs/webhooks', webhookReceiver);
+// router.post('/jio/rcs/webhooks', webhookReceiver);
 export default router;
