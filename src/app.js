@@ -76,6 +76,9 @@ app.use("/api/realtime", authenticateToken, realtimeRoutes);
 app.post('/api/v1/jio/rcs/webhooks', async (req, res) => {  
   const requestId = Math.random().toString(36).substr(2, 9);
   
+  // Log incoming webhook
+  console.log(`🔔 [${requestId}] Webhook received:`, JSON.stringify(req.body, null, 2));
+  
   try {
     const entityType = req.body?.entityType;
     const priority = entityType === "USER_MESSAGE" ? 5 : 10;
@@ -92,9 +95,9 @@ app.post('/api/v1/jio/rcs/webhooks', async (req, res) => {
       requestId
     });
     
-    console.log(`🔔 [${requestId}] Queued: ${entityType}`);
+    console.log(`✅ [${requestId}] Queued: ${entityType}`);
   } catch (error) {
-    console.error(`[${requestId}] Queue error:`, error.message);
+    console.error(`❌ [${requestId}] Queue error:`, error.message);
     res.status(200).json({ success: true }); // Never fail webhooks
   }
 });
