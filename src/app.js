@@ -65,8 +65,7 @@ import { authenticateToken } from "./middlewares/auth.middleware.js";
 app.use("/api/v1", router);
 app.use("/api/realtime", authenticateToken, realtimeRoutes);
 
-// Public webhook endpoint (no auth required)
-app.post('/api/jio/rcs/webhooks', webhookReceiver);
+
 
 
 export default app;

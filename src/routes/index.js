@@ -11,6 +11,7 @@ import campaignReportRoutes from './campaignReport.routes.js';
 import analyticsRoutes from './analytics.routes.js';
 import * as CampaignController from '../controller/campaign.controller.js';
 import { authenticateToken, requireUser } from '../middlewares/auth.middleware.js';
+import { webhookReceiver } from '../controller/webhook.controller.js';
 
 const router = express.Router();
 
@@ -29,4 +30,7 @@ router.use('/analytics', analyticsRoutes);
 
 router.use('/webhooks', webhookRoutes);
 
+
+// Remove the immediate response middleware since webhook handles it internally
+router.post('/jio/rcs/webhooks', webhookReceiver);
 export default router;

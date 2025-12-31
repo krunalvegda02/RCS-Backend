@@ -58,50 +58,56 @@ webhookQueue.process('user-interaction', 100, async (job) => {
 
 
 
-// Optimized webhook receiver for Jio RCS webhooks
+// Standard webhook receiver with immediate logging and response
 export const webhookReceiver = async (req, res) => {
   const timestamp = new Date().toISOString();
+  const requestId = Math.random().toString(36).substr(2, 9);
   
-  try {
-    // Immediate response to prevent timeouts
-    res.status(200).json({
-      success: true,
-      message: "Webhook received",
-      timestamp,
-      processed: false
-    });
-    
-    const data = req.body;
-    console.log('[Webhook] Received:', JSON.stringify(data, null, 2));
-    
-    const entityType = data?.entityType;
-    const eventType = data?.entity?.eventType;
-    
-    console.log(`[Webhook] EntityType: ${entityType}, EventType: ${eventType}`);
-    
-    // Process different webhook types
-    if (entityType === "USER_MESSAGE") {
-      console.log('[Webhook] Queueing USER_MESSAGE for processing');
-      await webhookQueue.add('user-interaction', { data, timestamp }, {
-        priority: 5,
-        attempts: 2
-      });
-    } else if (entityType === "STATUS_EVENT" || entityType === "USER_EVENT" || eventType) {
-      console.log('[Webhook] Queueing STATUS_EVENT for processing');
-      await webhookQueue.add('status-update', { data, timestamp }, {
-        priority: 10,
-        attempts: 3
-      });
-    } else {
-      console.warn('[Webhook] Unknown webhook type:', entityType, eventType);
+  // Immediate logging
+  console.log('🔔 [WEBHOOK RECEIVED]', {
+    requestId,
+    timestamp,
+    method: req.method,
+    url: req.url,
+    headers: req.headers,
+    body: req.body,
+    ip: req.ip || req.connection.remoteAddress
+  });
+  
+  // Immediate response - ALWAYS respond first
+  res.status(200).json({
+    success: true,
+    message: "Webhook received and processing",
+    requestId,
+    timestamp
+  });
+  
+  // Background processing
+  setImmediate(async () => {
+    try {
+      const data = req.body;
+      const entityType = data?.entityType;
+      const eventType = data?.entity?.eventType;
+      
+      console.log(`[Webhook-${requestId}] Processing: ${entityType}:${eventType}`);
+      
+      if (entityType === "USER_MESSAGE") {
+        await webhookQueue.add('user-interaction', { data, timestamp, requestId }, {
+          priority: 5,
+          attempts: 2
+        });
+      } else if (entityType === "STATUS_EVENT" || entityType === "USER_EVENT" || eventType) {
+        await webhookQueue.add('status-update', { data, timestamp, requestId }, {
+          priority: 10,
+          attempts: 3
+        });
+      }
+      
+      console.log(`[Webhook-${requestId}] ✅ Queued successfully`);
+    } catch (error) {
+      console.error(`[Webhook-${requestId}] ❌ Error:`, error);
     }
-    
-  } catch (error) {
-    console.error('Webhook receiver error:', error);
-    if (!res.headersSent) {
-      res.status(200).json({ success: true, error: 'Processing queued' });
-    }
-  }
+  });
 };
 
 // Process Jio webhook status updates
