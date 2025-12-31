@@ -49,6 +49,8 @@ const messageSchema = new mongoose.Schema(
     // Jio RCS Specific
     assistantId: String,
     rcsMessageId: String,
+    jioMessageId: String, // Store Jio's webhook messageId
+    externalMessageId: String, // Generic external ID field
 
     // Status Tracking
     status: {
@@ -123,6 +125,10 @@ messageSchema.index({ status: 1, createdAt: -1 });
 messageSchema.index({ campaignId: 1, status: 1 });
 messageSchema.index({ recipientPhoneNumber: 1, sentAt: -1 });
 messageSchema.index({ userId: 1, status: 1, createdAt: -1 });
+// Webhook lookup indexes
+messageSchema.index({ jioMessageId: 1 });
+messageSchema.index({ externalMessageId: 1 });
+messageSchema.index({ rcsMessageId: 1 });
 
 // TTL Index for automatic cleanup of old messages (optional)
 messageSchema.index(

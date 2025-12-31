@@ -59,33 +59,44 @@ app.use((err, req, res, next) => {
 //Routes Import
 import router from "./routes/index.js";
 import realtimeRoutes from "./routes/realtime.routes.js";
-import { webhookReceiver } from "./controller/webhook.controller.js";
+import Bull from 'bull';
 import { authenticateToken } from "./middlewares/auth.middleware.js";
+
+// ONLY queue creation - NO processing in API
+const webhookQueue = new Bull('webhook-processing', {
+  redis: {
+    host: process.env.REDIS_HOST || 'localhost',
+    port: process.env.REDIS_PORT || 6379
+  }
+});
 
 app.use("/api/v1", router);
 app.use("/api/realtime", authenticateToken, realtimeRoutes);
 
-app.post('/api/v1/jio/rcs/webhooks', (req, res) => {  
-  res.status(200).json({
-    success: true,
-    message: 'Webhook received',
-    timestamp: new Date().toISOString()
-  });
+app.post('/api/v1/jio/rcs/webhooks', async (req, res) => {  
+  const requestId = Math.random().toString(36).substr(2, 9);
   
-  // Process webhook using the actual webhook receiver
-  setImmediate(async () => {
-    try {
-      console.log('Processing webhook data...');
-      const mockRes = {
-        headersSent: true,
-        status: () => mockRes,
-        json: () => mockRes
-      };
-      await webhookReceiver(req.body, mockRes);
-    } catch (error) {
-      console.error('Webhook processing error:', error);
-    }
-  });
+  try {
+    const entityType = req.body?.entityType;
+    const priority = entityType === "USER_MESSAGE" ? 5 : 10;
+    
+    await webhookQueue.add('webhook-data', {
+      data: req.body,
+      timestamp: Date.now(),
+      requestId
+    }, { priority });
+    
+    // Single response only
+    res.status(200).json({
+      success: true,
+      requestId
+    });
+    
+    console.log(`🔔 [${requestId}] Queued: ${entityType}`);
+  } catch (error) {
+    console.error(`[${requestId}] Queue error:`, error.message);
+    res.status(200).json({ success: true }); // Never fail webhooks
+  }
 });
 
 

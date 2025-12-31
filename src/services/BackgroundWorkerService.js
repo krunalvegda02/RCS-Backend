@@ -13,16 +13,8 @@ redisClient.on('error', (err) => console.error('[Worker] Redis Client Error:', e
 redisClient.connect();
 
 class BackgroundWorkerService {
-  constructor() {
-    // Separate queues for different tasks
-    this.statsQueue = new Bull('background-stats-sync', {
-      redis: { host: process.env.REDIS_HOST, port: process.env.REDIS_PORT },
-      defaultJobOptions: {
-        removeOnComplete: 5,
-        removeOnFail: 10,
-      },
-    });
-
+  constructor(statsQueue) {
+    this.statsQueue = statsQueue;
     this.setupWorkers();
     this.schedulePeriodicTasks();
   }

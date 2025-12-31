@@ -1,96 +1,20 @@
 import Message from '../models/message.model.js';
 import MessageLog from '../models/messageLog.model.js';
 import Campaign from '../models/campaign.model.js';
-import { createClient } from 'redis';
-import Bull from 'bull';
 import statsService from '../services/CampaignStatsService.js';
 
-// High-performance Redis client with connection pooling
-let redisClient = null;
-try {
-  redisClient = createClient({
-    url: `redis://${process.env.REDIS_HOST}:${process.env.REDIS_PORT}`,
-    socket: {
-      reconnectStrategy: (retries) => Math.min(retries * 50, 500)
-    }
-  });
+// NO Redis client here - Bull handles Redis internally
+// NO queue processing here - only in worker.js
 
-  if (!redisClient.isOpen) {
-    await redisClient.connect();
-  }
-} catch (error) {
-  console.error('[Webhook] Redis connection failed:', error);
-}
-
-// Dedicated webhook processing queue for high volume
-const webhookQueue = new Bull('webhook-processing', {
-  redis: {
-    host: process.env.REDIS_HOST || 'localhost',
-    port: process.env.REDIS_PORT || 6379
-  },
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: { type: 'exponential', delay: 1000 },
-    removeOnComplete: 100,
-    removeOnFail: 50
-  }
-});
-
-// Process webhooks with high concurrency
-webhookQueue.process('status-update', 200, async (job) => {
-  console.log('[Queue] Processing status-update job:', job.id);
-  const { data, timestamp } = job.data;
-  await processWebhookData(data, timestamp);
-  console.log('[Queue] Completed status-update job:', job.id);
-});
-
-webhookQueue.process('user-interaction', 100, async (job) => {
-  console.log('[Queue] Processing user-interaction job:', job.id);
-  const { data, timestamp } = job.data;
-  await processUserInteraction(data, timestamp);
-  console.log('[Queue] Completed user-interaction job:', job.id);
-});
-
-
-
-
-
-
-
-
-// Ultra-lightweight webhook receiver - responds immediately, queues everything
+// Ultra-lightweight webhook receiver - only queues, no processing
 export const webhookReceiver = async (req, res) => {
-  console.log(JSON.stringify(req.body))
-  const timestamp = Date.now();
-  const requestId = Math.random().toString(36).substr(2, 9);
-
-  // Immediate response - under 10ms
-  res.status(200).json({
-    success: true,
-    requestId,
-    timestamp
-  });
-
-  // Minimal logging
-  console.log(`🔔 [${requestId}] ${req.body?.entityType}:${req.body?.entity?.eventType || 'USER_ACTION'}`);
-
-  // Queue immediately - no processing
-  const data = req.body;
-  const entityType = data?.entityType;
-  
-  try {
-    if (entityType === "USER_MESSAGE") {
-      webhookQueue.add('user-interaction', { data, timestamp, requestId }, { priority: 5 });
-    } else {
-      webhookQueue.add('status-update', { data, timestamp, requestId }, { priority: 10 });
-    }
-  } catch (error) {
-    console.error(`[${requestId}] Queue error:`, error.message);
-  }
+  // This function is now deprecated - use direct queue in app.js
+  console.warn('[Webhook] webhookReceiver is deprecated - use direct queue');
+  res.status(200).json({ success: true });
 };
 
 // Process Jio webhook status updates
-async function processWebhookData(data, timestamp) {
+export async function processWebhookData(data, timestamp) {
   try {
     const entityType = data?.entityType;
     const eventType = data?.entity?.eventType || data?.webhookData?.eventType || data?.eventType;
@@ -204,27 +128,25 @@ async function processWebhookData(data, timestamp) {
       'replied': 5
     };
 
-    // Get current message to check status progression - try multiple lookup methods
-    let currentMessage = await Message.findOne({ messageId }, 'status').lean();
-    
-    // If not found by messageId, try other possible fields
-    if (!currentMessage) {
-      // Try finding by Jio message ID patterns
-      currentMessage = await Message.findOne({ 
-        $or: [
-          { jioMessageId: messageId },
-          { externalMessageId: messageId },
-          { 'metadata.jioMessageId': messageId },
-          { messageId: { $regex: messageId.split('_')[0] } } // Try partial match
-        ]
-      }, 'status').lean();
-    }
+    // Get current message to check status progression - use model fields
+    let currentMessage = await Message.findOne({
+      $or: [
+        { messageId },
+        { jioMessageId: messageId },
+        { externalMessageId: messageId },
+        { rcsMessageId: messageId }
+      ]
+    }, 'status messageId').lean();
     
     if (!currentMessage) {
-      console.warn(`[Webhook] Message not found with any lookup method: ${messageId}`);
-      // Log available messages for debugging
-      const recentMessages = await Message.find({}).sort({ createdAt: -1 }).limit(5).select('messageId jioMessageId externalMessageId').lean();
-      console.log('[Webhook] Recent messages in DB:', recentMessages);
+      console.log(`[Webhook] Message not found: ${messageId}`);
+      // Show recent messages for debugging
+      const recent = await Message.find({})
+        .sort({ createdAt: -1 })
+        .limit(3)
+        .select('messageId jioMessageId rcsMessageId externalMessageId createdAt')
+        .lean();
+      console.log('[Webhook] Recent messages:', recent);
       return;
     }
 
@@ -237,7 +159,7 @@ async function processWebhookData(data, timestamp) {
       return;
     }
 
-    // Update message, campaign recipient status, and increment Redis stats
+    // Update message with proper field mapping
     const [message, campaignId] = await Promise.all([
       Message.findOneAndUpdate(
         { 
@@ -245,7 +167,8 @@ async function processWebhookData(data, timestamp) {
             { messageId },
             { jioMessageId: messageId },
             { externalMessageId: messageId },
-            { 'metadata.jioMessageId': messageId }
+            { rcsMessageId: messageId },
+            { messageId: currentMessage.messageId } // Use found message ID
           ]
         },
         {
@@ -257,14 +180,15 @@ async function processWebhookData(data, timestamp) {
           failedAt: ['failed', 'bounced'].includes(newStatus) ? new Date(sendTime || timestamp) : undefined,
           errorCode: ['failed', 'bounced'].includes(newStatus) ? updateData.errorCode : undefined,
           errorMessage: ['failed', 'bounced'].includes(newStatus) ? updateData.errorMessage : undefined,
-          // Store additional Jio webhook metadata
           deviceType: updateData.deviceType || undefined,
           deliveryLatency: updateData.deliveryLatency || undefined,
-          jioMessageId: messageId // Store Jio message ID for future lookups
+          // Store Jio messageId for future lookups
+          jioMessageId: messageId,
+          externalMessageId: messageId
         },
         { new: true, lean: true }
       ),
-      getCampaignIdFromMessage(messageId)
+      getCampaignIdFromMessage(currentMessage.messageId || messageId)
     ]);
 
     if (!message || !campaignId) {
@@ -325,7 +249,7 @@ async function processWebhookData(data, timestamp) {
 }
 
 // Process Jio user interactions
-async function processUserInteraction(data, timestamp) {
+export async function processUserInteraction(data, timestamp) {
   try {
     const orgMsgId = data?.metaData?.orgMsgId || data?.messageId;
     const userMessage = data?.entity || data?.webhookData;
@@ -433,7 +357,14 @@ async function processUserInteraction(data, timestamp) {
 // Helper functions
 async function getCampaignIdFromMessage(messageId) {
   try {
-    const message = await Message.findOne({ messageId }, 'campaignId').lean();
+    const message = await Message.findOne({
+      $or: [
+        { messageId },
+        { jioMessageId: messageId },
+        { externalMessageId: messageId },
+        { rcsMessageId: messageId }
+      ]
+    }, 'campaignId').lean();
     return message?.campaignId;
   } catch (error) {
     console.error('Error getting campaign ID:', error);
@@ -443,7 +374,14 @@ async function getCampaignIdFromMessage(messageId) {
 
 async function getUserIdFromMessage(messageId) {
   try {
-    const message = await Message.findOne({ messageId }, 'userId').lean();
+    const message = await Message.findOne({
+      $or: [
+        { messageId },
+        { jioMessageId: messageId },
+        { externalMessageId: messageId },
+        { rcsMessageId: messageId }
+      ]
+    }, 'userId').lean();
     return message?.userId;
   } catch (error) {
     console.error('Error getting user ID:', error);
@@ -493,6 +431,18 @@ export const handleStatusUpdate = async (req, res) => {
 };
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 // Handle delivery webhook
 export const handleDelivery = async (req, res) => {
   try {
@@ -510,6 +460,7 @@ export const handleDelivery = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
 
 // Handle read webhook
 export const handleRead = async (req, res) => {

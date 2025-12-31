@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import Campaign from '../models/campaign.model.js';
 import Message from '../models/message.model.js';
 
+// Single Redis client for stats only
 let redisClient = null;
 
 try {
@@ -14,7 +15,6 @@ try {
   });
   
   redisClient.on('error', (err) => console.error('[Stats] Redis Error:', err));
-  redisClient.on('connect', () => console.log('[Stats] Redis Connected'));
   
   if (!redisClient.isOpen) {
     await redisClient.connect();
