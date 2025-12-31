@@ -18,6 +18,11 @@ const connectDB = async () => {
 
     console.log('Backend Database:', mongoose.connection.name);
     console.log('Backend Host:', mongoose.connection.host);
+    
+    // Test backend database access
+    const Message = mongoose.model('Message');
+    const backendCount = await Message.countDocuments();
+    console.log(`🔍 Backend sees ${backendCount} messages in database`);
 
     console.log(`\n MOngoDB connected !! DB HOST: ${connectionInstance.connection.host}`);
     // console.log("ConnectionInstance :", connectionInstance.connection);

@@ -47,6 +47,19 @@ async function startWorker() {
     console.log('✅ Worker connected to MongoDB');
     console.log('Worker Database:', mongoose.connection.name);
     console.log('Worker Host:', mongoose.connection.host);
+    
+    // Test database access
+    const Message = mongoose.model('Message');
+    const testCount = await Message.countDocuments();
+    console.log(`🔍 Worker sees ${testCount} messages in database`);
+    
+    // Test if we can find any message
+    const anyMessage = await Message.findOne().lean();
+    console.log('📄 Sample message:', anyMessage ? 'Found' : 'None found');
+    
+    // Check if we're in the right database
+    const collections = await mongoose.connection.db.listCollections().toArray();
+    console.log('📂 Collections:', collections.map(c => c.name));
 
     // Process webhook jobs from API
     webhookQueue.process('webhook-data', 50, async (job) => {
