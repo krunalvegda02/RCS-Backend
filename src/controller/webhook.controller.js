@@ -166,12 +166,32 @@ export async function processWebhookData(data, timestamp) {
           { jioMessageId: messageId, rcsMessageId: messageId }
         );
       } else {
+        // Enhanced debugging - check database connection and queries
+        console.log(`[Webhook] No message found for phone: ${userPhoneNumber}`);
+        console.log(`[Webhook] Normalized phones: ${phoneWithoutCountryCode}, ${phoneWithCountryCode}`);
+        
+        // Check total message count
+        const totalMessages = await Message.countDocuments();
+        console.log(`[Webhook] Total messages in DB: ${totalMessages}`);
+        
+        // Check recent messages with more details
         const recent = await Message.find({})
           .sort({ createdAt: -1 })
-          .limit(3)
-          .select('messageId jioMessageId rcsMessageId externalMessageId recipientPhoneNumber createdAt')
+          .limit(5)
+          .select('messageId jioMessageId rcsMessageId externalMessageId recipientPhoneNumber createdAt status')
           .lean();
-        console.log('[Webhook] Recent messages:', recent);
+        console.log('[Webhook] Recent messages with details:', recent);
+        
+        // Check if any message matches the phone number
+        const phoneMatches = await Message.find({
+          $or: [
+            { recipientPhoneNumber: userPhoneNumber },
+            { recipientPhoneNumber: phoneWithoutCountryCode },
+            { recipientPhoneNumber: phoneWithCountryCode }
+          ]
+        }).select('messageId recipientPhoneNumber').lean();
+        console.log('[Webhook] Phone number matches:', phoneMatches);
+        
         return;
       }
     }
