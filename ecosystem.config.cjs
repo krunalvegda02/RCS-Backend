@@ -10,7 +10,7 @@ module.exports = {
         PORT: 3000,
         REDIS_HOST: '127.0.0.1',
         REDIS_PORT: 6379,
-        MONGODB_URI: process.env.MONGODB_URI
+        MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/rcs?retryWrites=true&w=majority'
       },
       wait_ready: true,
       listen_timeout: 10000
@@ -25,7 +25,7 @@ module.exports = {
         WORKER_MODE: 'true',
         REDIS_HOST: '127.0.0.1',
         REDIS_PORT: 6379,
-        MONGODB_URI: process.env.MONGODB_URI
+        MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/rcs?retryWrites=true&w=majority'
       },
       wait_ready: true,
       listen_timeout: 10000,
