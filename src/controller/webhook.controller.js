@@ -158,6 +158,21 @@ export async function processWebhookData(data, timestamp) {
           const messageCollections = collections.filter(c => c.name.toLowerCase().includes('message'));
           console.log('[Webhook] Message-related collections:', messageCollections.map(c => c.name));
           
+          // Direct query to messages collection
+          const directCount = await mongoose.connection.db.collection('messages').countDocuments();
+          console.log('[Webhook] Direct messages collection count:', directCount);
+          
+          // Check a few documents directly
+          const directMessages = await mongoose.connection.db.collection('messages')
+            .find({})
+            .limit(3)
+            .toArray();
+          console.log('[Webhook] Direct messages sample:', directMessages.map(m => ({
+            _id: m._id,
+            messageId: m.messageId,
+            status: m.status
+          })));
+          
           return;
         }
         
