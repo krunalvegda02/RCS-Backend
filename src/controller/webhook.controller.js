@@ -14,7 +14,7 @@ try {
       reconnectStrategy: (retries) => Math.min(retries * 50, 500)
     }
   });
-  
+
   if (!redisClient.isOpen) {
     await redisClient.connect();
   }
@@ -24,9 +24,9 @@ try {
 
 // Dedicated webhook processing queue for high volume
 const webhookQueue = new Bull('webhook-processing', {
-  redis: { 
-    host: process.env.REDIS_HOST || 'localhost', 
-    port: process.env.REDIS_PORT || 6379 
+  redis: {
+    host: process.env.REDIS_HOST || 'localhost',
+    port: process.env.REDIS_PORT || 6379
   },
   defaultJobOptions: {
     attempts: 3,
@@ -62,7 +62,7 @@ webhookQueue.process('user-interaction', 100, async (job) => {
 export const webhookReceiver = async (req, res) => {
   const timestamp = new Date().toISOString();
   const requestId = Math.random().toString(36).substr(2, 9);
-  
+
   // Immediate logging
   console.log('🔔 [WEBHOOK RECEIVED]', {
     requestId,
@@ -70,10 +70,10 @@ export const webhookReceiver = async (req, res) => {
     method: req.method,
     url: req.url,
     headers: req.headers,
-    body: req.body,
+    body: JSON.stringify(req.body, null, 2),
     ip: req.ip || req.connection.remoteAddress
   });
-  
+
   // Immediate response - ALWAYS respond first
   res.status(200).json({
     success: true,
@@ -81,16 +81,16 @@ export const webhookReceiver = async (req, res) => {
     requestId,
     timestamp
   });
-  
+
   // Background processing
   setImmediate(async () => {
     try {
       const data = req.body;
       const entityType = data?.entityType;
       const eventType = data?.entity?.eventType;
-      
-      console.log(`[Webhook-${requestId}] Processing: ${entityType}:${eventType}`);
-      
+
+      console.log(`[Webhook-${requestId}] Processing: ${entityType}:${eventType || 'USER_INTERACTION'}`);
+
       if (entityType === "USER_MESSAGE") {
         await webhookQueue.add('user-interaction', { data, timestamp, requestId }, {
           priority: 5,
@@ -102,7 +102,7 @@ export const webhookReceiver = async (req, res) => {
           attempts: 3
         });
       }
-      
+
       console.log(`[Webhook-${requestId}] ✅ Queued successfully`);
     } catch (error) {
       console.error(`[Webhook-${requestId}] ❌ Error:`, error);
@@ -118,24 +118,24 @@ async function processWebhookData(data, timestamp) {
     const messageId = data?.entity?.messageId || data?.messageId;
     const userPhoneNumber = data?.userPhoneNumber || data?.webhookData?.phoneNumber || data?.phoneNumber;
     const sendTime = data?.entity?.sendTime || timestamp;
-    
+
     if (!messageId) {
       console.warn('[Webhook] No messageId found in status update');
       return;
     }
-    
+
     console.log(`[Webhook] Processing ${entityType || 'STATUS'}:${eventType} for ${messageId}`);
-    
+
     const updateData = {
       lastWebhookAt: new Date(sendTime || timestamp),
       error: !!data?.entity?.error,
       errorMessage: data?.entity?.error?.message || null,
       errorCode: data?.entity?.error?.code || null
     };
-    
+
     let statType = null;
     let newStatus = null;
-    
+
     // Enhanced Jio webhook event mapping with detailed error handling
     switch (eventType) {
       case "SEND_MESSAGE_SUCCESS":
@@ -146,7 +146,7 @@ async function processWebhookData(data, timestamp) {
         updateData.deliveryLatency = data?.entity?.deliveryInfo?.latencyMs || null;
         console.log(`[Webhook] ✅ Message SENT: ${messageId}`);
         break;
-        
+
       case "MESSAGE_DELIVERED":
         newStatus = 'delivered';
         updateData.deliveredAt = new Date(sendTime || timestamp);
@@ -154,26 +154,26 @@ async function processWebhookData(data, timestamp) {
         updateData.deviceType = data?.entity?.deviceInfo?.deviceType || null;
         console.log(`[Webhook] 📦 Message DELIVERED: ${messageId}`);
         break;
-        
+
       case "MESSAGE_READ":
         newStatus = 'read';
         updateData.readAt = new Date(sendTime || timestamp);
         statType = 'read';
         console.log(`[Webhook] 👁 Message READ: ${messageId}`);
         break;
-        
+
       case "SEND_MESSAGE_FAILURE":
         // Enhanced error classification based on Jio error codes
         const errorCode = data?.entity?.error?.code;
         const errorCategory = data?.entity?.error?.category;
-        
+
         // Comprehensive bounce detection
         const bounceErrorCodes = [
           'INVALID_PHONE', 'PHONE_NOT_REACHABLE', 'BLOCKED_NUMBER',
           'SUBSCRIBER_NOT_FOUND', 'NUMBER_PORTED', 'DEVICE_OFFLINE',
           'RCS_NOT_SUPPORTED', 'CAPABILITY_EXPIRED'
         ];
-        
+
         if (errorCode && bounceErrorCodes.includes(errorCode)) {
           newStatus = 'bounced';
           statType = 'bounced';
@@ -183,12 +183,12 @@ async function processWebhookData(data, timestamp) {
           statType = 'failed';
           console.log(`[Webhook] ❌ Message FAILED: ${messageId} - ${errorCode}`);
         }
-        
+
         updateData.failedAt = new Date(sendTime || timestamp);
         updateData.errorCode = errorCode || 'UNKNOWN';
         updateData.errorMessage = data?.entity?.error?.message || 'Unknown error';
         break;
-        
+
       case "MESSAGE_EXPIRED":
         newStatus = 'failed';
         statType = 'failed';
@@ -197,7 +197,7 @@ async function processWebhookData(data, timestamp) {
         updateData.errorMessage = 'Message expired before delivery';
         console.log(`[Webhook] ⏰ Message EXPIRED: ${messageId}`);
         break;
-        
+
       case "MESSAGE_REVOKED":
         newStatus = 'failed';
         statType = 'failed';
@@ -206,14 +206,14 @@ async function processWebhookData(data, timestamp) {
         updateData.errorMessage = 'Message was revoked';
         console.log(`[Webhook] 🚫 Message REVOKED: ${messageId}`);
         break;
-        
+
       default:
         console.warn(`[Webhook] Unknown event type: ${eventType}`);
         return;
     }
-    
+
     updateData.status = newStatus;
-      
+
     // Define valid status progressions
     const statusHierarchy = {
       'pending': 0,
@@ -224,27 +224,51 @@ async function processWebhookData(data, timestamp) {
       'bounced': 4,
       'replied': 5
     };
+
+    // Get current message to check status progression - try multiple lookup methods
+    let currentMessage = await Message.findOne({ messageId }, 'status').lean();
     
-    // Get current message to check status progression
-    const currentMessage = await Message.findOne({ messageId }, 'status').lean();
+    // If not found by messageId, try other possible fields
     if (!currentMessage) {
-      console.warn(`[Webhook] Message not found: ${messageId}`);
-      return;
+      // Try finding by Jio message ID patterns
+      currentMessage = await Message.findOne({ 
+        $or: [
+          { jioMessageId: messageId },
+          { externalMessageId: messageId },
+          { 'metadata.jioMessageId': messageId },
+          { messageId: { $regex: messageId.split('_')[0] } } // Try partial match
+        ]
+      }, 'status').lean();
     }
     
+    if (!currentMessage) {
+      console.warn(`[Webhook] Message not found with any lookup method: ${messageId}`);
+      // Log available messages for debugging
+      const recentMessages = await Message.find({}).sort({ createdAt: -1 }).limit(5).select('messageId jioMessageId externalMessageId').lean();
+      console.log('[Webhook] Recent messages in DB:', recentMessages);
+      return;
+    }
+
     const currentStatusLevel = statusHierarchy[currentMessage.status] || 0;
     const newStatusLevel = statusHierarchy[newStatus] || 0;
-    
+
     // Only update if new status is higher in hierarchy or same level (for retries)
     if (newStatusLevel < currentStatusLevel) {
       console.log(`[Webhook] Skipping status downgrade: ${currentMessage.status} → ${newStatus} for ${messageId}`);
       return;
     }
-    
+
     // Update message, campaign recipient status, and increment Redis stats
     const [message, campaignId] = await Promise.all([
       Message.findOneAndUpdate(
-        { messageId },
+        { 
+          $or: [
+            { messageId },
+            { jioMessageId: messageId },
+            { externalMessageId: messageId },
+            { 'metadata.jioMessageId': messageId }
+          ]
+        },
         {
           status: newStatus,
           lastWebhookAt: new Date(sendTime || timestamp),
@@ -256,27 +280,28 @@ async function processWebhookData(data, timestamp) {
           errorMessage: ['failed', 'bounced'].includes(newStatus) ? updateData.errorMessage : undefined,
           // Store additional Jio webhook metadata
           deviceType: updateData.deviceType || undefined,
-          deliveryLatency: updateData.deliveryLatency || undefined
+          deliveryLatency: updateData.deliveryLatency || undefined,
+          jioMessageId: messageId // Store Jio message ID for future lookups
         },
         { new: true, lean: true }
       ),
       getCampaignIdFromMessage(messageId)
     ]);
-    
+
     if (!message || !campaignId) {
       console.warn(`[Webhook] Message or campaign not found, or status unchanged: ${messageId}`);
       return;
     }
-    
+
     // Update campaign recipient status and increment Redis stats (only if message was updated)
     await Promise.all([
       // Update recipient status in campaign (allow status progression)
       Campaign.updateOne(
-        { 
+        {
           _id: campaignId,
           'recipients.phoneNumber': userPhoneNumber
         },
-        { 
+        {
           $set: {
             'recipients.$.status': newStatus,
             'recipients.$.sentAt': newStatus === 'sent' ? new Date(sendTime || timestamp) : undefined,
@@ -299,7 +324,7 @@ async function processWebhookData(data, timestamp) {
       // Increment Redis stats for real-time performance (only if statType is valid)
       statType && campaignId ? statsService.incrementStat(campaignId, statType) : Promise.resolve()
     ]);
-    
+
     // Emit real-time update via Socket.IO (if available)
     if (global.io && campaignId) {
       global.io.to(`campaign_${campaignId}`).emit('message_status_update', {
@@ -311,9 +336,9 @@ async function processWebhookData(data, timestamp) {
         eventType
       });
     }
-    
+
     console.log(`[Webhook] ✅ ${eventType} processed for ${messageId} → ${newStatus}`);
-    
+
   } catch (error) {
     console.error('[Webhook] Error processing status update:', error);
     throw error;
@@ -328,28 +353,28 @@ async function processUserInteraction(data, timestamp) {
     const suggestionResponse = userMessage?.suggestionResponse;
     const userText = userMessage?.text;
     const userPhoneNumber = data?.userPhoneNumber || data?.webhookData?.phoneNumber;
-    
+
     if (!orgMsgId) {
       console.warn('[Webhook] No orgMsgId found in user interaction');
       return;
     }
-    
+
     console.log(`[Webhook] Processing user interaction for ${orgMsgId}`);
-    
+
     // Get campaignId once before Promise.all
     const campaignId = await getCampaignIdFromMessage(orgMsgId);
     if (!campaignId) {
       console.warn(`[Webhook] Campaign not found for message: ${orgMsgId}`);
       return;
     }
-    
+
     let interactionType = 'text';
     const updateFields = {
       status: 'replied',
       lastInteractionAt: new Date(userMessage?.sendTime || timestamp)
     };
     const incFields = {};
-    
+
     // Handle suggestion responses (button clicks)
     if (suggestionResponse) {
       updateFields.suggestionResponse = suggestionResponse;
@@ -357,22 +382,22 @@ async function processUserInteraction(data, timestamp) {
       updateFields.clickedAction = suggestionResponse.plainText;
       interactionType = suggestionResponse.type === 'ACTION' ? 'action_click' : 'reply_click';
       incFields.userClickCount = 1;
-      
+
       console.log(`[Webhook] 🔘 Button clicked: ${suggestionResponse.plainText}`);
     }
-    
+
     // Handle text messages
     if (userText && userText.trim()) {
       updateFields.userText = userText;
       interactionType = 'text_reply';
       incFields.userReplyCount = 1;
-      
+
       console.log(`[Webhook] 💬 Text reply: ${userText}`);
     }
-    
+
     await Promise.all([
       Message.updateOne(
-        { messageId: orgMsgId }, 
+        { messageId: orgMsgId },
         {
           $set: updateFields,
           $inc: incFields
@@ -404,7 +429,7 @@ async function processUserInteraction(data, timestamp) {
       // Increment replied stat in Redis
       statsService.incrementStat(campaignId, 'replied')
     ]);
-    
+
     // Emit real-time update
     if (global.io && campaignId) {
       global.io.to(`campaign_${campaignId}`).emit('user_interaction', {
@@ -417,9 +442,9 @@ async function processUserInteraction(data, timestamp) {
         timestamp: userMessage?.sendTime || timestamp
       });
     }
-    
+
     console.log(`[Webhook] ✅ User interaction processed for ${orgMsgId} - ${interactionType}`);
-    
+
   } catch (error) {
     console.error('[Webhook] Error processing user interaction:', error);
     throw error;
@@ -460,14 +485,14 @@ export const handleStatusUpdate = async (req, res) => {
   try {
     // Immediate response
     res.json({ success: true });
-    
+
     const { messageId, status, timestamp, errorCode, errorMessage } = req.body;
-    
+
     if (!messageId || !status) {
       console.warn('[Webhook] Invalid status update data');
       return;
     }
-    
+
     // Queue for background processing
     await webhookQueue.add('status-update', {
       data: {
@@ -479,7 +504,7 @@ export const handleStatusUpdate = async (req, res) => {
       },
       timestamp: timestamp || new Date().toISOString()
     });
-    
+
   } catch (error) {
     console.error('Status update error:', error);
     if (!res.headersSent) {
