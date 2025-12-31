@@ -22,8 +22,26 @@ app.use(
   )
 );
 
-app.use(express.json({ limit: '50mb' }));
-app.use(express.static("public"));
+// High-performance middleware for large payloads
+app.use(express.json({ 
+  limit: '500mb',
+  parameterLimit: 130000,
+  extended: true
+}));
+app.use(express.urlencoded({ 
+  limit: '500mb', 
+  extended: true,
+  parameterLimit: 130000
+}));
+// Timeout middleware for large campaigns
+app.use((req, res, next) => {
+  // Increase timeout for campaign creation
+  if (req.path.includes('/campaigns') && req.method === 'POST') {
+    req.setTimeout(300000); // 5 minutes for large campaigns
+    res.setTimeout(300000);
+  }
+  next();
+});
 app.use(cookieParser());
 
 
@@ -40,12 +58,18 @@ app.use((err, req, res, next) => {
 
 //Routes Import
 import router from "./routes/index.js";
+import realtimeRoutes from "./routes/realtime.routes.js";
 import { webhookReceiver } from "./controller/webhook.controller.js";
+import { authenticateToken } from "./middlewares/auth.middleware.js";
 
 
 // app.post('https://rcssender.com/api/jio/rcs/webhooks', webhookReceiver)
 
 app.use("/api/v1", router);
+app.use("/api/realtime", authenticateToken, realtimeRoutes);
+
+// Public webhook endpoint (no auth required)
+app.post('/api/jio/rcs/webhooks', webhookReceiver);
 
 
 export default app;

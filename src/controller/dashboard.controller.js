@@ -2,39 +2,38 @@ import User from '../models/user.model.js';
 import Campaign from '../models/campaign.model.js';
 import Template from '../models/template.model.js';
 import Message from '../models/message.model.js';
+import MessageLog from '../models/messageLog.model.js';
+import statsService from '../services/CampaignStatsService.js';
 
-// Get dashboard stats
+// Get dashboard stats with real-time data
 export const getDashboardStats = async (req, res) => {
   try {
     const { userId } = req.params;
 
+    // Use optimized stats service for real-time data
+    const messageStats = await statsService.getMessageStats(userId, '24h');
+    
     const [
       totalCampaigns,
-      totalTemplates,
-      totalMessages,
-      successCount,
-      failedCount,
-      pendingCount
+      totalTemplates
     ] = await Promise.all([
       Campaign.countDocuments({ userId }),
-      Template.countDocuments({ userId, isActive: true }),
-      Message.countDocuments({ userId }),
-      Message.countDocuments({ userId, status: 'delivered' }),
-      Message.countDocuments({ userId, status: 'failed' }),
-      Message.countDocuments({ userId, status: { $in: ['pending', 'queued'] } })
+      Template.countDocuments({ userId, isActive: true })
     ]);
 
     res.json({
       success: true,
       data: {
         totalCampaigns,
-        sendtoteltemplet: totalTemplates,
-        totalMessages,
-        totalSuccessCount: successCount,
-        totalFailedCount: failedCount,
-        pendingMessages: pendingCount,
-        sentMessages: successCount,
-        failedMessages: failedCount
+        totalTemplates,
+        totalMessages: messageStats?.totalMessages || 0,
+        totalSuccessCount: messageStats?.totalSuccessCount || 0,
+        totalFailedCount: messageStats?.totalFailedCount || 0,
+        pendingMessages: messageStats?.pendingMessages || 0,
+        sentMessages: messageStats?.totalSuccessCount || 0,
+        failedMessages: messageStats?.totalFailedCount || 0,
+        deliveredMessages: messageStats?.totalSuccessCount || 0,
+        totalCost: messageStats?.totalCost || 0
       }
     });
   } catch (error) {

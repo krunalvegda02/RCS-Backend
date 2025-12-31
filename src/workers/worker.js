@@ -1,25 +1,29 @@
 #!/usr/bin/env node
 
 // Background Worker Process - Run separately from main API server
-// Usage: node worker.js
+// Usage: WORKER_MODE=true node worker.js
 
 import mongoose from 'mongoose';
 import BackgroundWorkerService from '../services/BackgroundWorkerService.js';
 import '../models/campaign.model.js';
 import '../models/message.model.js';
+import '../models/messageLog.model.js';
 import '../models/template.model.js';
 
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/rcs_messaging';
+// Set worker mode to prevent CampaignStatsService auto-sync
+process.env.WORKER_MODE = 'true';
+
+const MONGODB_URI = process.env.MONGODB_URI;
 
 async function startWorker() {
   try {
-    // Connect to MongoDB
     await mongoose.connect(MONGODB_URI);
     console.log('✅ Worker connected to MongoDB');
 
-    // Initialize background worker service
+    // Initialize background worker service (now properly instantiated)
+    const worker = new BackgroundWorkerService();
     console.log('🚀 Background Worker Service started');
-    console.log('📊 Processing campaigns, syncing stats, and cleaning up data...');
+    console.log('📊 Processing stats sync and data cleanup...');
 
     // Graceful shutdown
     process.on('SIGTERM', async () => {

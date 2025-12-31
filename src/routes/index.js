@@ -8,6 +8,7 @@ import webhookRoutes from './webhook.routes.js';
 import uploadRoutes from './upload.routes.js';
 import dashboardRoutes from './dashboard.routes.js';
 import campaignReportRoutes from './campaignReport.routes.js';
+import analyticsRoutes from './analytics.routes.js';
 import * as CampaignController from '../controller/campaign.controller.js';
 import { authenticateToken, requireUser } from '../middlewares/auth.middleware.js';
 
@@ -24,6 +25,7 @@ router.use('/reports', reportRoutes);
 router.use('/uploads', uploadRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/campaign-reports', campaignReportRoutes);
+router.use('/analytics', analyticsRoutes);
 
 router.use('/webhooks', webhookRoutes);
 

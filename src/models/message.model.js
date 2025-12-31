@@ -68,16 +68,13 @@ const messageSchema = new mongoose.Schema(
       index: true,
     },
 
-    // Timestamps
-    createdAt: {
-      type: Date,
-      default: Date.now,
-      index: true,
-    },
+   
     queuedAt: Date,
     sentAt: Date,
     deliveredAt: Date,
+    readAt: Date,
     failedAt: Date,
+    lastWebhookAt: Date,
 
     // Error Handling
     errorCode: String,
@@ -92,6 +89,17 @@ const messageSchema = new mongoose.Schema(
     clickedAt: Date,
     clickedAction: String,
     clickedUri: String,
+    userText: String,
+    suggestionResponse: mongoose.Schema.Types.Mixed,
+    userClickCount: {
+      type: Number,
+      default: 0,
+    },
+    userReplyCount: {
+      type: Number,
+      default: 0,
+    },
+    lastInteractionAt: Date,
 
     // Metadata
     deviceType: String,
@@ -150,6 +158,12 @@ messageSchema.methods.markAsDelivered = async function () {
   await this.save();
 };
 
+messageSchema.methods.markAsRead = async function () {
+  this.status = 'read';
+  this.readAt = new Date();
+  await this.save();
+};
+
 messageSchema.methods.markAsFailed = async function (errorCode, errorMessage) {
   this.status = 'failed';
   this.failedAt = new Date();
@@ -199,7 +213,7 @@ messageSchema.statics.getDailyStats = async function (userId, date) {
   return this.aggregate([
     {
       $match: {
-        userId: mongoose.Types.ObjectId(userId),
+        userId: new mongoose.Types.ObjectId(userId),
         createdAt: { $gte: startOfDay, $lte: endOfDay },
       },
     },

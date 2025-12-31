@@ -1,4 +1,5 @@
 import CampaignReport from '../models/campaignReport.model.js';
+import Campaign from '../models/campaign.model.js';
 
 // Generate report for a campaign
 export const generateCampaignReport = async (req, res) => {
@@ -45,22 +46,45 @@ export const getCampaignReport = async (req, res) => {
   }
 };
 
-// Get all reports for a user
+// Get all campaigns for a user (modified to return campaigns instead of reports)
 export const getUserCampaignReports = async (req, res) => {
   try {
     const { userId } = req.params;
     const { page = 1, limit = 10 } = req.query;
     
-    const reports = await CampaignReport.find({ userId })
-      .sort({ generatedAt: -1 })
+    const campaigns = await Campaign.find({ userId })
+      .sort({ createdAt: -1 })
       .limit(limit * 1)
-      .skip((page - 1) * limit);
+      .skip((page - 1) * limit)
+      .select('name description status stats estimatedCost actualCost createdAt completedAt recipients')
+      .lean();
     
-    const total = await CampaignReport.countDocuments({ userId });
+    // Transform campaigns to match frontend expectations
+    const transformedCampaigns = campaigns.map(campaign => ({
+      _id: campaign._id,
+      CampaignName: campaign.name,
+      type: 'RCS',
+      cost: campaign.recipients?.length || 0,
+      successCount: campaign.stats?.sent || 0,
+      failedCount: campaign.stats?.failed || 0,
+      bouncedCount: campaign.stats?.bounced || 0,
+      totalDelivered: campaign.stats?.delivered || 0,
+      totalRead: campaign.stats?.read || 0,
+      totalReplied: campaign.stats?.replied || 0,
+      userClickCount: campaign.stats?.replied || 0,
+      createdAt: campaign.createdAt,
+      completedAt: campaign.completedAt,
+      status: campaign.status,
+      recipients: campaign.recipients,
+      actualCost: campaign.actualCost || 0,
+      estimatedCost: campaign.estimatedCost || 0
+    }));
+    
+    const total = await Campaign.countDocuments({ userId });
     
     res.json({
       success: true,
-      data: reports,
+      data: transformedCampaigns,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -71,33 +95,61 @@ export const getUserCampaignReports = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch user campaign reports',
+      message: 'Failed to fetch user campaigns',
       error: error.message
     });
   }
 };
 
-// Delete campaign report
-export const deleteCampaignReport = async (req, res) => {
+// Get campaign messages with status
+export const getCampaignMessages = async (req, res) => {
   try {
     const { campaignId } = req.params;
-    const report = await CampaignReport.findOneAndDelete({ campaignId });
+    const { page = 1, limit = 20 } = req.query;
     
-    if (!report) {
+    const campaign = await Campaign.findById(campaignId)
+      .select('recipients name')
+      .lean();
+    
+    if (!campaign) {
       return res.status(404).json({
         success: false,
-        message: 'Campaign report not found'
+        message: 'Campaign not found'
       });
     }
     
+    // Paginate recipients
+    const startIndex = (page - 1) * limit;
+    const endIndex = startIndex + parseInt(limit);
+    const paginatedRecipients = campaign.recipients.slice(startIndex, endIndex);
+    
     res.json({
       success: true,
-      message: 'Campaign report deleted successfully'
+      data: {
+        campaignName: campaign.name,
+        messages: paginatedRecipients.map(recipient => ({
+          _id: recipient._id,
+          phoneNumber: recipient.phoneNumber,
+          status: recipient.status,
+          isRcsCapable: recipient.isRcsCapable,
+          sentAt: recipient.sentAt,
+          deliveredAt: recipient.deliveredAt,
+          readAt: recipient.readAt,
+          failedAt: recipient.failedAt,
+          errorMessage: recipient.errorMessage
+        }))
+      },
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: campaign.recipients.length,
+        pages: Math.ceil(campaign.recipients.length / limit)
+      }
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Failed to delete campaign report',
+      message: 'Failed to fetch campaign messages',
       error: error.message
     });
   }

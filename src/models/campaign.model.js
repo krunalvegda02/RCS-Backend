@@ -37,7 +37,7 @@ const campaignSchema = new mongoose.Schema(
           variables: mongoose.Schema.Types.Mixed, // For dynamic content
           status: {
             type: String,
-            enum: ['pending', 'processing', 'sent', 'failed', 'bounced'],
+            enum: ['pending', 'processing', 'sent', 'delivered', 'read', 'replied', 'failed', 'bounced'],
             default: 'pending',
           },
           isRcsCapable: {
@@ -46,6 +46,11 @@ const campaignSchema = new mongoose.Schema(
           },
           messageId: String,
           sentAt: Date,
+          deliveredAt: Date,
+          readAt: Date,
+          failedAt: Date,
+          lastInteractionAt: Date,
+          errorMessage: String,
           failureReason: String,
         },
       ],
@@ -76,7 +81,23 @@ const campaignSchema = new mongoose.Schema(
         type: Number,
         default: 0,
       },
+      delivered: {
+        type: Number,
+        default: 0,
+      },
+      read: {
+        type: Number,
+        default: 0,
+      },
+      replied: {
+        type: Number,
+        default: 0,
+      },
       failed: {
+        type: Number,
+        default: 0,
+      },
+      bounced: {
         type: Number,
         default: 0,
       },
@@ -174,13 +195,18 @@ campaignSchema.methods.updateStats = async function () {
   const stats = {
     total: this.recipients.length,
     sent: this.recipients.filter(r => r.status === 'sent').length,
+    delivered: this.recipients.filter(r => r.status === 'delivered').length,
+    read: this.recipients.filter(r => r.status === 'read').length,
+    replied: this.recipients.filter(r => r.status === 'replied').length,
     failed: this.recipients.filter(r => r.status === 'failed').length,
+    bounced: this.recipients.filter(r => r.status === 'bounced').length,
     pending: this.recipients.filter(r => r.status === 'pending').length,
     processing: this.recipients.filter(r => r.status === 'processing').length,
+    rcsCapable: this.recipients.filter(r => r.isRcsCapable === true).length,
   };
 
-  stats.successRate = stats.total > 0 ? (stats.sent / stats.total) * 100 : 0;
-  stats.failureRate = stats.total > 0 ? (stats.failed / stats.total) * 100 : 0;
+  stats.successRate = stats.total > 0 ? (stats.delivered / stats.total) * 100 : 0;
+  stats.failureRate = stats.total > 0 ? ((stats.failed + stats.bounced) / stats.total) * 100 : 0;
   stats.lastUpdatedAt = new Date();
 
   this.stats = stats;

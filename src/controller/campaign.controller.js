@@ -40,6 +40,16 @@ export const create = async (req, res) => {
     const { name, description, templateId, recipients, batchSize, autoStart = true } = req.body;
     const userId = req.user._id;
 
+    // Immediate response for large campaigns
+    if (recipients.length > 10000) {
+      res.status(202).json({
+        success: true,
+        message: `Large campaign accepted for processing. ${recipients.length} recipients will be processed in background.`,
+        campaignSize: recipients.length,
+        processing: true
+      });
+    }
+
     const template = await Template.getValidTemplate(templateId, userId);
 
     if (!Array.isArray(recipients) || recipients.length === 0) {
@@ -55,13 +65,34 @@ export const create = async (req, res) => {
 
     // Check wallet balance for RCS capable numbers only
     if (req.user.wallet.balance < actualCost) {
-      return res.status(402).json({
-        success: false,
-        message: 'Insufficient wallet balance',
-        required: actualCost,
-        available: req.user.wallet.balance,
-      });
+      if (!res.headersSent) {
+        return res.status(402).json({
+          success: false,
+          message: 'Insufficient wallet balance',
+          required: actualCost,
+          available: req.user.wallet.balance,
+        });
+      }
+      return;
     }
+
+    // Check rate limits for large campaigns
+    if (!req.user.checkRateLimit('messages')) {
+      if (!res.headersSent) {
+        return res.status(429).json({
+          success: false,
+          message: 'Daily message limit exceeded',
+          limit: req.user.rateLimits.messagesPerDay,
+          used: req.user.rateLimits.currentDayUsage.messages,
+        });
+      }
+      return;
+    }
+
+    // Dynamic batch size based on campaign volume (max 500)
+    const optimizedBatchSize = recipients.length > 50000 ? 500 : 
+                              recipients.length > 10000 ? 300 : 
+                              recipients.length > 1000 ? 200 : 100;
 
     const campaign = await Campaign.create({
       name,
@@ -74,7 +105,7 @@ export const create = async (req, res) => {
         status: 'pending',
         isRcsCapable: r.isRcsCapable || false,
       })),
-      batchSize: batchSize || 100,
+      batchSize: batchSize || optimizedBatchSize,
       createdBy: userId,
       stats: {
         total: recipients.length,
@@ -99,28 +130,54 @@ export const create = async (req, res) => {
 
     // Auto-start campaign processing if requested
     if (autoStart) {
-      console.log(`[Campaign] Starting background processing for campaign ${campaign._id}`);
-      setImmediate(() => {
-        console.log(`[Campaign] Calling processCampaignBatch for ${campaign._id}`);
-        jioRCSService.processCampaignBatch(campaign._id, campaign.batchSize, 1000)
-          .catch(error => {
-            console.error(`[Campaign] Background processing failed for ${campaign._id}:`, error);
-          });
-      });
+      console.log(`[Campaign] Starting background processing for campaign ${campaign._id} with ${recipients.length} recipients`);
+      
+      // Update user usage stats
+      await req.user.incrementUsage('campaigns', 1);
+      await req.user.incrementUsage('messages', rcsCapableRecipients.length);
+      
+      // For large campaigns, use setImmediate to prevent blocking
+      if (recipients.length > 10000) {
+        setImmediate(() => {
+          jioRCSService.processCampaignBatch(campaign._id, optimizedBatchSize, 500)
+            .catch(error => {
+              console.error(`[Campaign] Background processing failed for ${campaign._id}:`, error);
+              // Mark campaign as failed
+              Campaign.updateOne({ _id: campaign._id }, { status: 'failed' }).catch(console.error);
+            });
+        });
+      } else {
+        setImmediate(() => {
+          jioRCSService.processCampaignBatch(campaign._id, optimizedBatchSize, 1000)
+            .catch(error => {
+              console.error(`[Campaign] Background processing failed for ${campaign._id}:`, error);
+              // Mark campaign as failed
+              Campaign.updateOne({ _id: campaign._id }, { status: 'failed' }).catch(console.error);
+            });
+        });
+      }
     }
 
-    res.status(201).json({
-      success: true,
-      message: autoStart 
-        ? `Campaign created and started! Processing ${recipients.length} total recipients (${rcsCapableRecipients.length} RCS capable, ₹${actualCost} charged)`
-        : 'Campaign created successfully',
-      data: campaign,
-    });
+    // Send appropriate response based on campaign size
+    if (recipients.length <= 10000) {
+      res.status(201).json({
+        success: true,
+        message: autoStart 
+          ? `Campaign created and started! Processing ${recipients.length} total recipients (${rcsCapableRecipients.length} RCS capable, ₹${actualCost} charged)`
+          : 'Campaign created successfully',
+        data: campaign,
+      });
+    }
+    // Large campaigns already responded above
+    
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    console.error('[Campaign] Creation error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        message: error.message,
+      });
+    }
   }
 };
 

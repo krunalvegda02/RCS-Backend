@@ -1,5 +1,5 @@
 import Message from '../models/message.model.js';
-import { APIResult } from '../models/APIReport.model.js';
+import MessageLog from '../models/messageLog.model.js';
 
 // Get messages
 export const getAll = async (req, res) => {
@@ -56,13 +56,13 @@ export const getById = async (req, res) => {
       });
     }
 
-    const apiResult = await APIResult.findOne({ messageId: id });
+    const messageLog = await MessageLog.findOne({ messageId: id }).lean();
 
     res.json({
       success: true,
       data: {
         message,
-        apiResult,
+        messageLog,
       },
     });
   } catch (error) {

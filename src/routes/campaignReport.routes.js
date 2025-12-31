@@ -3,7 +3,7 @@ import {
   generateCampaignReport, 
   getCampaignReport, 
   getUserCampaignReports, 
-  deleteCampaignReport 
+  getCampaignMessages 
 } from '../controller/campaignReport.controller.js';
 import { authenticateToken } from '../middlewares/auth.middleware.js';
 
@@ -15,10 +15,10 @@ router.post('/generate/:campaignId', authenticateToken, generateCampaignReport);
 // Get report by campaign ID
 router.get('/campaign/:campaignId', authenticateToken, getCampaignReport);
 
+// Get campaign messages
+router.get('/campaign/:campaignId/messages', authenticateToken, getCampaignMessages);
+
 // Get all reports for a user
 router.get('/user/:userId', authenticateToken, getUserCampaignReports);
-
-// Delete campaign report
-router.delete('/campaign/:campaignId', authenticateToken, deleteCampaignReport);
 
 export default router;
