@@ -128,73 +128,18 @@ export async function processWebhookData(data, timestamp) {
       'replied': 5
     };
 
-    // Get current message to check status progression - use model fields
+    // Simple message lookup - webhook messageId matches rcsMessageId in database
     let currentMessage = await Message.findOne({
-      $or: [
-        { messageId },
-        { jioMessageId: messageId },
-        { externalMessageId: messageId },
-        { rcsMessageId: messageId }
-      ]
+      rcsMessageId: messageId
     }, 'status messageId').lean();
     
     if (!currentMessage) {
-      console.log(`[Webhook] Message not found: ${messageId}`);
-      // Enhanced debugging with phone number matching
-      const phoneWithoutCountryCode = userPhoneNumber?.replace(/^\+91/, '') || '';
-      const phoneWithCountryCode = userPhoneNumber?.startsWith('+91') ? userPhoneNumber : `+91${userPhoneNumber}`;
-      
-      // Try finding by phone number if message ID lookup fails
-      currentMessage = await Message.findOne({
-        $and: [
-          {
-            $or: [
-              { recipientPhoneNumber: userPhoneNumber },
-              { recipientPhoneNumber: phoneWithoutCountryCode },
-              { recipientPhoneNumber: phoneWithCountryCode }
-            ]
-          },
-          { createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } } // Last 24h
-        ]
-      }, 'status messageId').lean();
-      
-      if (currentMessage) {
-        console.log(`[Webhook] Found message by phone number: ${currentMessage.messageId}`);
-        // Update the message with Jio messageId for future lookups
-        await Message.updateOne(
-          { _id: currentMessage._id },
-          { jioMessageId: messageId, rcsMessageId: messageId }
-        );
-      } else {
-        // Enhanced debugging - check database connection and queries
-        console.log(`[Webhook] No message found for phone: ${userPhoneNumber}`);
-        console.log(`[Webhook] Normalized phones: ${phoneWithoutCountryCode}, ${phoneWithCountryCode}`);
-        
-        // Check total message count
-        const totalMessages = await Message.countDocuments();
-        console.log(`[Webhook] Total messages in DB: ${totalMessages}`);
-        
-        // Check recent messages with more details
-        const recent = await Message.find({})
-          .sort({ createdAt: -1 })
-          .limit(5)
-          .select('messageId jioMessageId rcsMessageId externalMessageId recipientPhoneNumber createdAt status')
-          .lean();
-        console.log('[Webhook] Recent messages with details:', recent);
-        
-        // Check if any message matches the phone number
-        const phoneMatches = await Message.find({
-          $or: [
-            { recipientPhoneNumber: userPhoneNumber },
-            { recipientPhoneNumber: phoneWithoutCountryCode },
-            { recipientPhoneNumber: phoneWithCountryCode }
-          ]
-        }).select('messageId recipientPhoneNumber').lean();
-        console.log('[Webhook] Phone number matches:', phoneMatches);
-        
-        return;
-      }
+      console.log(`[Webhook] Message not found with rcsMessageId: ${messageId}`);
+      return;
     }
+    
+    console.log(`[Webhook] Found message: ${currentMessage.messageId}`);
+
 
     const currentStatusLevel = statusHierarchy[currentMessage.status] || 0;
     const newStatusLevel = statusHierarchy[newStatus] || 0;
@@ -205,18 +150,10 @@ export async function processWebhookData(data, timestamp) {
       return;
     }
 
-    // Update message with proper field mapping
+    // Update message using rcsMessageId
     const [message, campaignId] = await Promise.all([
       Message.findOneAndUpdate(
-        { 
-          $or: [
-            { messageId },
-            { jioMessageId: messageId },
-            { externalMessageId: messageId },
-            { rcsMessageId: messageId },
-            { messageId: currentMessage.messageId } // Use found message ID
-          ]
-        },
+        { rcsMessageId: messageId },
         {
           status: newStatus,
           lastWebhookAt: new Date(sendTime || timestamp),
@@ -227,14 +164,11 @@ export async function processWebhookData(data, timestamp) {
           errorCode: ['failed', 'bounced'].includes(newStatus) ? updateData.errorCode : undefined,
           errorMessage: ['failed', 'bounced'].includes(newStatus) ? updateData.errorMessage : undefined,
           deviceType: updateData.deviceType || undefined,
-          deliveryLatency: updateData.deliveryLatency || undefined,
-          // Store Jio messageId for future lookups
-          jioMessageId: messageId,
-          externalMessageId: messageId
+          deliveryLatency: updateData.deliveryLatency || undefined
         },
         { new: true, lean: true }
       ),
-      getCampaignIdFromMessage(currentMessage.messageId || messageId)
+      getCampaignIdFromMessage(currentMessage.messageId)
     ]);
 
     if (!message || !campaignId) {
