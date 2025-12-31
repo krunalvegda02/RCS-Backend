@@ -67,6 +67,11 @@ async function startWorker() {
     const backgroundWorker = new BackgroundWorkerService(statsQueue);
     console.log('🚀 Background Worker Service started');
 
+    // Send ready signal to PM2
+    if (process.send) {
+      process.send('ready');
+    }
+
     // Graceful shutdown
     const shutdown = async () => {
       console.log('🛑 Shutting down worker...');
