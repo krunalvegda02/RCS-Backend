@@ -149,6 +149,15 @@ export async function processWebhookData(data, timestamp) {
         
         if (totalMessages === 0) {
           console.log('[Webhook] Database appears empty - connection issue?');
+          
+          // Debug: Check what collections exist
+          const collections = await mongoose.connection.db.listCollections().toArray();
+          console.log('[Webhook] Available collections:', collections.map(c => c.name));
+          
+          // Check if messages collection exists with different name
+          const messageCollections = collections.filter(c => c.name.toLowerCase().includes('message'));
+          console.log('[Webhook] Message-related collections:', messageCollections.map(c => c.name));
+          
           return;
         }
         
