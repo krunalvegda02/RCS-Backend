@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import jioRCSService from "./services/JioRCS.service.js";
-import { createAdmin } from "./utils/createAdmin.js";
+// import { createAdmin } from "./utils/createAdmin.js";
 
 const app = express();
 
@@ -11,7 +11,7 @@ const rcsService = jioRCSService;
 console.log('Jio RCS Service initialized');
 
 // Create admin on startup
-createAdmin();
+// createAdmin();
 
 app.use(
   cors(

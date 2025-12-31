@@ -4,7 +4,13 @@ import app from "../app.js";
 const connectDB = async () => {
   try {
     const connectionInstance = await mongoose.connect(
-      `${process.env.MONGODB_URI}`
+      `${process.env.MONGODB_URI}`,
+      {
+        serverSelectionTimeoutMS: 30000,
+        socketTimeoutMS: 45000,
+        maxPoolSize: 10,
+        minPoolSize: 5
+      }
     );
     app.on("error", () => {
       console.log("Express Error:", error);

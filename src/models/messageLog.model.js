@@ -11,7 +11,6 @@ const messageLogSchema = new mongoose.Schema(
     campaignId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Campaign',
-      index: true,
     },
     userId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -69,7 +68,6 @@ const messageLogSchema = new mongoose.Schema(
     timestamp: {
       type: Date,
       default: Date.now,
-      index: true,
     },
     responseTimeMs: Number,
 
