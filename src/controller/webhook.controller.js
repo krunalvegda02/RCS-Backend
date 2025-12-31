@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import Message from '../models/message.model.js';
 import MessageLog from '../models/messageLog.model.js';
 import Campaign from '../models/campaign.model.js';
@@ -16,6 +17,11 @@ export const webhookReceiver = async (req, res) => {
 // Process Jio webhook status updates
 export async function processWebhookData(data, timestamp) {
   try {
+    // Debug: Log database connection info
+    console.log('[Webhook] Database connection:', mongoose.connection.name);
+    console.log('[Webhook] Database host:', mongoose.connection.host);
+    console.log('[Webhook] Database state:', mongoose.connection.readyState);
+    
     const entityType = data?.entityType;
     const eventType = data?.entity?.eventType || data?.webhookData?.eventType || data?.eventType;
     const messageId = data?.entity?.messageId || data?.messageId;
