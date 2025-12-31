@@ -11,11 +11,10 @@ import '../models/messageLog.model.js';
 import '../models/template.model.js';
 import { processWebhookData, processUserInteraction } from '../controller/webhook.controller.js';
 import BackgroundWorkerService from '../services/BackgroundWorkerService.js';
+import connectDB from '../db/index.js';
 
 // Set worker mode
 process.env.WORKER_MODE = 'true';
-
-const MONGODB_URI = process.env.MONGODB_URI;
 
 // Initialize ALL queues with processing
 const webhookQueue = new Bull('webhook-processing', {
@@ -44,8 +43,10 @@ const statsQueue = new Bull('background-stats-sync', {
 
 async function startWorker() {
   try {
-    await mongoose.connect(MONGODB_URI);
+    await connectDB();
     console.log('✅ Worker connected to MongoDB');
+    console.log('Worker Database:', mongoose.connection.name);
+    console.log('Worker Host:', mongoose.connection.host);
 
     // Process webhook jobs from API
     webhookQueue.process('webhook-data', 50, async (job) => {
