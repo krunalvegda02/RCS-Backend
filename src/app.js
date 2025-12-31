@@ -65,21 +65,7 @@ import { authenticateToken } from "./middlewares/auth.middleware.js";
 app.use("/api/v1", router);
 app.use("/api/realtime", authenticateToken, realtimeRoutes);
 
-// Test webhook endpoint
-app.get('/api/v1/jio/rcs/webhooks', (req, res) => {
-  console.log('🧪 Webhook GET test accessed');
-  res.json({ message: 'Webhook endpoint is working', timestamp: new Date() });
-});
-
-app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
-  console.log('🔔 WEBHOOK RECEIVED:', {
-    timestamp: new Date().toISOString(),
-    method: req.method,
-    url: req.url,
-    headers: req.headers,
-    body: req.body
-  });
-  
+app.post('/api/v1/jio/rcs/webhooks', (req, res) => {  
   res.status(200).json({
     success: true,
     message: 'Webhook received',
@@ -90,13 +76,12 @@ app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
   setImmediate(async () => {
     try {
       console.log('Processing webhook data...');
-      // Create a mock response object since we already sent the response
       const mockRes = {
         headersSent: true,
         status: () => mockRes,
         json: () => mockRes
       };
-      await webhookReceiver(req, mockRes);
+      await webhookReceiver(req.body, mockRes);
     } catch (error) {
       console.error('Webhook processing error:', error);
     }

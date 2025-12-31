@@ -9,7 +9,7 @@ import statsService from '../services/CampaignStatsService.js';
 let redisClient = null;
 try {
   redisClient = createClient({
-    url: `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || 6379}`,
+    url: `redis://${process.env.REDIS_HOST}:${process.env.REDIS_PORT}`,
     socket: {
       reconnectStrategy: (retries) => Math.min(retries * 50, 500)
     }
@@ -58,56 +58,35 @@ webhookQueue.process('user-interaction', 100, async (job) => {
 
 
 
-// Standard webhook receiver with immediate logging and response
+// Ultra-lightweight webhook receiver - responds immediately, queues everything
 export const webhookReceiver = async (req, res) => {
-  const timestamp = new Date().toISOString();
+  console.log(JSON.stringify(req.body))
+  const timestamp = Date.now();
   const requestId = Math.random().toString(36).substr(2, 9);
 
-  // Immediate logging
-  console.log('🔔 [WEBHOOK RECEIVED]', {
-    requestId,
-    timestamp,
-    method: req.method,
-    url: req.url,
-    headers: req.headers,
-    body: JSON.stringify(req.body, null, 2),
-    ip: req.ip || req.connection.remoteAddress
-  });
-
-  // Immediate response - ALWAYS respond first
+  // Immediate response - under 10ms
   res.status(200).json({
     success: true,
-    message: "Webhook received and processing",
     requestId,
     timestamp
   });
 
-  // Background processing
-  setImmediate(async () => {
-    try {
-      const data = req.body;
-      const entityType = data?.entityType;
-      const eventType = data?.entity?.eventType;
+  // Minimal logging
+  console.log(`🔔 [${requestId}] ${req.body?.entityType}:${req.body?.entity?.eventType || 'USER_ACTION'}`);
 
-      console.log(`[Webhook-${requestId}] Processing: ${entityType}:${eventType || 'USER_INTERACTION'}`);
-
-      if (entityType === "USER_MESSAGE") {
-        await webhookQueue.add('user-interaction', { data, timestamp, requestId }, {
-          priority: 5,
-          attempts: 2
-        });
-      } else if (entityType === "STATUS_EVENT" || entityType === "USER_EVENT" || eventType) {
-        await webhookQueue.add('status-update', { data, timestamp, requestId }, {
-          priority: 10,
-          attempts: 3
-        });
-      }
-
-      console.log(`[Webhook-${requestId}] ✅ Queued successfully`);
-    } catch (error) {
-      console.error(`[Webhook-${requestId}] ❌ Error:`, error);
+  // Queue immediately - no processing
+  const data = req.body;
+  const entityType = data?.entityType;
+  
+  try {
+    if (entityType === "USER_MESSAGE") {
+      webhookQueue.add('user-interaction', { data, timestamp, requestId }, { priority: 5 });
+    } else {
+      webhookQueue.add('status-update', { data, timestamp, requestId }, { priority: 10 });
     }
-  });
+  } catch (error) {
+    console.error(`[${requestId}] Queue error:`, error.message);
+  }
 };
 
 // Process Jio webhook status updates
