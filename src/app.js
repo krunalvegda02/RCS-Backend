@@ -86,8 +86,21 @@ app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
     timestamp: new Date().toISOString()
   });
   
-  // Call original webhook receiver
-  webhookReceiver(req, res);
+  // Process webhook using the actual webhook receiver
+  setImmediate(async () => {
+    try {
+      console.log('Processing webhook data...');
+      // Create a mock response object since we already sent the response
+      const mockRes = {
+        headersSent: true,
+        status: () => mockRes,
+        json: () => mockRes
+      };
+      await webhookReceiver(req, mockRes);
+    } catch (error) {
+      console.error('Webhook processing error:', error);
+    }
+  });
 });
 
 
