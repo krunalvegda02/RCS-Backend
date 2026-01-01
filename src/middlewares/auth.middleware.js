@@ -5,11 +5,7 @@ import User from '../models/user.model.js';
 export const authenticateToken = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
-
-    console.log(authHeader)
     const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
-
-    // console.log("======token======", token);
 
     if (!token) {
       return res.status(401).json({
@@ -18,29 +14,27 @@ export const authenticateToken = async (req, res, next) => {
       });
     }
 
-    // Verify token - try access token first, then refresh token
+    // Verify token
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
     } catch (error) {
-      // If access token fails, try refresh token secret
-      if (error.name === 'JsonWebTokenError') {
-        decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET);
-      } else {
-        throw error;
+      if (error.name === 'TokenExpiredError') {
+        return res.status(401).json({
+          success: false,
+          message: 'Token expired',
+        });
       }
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token',
+      });
     }
 
     // Get user from database
-    console.log('Looking for user ID:', decoded.userId);
     const user = await User.findById(decoded.userId);
-    console.log('User found:', user ? 'Yes' : 'No');
 
     if (!user) {
-      // Check if any users exist
-      const userCount = await User.countDocuments();
-      console.log('Total users in database:', userCount);
-      
       return res.status(401).json({
         success: false,
         message: 'Invalid token - user not found',
@@ -58,20 +52,6 @@ export const authenticateToken = async (req, res, next) => {
     req.user = user;
     next();
   } catch (error) {
-    if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid token',
-      });
-    }
-
-    if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({
-        success: false,
-        message: 'Token expired',
-      });
-    }
-
     console.error('Auth middleware error:', error);
     res.status(500).json({
       success: false,

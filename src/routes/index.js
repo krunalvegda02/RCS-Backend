@@ -9,6 +9,8 @@ import uploadRoutes from './upload.routes.js';
 import dashboardRoutes from './dashboard.routes.js';
 import campaignReportRoutes from './campaignReport.routes.js';
 import analyticsRoutes from './analytics.routes.js';
+import walletRequestRoutes from './walletRequest.routes.js';
+import contactUploadRoutes from './contactUpload.routes.js';
 import * as CampaignController from '../controller/campaign.controller.js';
 import { authenticateToken, requireUser } from '../middlewares/auth.middleware.js';
 import { webhookReceiver } from '../controller/webhook.controller.js';
@@ -27,6 +29,8 @@ router.use('/uploads', uploadRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/campaign-reports', campaignReportRoutes);
 router.use('/analytics', analyticsRoutes);
+router.use('/wallet', walletRequestRoutes);
+router.use('/contacts', contactUploadRoutes);
 
 router.use('/webhooks', webhookRoutes);
 

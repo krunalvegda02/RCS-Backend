@@ -93,6 +93,33 @@ const userSchema = new mongoose.Schema(
         type: Date,
         default: Date.now,
       },
+      transactions: [{
+        type: {
+          type: String,
+          enum: ['credit', 'debit'],
+          required: true,
+        },
+        amount: {
+          type: Number,
+          required: true,
+        },
+        balanceAfter: {
+          type: Number,
+          required: true,
+        },
+        description: {
+          type: String,
+          required: true,
+        },
+        createdAt: {
+          type: Date,
+          default: Date.now,
+        },
+        processedBy: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'User',
+        },
+      }],
     },
 
     // Usage Statistics
@@ -240,21 +267,50 @@ userSchema.methods.resetLoginAttempts = async function () {
   });
 };
 
-userSchema.methods.updateWallet = async function (amount, operation = 'add') {
+userSchema.methods.updateWallet = async function (amount, operation = 'add', description = '', processedBy = null) {
   const currentBalance = this.wallet.balance || 0;
+  let newBalance;
   
   if (operation === 'add') {
-    this.wallet.balance = currentBalance + Math.abs(amount);
+    newBalance = currentBalance + Math.abs(amount);
   } else if (operation === 'subtract') {
     if (currentBalance < Math.abs(amount)) {
       throw new Error('Insufficient wallet balance');
     }
-    this.wallet.balance = currentBalance - Math.abs(amount);
+    newBalance = currentBalance - Math.abs(amount);
   }
   
+  // Add transaction record
+  const transaction = {
+    type: operation === 'add' ? 'credit' : 'debit',
+    amount: Math.abs(amount),
+    balanceAfter: newBalance,
+    description: description || `Wallet ${operation === 'add' ? 'credited' : 'debited'} by admin`,
+    processedBy: processedBy,
+    createdAt: new Date(),
+  };
+  
+  this.wallet.transactions.push(transaction);
+  this.wallet.balance = newBalance;
   this.wallet.lastUpdated = new Date();
+  
   await this.save();
   return this.wallet.balance;
+};
+
+userSchema.methods.addTransactionRecord = async function (type, amount, description, processedBy = null) {
+  const transaction = {
+    type: type,
+    amount: Math.abs(amount),
+    balanceAfter: this.wallet.balance,
+    description: description,
+    processedBy: processedBy,
+    createdAt: new Date(),
+  };
+  
+  this.wallet.transactions.push(transaction);
+  await this.save();
+  return transaction;
 };
 
 userSchema.methods.updateStats = async function (campaignData) {
@@ -319,7 +375,9 @@ userSchema.statics.createUser = async function (userData) {
   // Remove password from returned object
   const userObject = user.toObject();
   delete userObject.password;
-  delete userObject.jioConfig.clientSecret;
+  if (userObject.jioConfig) {
+    delete userObject.jioConfig.clientSecret;
+  }
   
   return userObject;
 };
@@ -328,7 +386,9 @@ userSchema.statics.createUser = async function (userData) {
 userSchema.methods.toJSON = function () {
   const userObject = this.toObject();
   delete userObject.password;
-  delete userObject.jioConfig.clientSecret;
+  if (userObject.jioConfig) {
+    delete userObject.jioConfig.clientSecret;
+  }
   delete userObject.passwordResetToken;
   delete userObject.emailVerificationToken;
   return userObject;

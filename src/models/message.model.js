@@ -85,7 +85,7 @@ const messageSchema = new mongoose.Schema(
       default: 0,
     },
     nextRetryAt: Date,
-
+    
     // Engagement Tracking
     clickedAt: Date,
     clickedAction: String,
@@ -226,5 +226,37 @@ messageSchema.statics.getDailyStats = async function (userId, date) {
     },
   ]);
 };
+
+// Post-save middleware to update campaign stats when message status changes
+messageSchema.post('save', async function(doc, next) {
+  try {
+    if (doc.campaignId && doc.isModified('status')) {
+      const Campaign = mongoose.model('Campaign');
+      const campaign = await Campaign.findById(doc.campaignId);
+      if (campaign) {
+        await campaign.updateStats();
+      }
+    }
+  } catch (error) {
+    console.error('Error updating campaign stats:', error);
+  }
+  next();
+});
+
+// Post-update middleware for findOneAndUpdate operations
+messageSchema.post('findOneAndUpdate', async function(doc, next) {
+  try {
+    if (doc && doc.campaignId) {
+      const Campaign = mongoose.model('Campaign');
+      const campaign = await Campaign.findById(doc.campaignId);
+      if (campaign) {
+        await campaign.updateStats();
+      }
+    }
+  } catch (error) {
+    console.error('Error updating campaign stats:', error);
+  }
+  next();
+});
 
 export default mongoose.model('Message', messageSchema);

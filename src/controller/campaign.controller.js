@@ -1,8 +1,58 @@
 import Campaign from '../models/campaign.model.js';
 import Template from '../models/template.model.js';
 import jioRCSService from '../services/JioRCS.service.js';
+import Redis from 'ioredis';
 
-// Check RCS capability for batch of numbers
+// Redis client for caching with fallback
+const redis = new Redis({
+  host: process.env.REDIS_HOST || 'localhost',
+  port: process.env.REDIS_PORT || 6379,
+  retryDelayOnFailover: 100,
+  maxRetriesPerRequest: 1,
+});
+
+// In-memory cache as fallback
+const memoryCache = new Map();
+let redisConnected = false;
+
+redis.on('connect', () => {
+  console.log('[Campaign Redis] Connected successfully');
+  redisConnected = true;
+});
+
+redis.on('error', (err) => {
+  console.error('[Campaign Redis] Connection error:', err);
+  redisConnected = false;
+});
+
+// Cache helper functions
+const getFromCache = async (key) => {
+  if (redisConnected) {
+    try {
+      return await redis.get(key);
+    } catch (error) {
+      console.error('[Campaign Cache] Redis get error:', error);
+    }
+  }
+  return memoryCache.get(key);
+};
+
+const setToCache = async (key, value, ttl) => {
+  if (redisConnected) {
+    try {
+      await redis.setex(key, ttl, value);
+      return;
+    } catch (error) {
+      console.error('[Campaign Cache] Redis set error:', error);
+    }
+  }
+  memoryCache.set(key, value);
+};
+
+// Cache TTL (7 days)
+const CACHE_TTL = 7 * 24 * 60 * 60;
+
+// Check RCS capability for batch of numbers with Redis caching
 export const checkCapability = async (req, res) => {
   try {
     const { phoneNumbers } = req.body;
@@ -15,7 +65,36 @@ export const checkCapability = async (req, res) => {
       });
     }
 
-    const results = await jioRCSService.checkBatchCapability(phoneNumbers, userId);
+    const results = [];
+    const uncachedNumbers = [];
+
+    // Check cache for each number
+    for (const phone of phoneNumbers) {
+      const cacheKey = `rcs_capability:${phone}`;
+      const cached = await getFromCache(cacheKey);
+      
+      if (cached) {
+        results.push(JSON.parse(cached));
+        console.log(`[Campaign] Cache hit for ${phone}`);
+      } else {
+        uncachedNumbers.push(phone);
+      }
+    }
+
+    // Check uncached numbers
+    if (uncachedNumbers.length > 0) {
+      console.log(`[Campaign] Checking ${uncachedNumbers.length} uncached numbers`);
+      const uncachedResults = await jioRCSService.checkBatchCapability(uncachedNumbers, userId);
+      
+      // Cache the results
+      for (const result of uncachedResults) {
+        const cacheKey = `rcs_capability:${result.phoneNumber}`;
+        await setToCache(cacheKey, JSON.stringify(result), CACHE_TTL);
+        console.log(`[Campaign] Cached result for ${result.phoneNumber}`);
+      }
+      
+      results.push(...uncachedResults);
+    }
     
     res.json({
       success: true,
@@ -24,9 +103,12 @@ export const checkCapability = async (req, res) => {
         total: phoneNumbers.length,
         rcsCapable: results.filter(r => r.isCapable).length,
         notCapable: results.filter(r => !r.isCapable).length,
+        fromCache: phoneNumbers.length - uncachedNumbers.length,
+        freshChecks: uncachedNumbers.length
       },
     });
   } catch (error) {
+    console.error('[Campaign] Capability check error:', error);
     res.status(500).json({
       success: false,
       message: error.message,

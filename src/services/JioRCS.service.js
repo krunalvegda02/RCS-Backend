@@ -102,6 +102,55 @@ class JioRCSService {
 
   // ===================== CAPABILITY CHECK + CACHE =====================
   /**
+   * Checks RCS capability status without caching - for real-time status checks
+   */
+  async checkCapabilityStatus(phoneNumber, userId) {
+    try {
+      const user = await User.findById(userId).select('+jioConfig.clientSecret');
+      if (!user || !user.jioConfig?.isConfigured) {
+        throw new Error('Jio RCS not configured for this user');
+      }
+
+      const formattedPhone = this.formatPhone(phoneNumber);
+      const accessToken = await this.getAccessToken(userId);
+
+      const response = await axios.get(
+        `${JIOAPI_BASE_URL}/v1/messaging/users/${formattedPhone}/capabilities`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          timeout: 10000,
+        }
+      );
+
+      const statusData = {
+        phoneNumber: formattedPhone,
+        isCapable: Array.isArray(response.data?.features) && response.data.features.length > 0,
+        features: response.data?.features || [],
+        capabilityToken: response.data?.capabilityToken || null,
+        checkedAt: new Date(),
+        statusCode: response.status
+      };
+
+      return statusData;
+    } catch (error) {
+      console.error(`[RCS] Capability status check failed for ${phoneNumber}:`, error.message);
+      
+      return {
+        phoneNumber: this.formatPhone(phoneNumber),
+        isCapable: false,
+        features: [],
+        capabilityToken: null,
+        checkedAt: new Date(),
+        error: error.message,
+        statusCode: error.response?.status || 500
+      };
+    }
+  }
+
+  /**
    * Checks if a number is RCS capable. Caches result in Redis (24h).
    */
   async checkCapabilityAndGetToken(phoneNumber, userId) {
@@ -174,9 +223,8 @@ class JioRCSService {
     }
   }
 
-  // ===================== SEND MESSAGE (ALL TYPES) =====================
   /**
-   * Send a single RCS message (all 4 types).
+   * Send a single RCS message (all types).
    *
    * Expected messageData:
    * {
@@ -213,6 +261,12 @@ class JioRCSService {
       const assistantId = user.jioConfig.assistantId || process.env.JIO_ASSISTANT_ID || 'default_assistant';
       const formattedPhone = this.formatPhone(phoneNumber);
 
+      console.log(`[RCS] Sending message to ${formattedPhone} (messageId: ${messageId})`);
+      console.log(`[RCS] DEBUG - Original phoneNumber: ${phoneNumber}`);
+      console.log(`[RCS] DEBUG - Formatted phoneNumber: ${formattedPhone}`);
+      console.log(`[RCS] DEBUG - User ID: ${userId}`);
+      console.log(`[RCS] DEBUG - Assistant ID: ${assistantId}`);
+
       // if token not supplied, fetch capability
       let finalCapabilityToken = capabilityToken;
       if (!finalCapabilityToken) {
@@ -231,6 +285,9 @@ class JioRCSService {
         `?messageId=${encodeURIComponent(messageId)}` +
         `&assistantId=${encodeURIComponent(assistantId)}`;
 
+      console.log(`[RCS] API URL: ${url}`);
+      console.log(`[RCS] Payload:`, JSON.stringify(rcsPayload, null, 2));
+
       const response = await axios.post(url, rcsPayload, {
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -239,9 +296,19 @@ class JioRCSService {
         timeout: 15000,
       });
 
+      console.log(`[RCS] ✅ Message sent successfully to ${formattedPhone}`);
+
       if (message) {
-        // keep your existing schema methods
         await message.markAsSent(response.data?.messageId || messageId);
+      }
+
+      // Update campaign recipient status
+      if (campaignId) {
+        const Campaign = mongoose.model('Campaign');
+        const campaign = await Campaign.findById(campaignId);
+        if (campaign) {
+          await campaign.updateRecipientStatus(formattedPhone.replace('+91', ''), 'sent', messageId);
+        }
       }
 
       await MessageLog.logMessageSend({
@@ -621,35 +688,53 @@ class JioRCSService {
     };
   }
 
-  // ===================== BATCH CAPABILITY CHECK =====================
+  // ===================== BATCH CAPABILITY CHECK (OPTIMIZED) =====================
   async checkBatchCapability(phoneNumbers = [], userId) {
     const results = [];
+    const concurrency = 20; // Process 20 numbers simultaneously
+    const chunks = this.chunkArray(phoneNumbers, concurrency);
 
-    for (const phone of phoneNumbers) {
-      try {
-        const cap = await this.checkCapabilityAndGetToken(phone, userId);
-        results.push({
-          phoneNumber: phone,
-          isCapable: cap.isCapable,
-          token: cap.token,
-          expiresAt: cap.expiresAt,
-          status: 'checked',
-        });
+    for (const chunk of chunks) {
+      const promises = chunk.map(async (phone) => {
+        try {
+          const cap = await this.checkCapabilityAndGetToken(phone, userId);
+          return {
+            phoneNumber: phone,
+            isCapable: cap.isCapable,
+            token: cap.token,
+            expiresAt: cap.expiresAt,
+            status: 'checked',
+          };
+        } catch (error) {
+          return {
+            phoneNumber: phone,
+            isCapable: false,
+            token: null,
+            error: error.message,
+            status: 'error',
+          };
+        }
+      });
 
-        // small gap to avoid rate limits
-        await this.sleep(500);
-      } catch (error) {
-        results.push({
-          phoneNumber: phone,
-          isCapable: false,
-          token: null,
-          error: error.message,
-          status: 'error',
-        });
+      const chunkResults = await Promise.all(promises);
+      results.push(...chunkResults);
+
+      // Small delay between chunks to avoid overwhelming the API
+      if (chunks.indexOf(chunk) < chunks.length - 1) {
+        await this.sleep(100);
       }
     }
 
     return results;
+  }
+
+  // Helper method to split array into chunks
+  chunkArray(array, size) {
+    const chunks = [];
+    for (let i = 0; i < array.length; i += size) {
+      chunks.push(array.slice(i, i + size));
+    }
+    return chunks;
   }
 
   // ===================== CAMPAIGN BATCH PROCESSING (OPTIMIZED FOR 1 LAKH+) =====================

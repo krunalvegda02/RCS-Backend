@@ -19,5 +19,7 @@ router.get('/jio-config', authenticateToken, AuthController.getJioConfig);
 router.post('/admin/create-user', authenticateToken, requireAdmin, AuthController.createUser);
 router.get('/admin/users', authenticateToken, requireAdmin, AuthController.getAllUsers);
 router.put('/admin/wallet/:userId', authenticateToken, requireAdmin, AuthController.updateWallet);
+router.put('/admin/password/:userId', authenticateToken, requireAdmin, AuthController.updateUserPassword);
+router.get('/admin/transactions/:userId', authenticateToken, requireAdmin, AuthController.getUserTransactionHistory);
 
 export default router;

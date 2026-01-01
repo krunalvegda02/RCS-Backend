@@ -261,6 +261,13 @@ export const updateProfile = async (req, res) => {
   }
 };
 
+
+
+
+
+
+
+
 // Admin: Create user
 export const createUser = async (req, res) => {
   try {
@@ -344,12 +351,12 @@ export const createUser = async (req, res) => {
   }
 };
 
-// Admin: Get all users
+// Admin: Get all users (exclude admin role)
 export const getAllUsers = async (req, res) => {
   try {
     const { page = 1, limit = 10, role, isActive, search } = req.query;
 
-    const query = {};
+    const query = { role: { $ne: 'admin' } }; // Exclude admin users
     if (role) query.role = role;
     if (isActive !== undefined) query.isActive = isActive === 'true';
     
@@ -387,6 +394,100 @@ export const getAllUsers = async (req, res) => {
     });
   }
 };
+
+// Admin: Update user password
+export const updateUserPassword = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { newPassword } = req.body;
+
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 6 characters long',
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    user.password = newPassword;
+    user.updatedBy = req.user._id;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Password updated successfully',
+    });
+  } catch (error) {
+    console.error('Update password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// Admin: Get user transaction history
+export const getUserTransactionHistory = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { page = 1, limit = 20 } = req.query;
+
+    const user = await User.findById(userId).populate('wallet.transactions.processedBy', 'name email');
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    const transactions = user.wallet.transactions || [];
+    // Sort by most recent first
+    const sortedTransactions = transactions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    
+    const total = sortedTransactions.length;
+    const startIndex = (page - 1) * limit;
+    const endIndex = startIndex + parseInt(limit);
+    const paginatedTransactions = sortedTransactions.slice(startIndex, endIndex);
+
+    res.json({
+      success: true,
+      data: {
+        transactions: paginatedTransactions,
+        currentBalance: user.wallet.balance,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / limit),
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Get transaction history error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+
+
+
+
+
+
+
+
+
+
 
 // Refresh token endpoint
 export const refreshToken = async (req, res) => {
@@ -508,6 +609,14 @@ export const getJioConfig = async (req, res) => {
   }
 };
 
+
+
+
+
+
+
+
+
 export const updateWallet = async (req, res) => {
   try {
     const { userId } = req.params;
@@ -528,7 +637,8 @@ export const updateWallet = async (req, res) => {
       });
     }
 
-    const newBalance = await user.updateWallet(amount, operation);
+    const description = `Wallet ${operation === 'add' ? 'credited' : 'debited'} by admin`;
+    const newBalance = await user.updateWallet(amount, operation, description, req.user._id);
 
     res.json({
       success: true,

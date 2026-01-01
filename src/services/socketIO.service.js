@@ -5,7 +5,7 @@ import statsService from './CampaignStatsService.js';
 export const setupSocketIO = (server) => {
   const io = new Server(server, {
     cors: {
-      origin: process.env.FRONTEND_URL,
+      origin: process.env.FRONTEND_URL || process.env.CORS_ORIGIN,
       methods: ["GET", "POST"],
       credentials: true
     }
@@ -19,14 +19,14 @@ export const setupSocketIO = (server) => {
         return next(new Error('Authentication error'));
       }
 
-      // Use ACCESS_TOKEN_SECRET to match main server JWT verification
-      const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET || process.env.JWT_SECRET);
-      socket.userId = decoded._id || decoded.userId; // Support both field names
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      socket.userId = decoded._id || decoded.userId;
       socket.join(`user_${socket.userId}`);
       
       console.log(`[Socket] User ${socket.userId} connected`);
       next();
     } catch (error) {
+      console.error('[Socket] Auth error:', error.message);
       next(new Error('Authentication error'));
     }
   });
@@ -61,10 +61,50 @@ export const setupSocketIO = (server) => {
       }
     });
 
+    // Request all user campaigns stats
+    socket.on('request_user_stats', async (userId) => {
+      try {
+        const userStats = await statsService.getUserCampaignStats(userId);
+        socket.emit('user_stats_update', {
+          userId,
+          stats: userStats,
+          timestamp: new Date().toISOString()
+        });
+      } catch (error) {
+        console.error('[Socket] Error fetching user stats:', error);
+        socket.emit('error', { message: 'Failed to fetch user stats' });
+      }
+    });
+
     socket.on('disconnect', () => {
       console.log(`[Socket] Client disconnected: ${socket.id}`);
     });
   });
+
+  // Helper functions for webhook updates
+  io.emitCampaignUpdate = (campaignId, updateData) => {
+    io.to(`campaign_${campaignId}`).emit('campaign_update', {
+      campaignId,
+      ...updateData,
+      timestamp: new Date().toISOString()
+    });
+  };
+
+  io.emitMessageStatusUpdate = (campaignId, messageData) => {
+    io.to(`campaign_${campaignId}`).emit('message_status_update', {
+      campaignId,
+      ...messageData,
+      timestamp: new Date().toISOString()
+    });
+  };
+
+  io.emitUserInteraction = (campaignId, interactionData) => {
+    io.to(`campaign_${campaignId}`).emit('user_interaction', {
+      campaignId,
+      ...interactionData,
+      timestamp: new Date().toISOString()
+    });
+  };
 
   // Make io globally available for webhook updates
   global.io = io;

@@ -192,11 +192,17 @@ campaignSchema.index({ 'recipients.status': 1 });
 
 // Methods
 campaignSchema.methods.updateStats = async function () {
-  // Count recipients by their current status
+  // Get actual message counts from Message collection for accurate stats
+  const Message = mongoose.model('Message');
+  const messageCounts = await Message.aggregate([
+    { $match: { campaignId: this._id } },
+    { $group: { _id: '$status', count: { $sum: 1 } } }
+  ]);
+  
+  // Initialize counts
   const statusCounts = {
-    pending: 0,
+    draft: 0,
     queued: 0,
-    processing: 0,
     sent: 0,
     delivered: 0,
     read: 0,
@@ -204,29 +210,29 @@ campaignSchema.methods.updateStats = async function () {
     failed: 0,
     bounced: 0
   };
-
-  this.recipients.forEach(r => {
-    if (statusCounts.hasOwnProperty(r.status)) {
-      statusCounts[r.status]++;
+  
+  // Populate counts from Message collection (source of truth)
+  messageCounts.forEach(item => {
+    if (statusCounts.hasOwnProperty(item._id)) {
+      statusCounts[item._id] = item.count;
     }
   });
-
-  // Calculate cumulative stats (read includes delivered and sent, etc.)
+  
+  // Calculate total from actual messages
+  const totalMessages = Object.values(statusCounts).reduce((sum, count) => sum + count, 0);
+  
+  // Update stats based on actual message status
   const stats = {
-    total: this.recipients.length,
-    pending: statusCounts.pending,
-    queued: statusCounts.queued,
-    processing: statusCounts.processing,
-    // Sent = all messages that reached sent status or beyond
+    total: this.recipients.length, // Total recipients
+    pending: this.recipients.length - totalMessages, // Recipients without messages yet
+    processing: statusCounts.draft + statusCounts.queued, // Messages being processed
     sent: statusCounts.sent + statusCounts.delivered + statusCounts.read + statusCounts.replied,
-    // Delivered = all messages that reached delivered status or beyond
     delivered: statusCounts.delivered + statusCounts.read + statusCounts.replied,
-    // Read = all messages that reached read status or beyond
     read: statusCounts.read + statusCounts.replied,
-    // Replied = only messages with replied status
     replied: statusCounts.replied,
     failed: statusCounts.failed,
     bounced: statusCounts.bounced,
+    queued: statusCounts.queued,
     rcsCapable: this.recipients.filter(r => r.isRcsCapable === true).length,
   };
 
@@ -242,29 +248,20 @@ campaignSchema.methods.getPendingRecipients = function (limit = 100) {
   return this.recipients.filter(r => r.status === 'pending').slice(0, limit);
 };
 
-campaignSchema.methods.markRecipientAsSent = async function (phoneNumber, messageId) {
+campaignSchema.methods.updateRecipientStatus = async function (phoneNumber, status, messageId = null) {
   const recipient = this.recipients.find(r => r.phoneNumber === phoneNumber);
   if (recipient) {
-    recipient.status = 'sent';
-    recipient.messageId = messageId;
-    recipient.sentAt = new Date();
-    await this.save();
-  }
-};
-
-campaignSchema.methods.markRecipientAsFailed = async function (phoneNumber, reason) {
-  const recipient = this.recipients.find(r => r.phoneNumber === phoneNumber);
-  if (recipient) {
-    recipient.status = 'failed';
-    recipient.failureReason = reason;
-    await this.save();
-  }
-};
-
-campaignSchema.methods.markRecipientAsProcessing = async function (phoneNumber) {
-  const recipient = this.recipients.find(r => r.phoneNumber === phoneNumber);
-  if (recipient) {
-    recipient.status = 'processing';
+    recipient.status = status;
+    if (messageId) recipient.messageId = messageId;
+    
+    const now = new Date();
+    switch (status) {
+      case 'sent': recipient.sentAt = now; break;
+      case 'delivered': recipient.deliveredAt = now; break;
+      case 'read': recipient.readAt = now; break;
+      case 'failed': recipient.failedAt = now; break;
+    }
+    
     await this.save();
   }
 };
