@@ -2,6 +2,7 @@
 import axios from 'axios';
 import Bull from 'bull';
 import { createClient } from 'redis';
+import mongoose from 'mongoose';
 
 import Message from '../models/message.model.js';
 import MessageLog from '../models/messageLog.model.js';
@@ -214,9 +215,11 @@ class JioRCSService {
         userId: userId,
         isCapable: false,
         statusCode: error.response?.status || 500,
-        errorCode: error.response?.data?.errorCode || 'CAPABILITY_CHECK_FAILED',
-        errorMessage: error.message,
-        errorType: this.getErrorType(error),
+        error: {
+          code: error.response?.data?.errorCode || 'CAPABILITY_CHECK_FAILED',
+          message: error.message,
+          type: this.getErrorType(error)
+        }
       });
 
       throw error;
@@ -261,11 +264,9 @@ class JioRCSService {
       const assistantId = user.jioConfig.assistantId || process.env.JIO_ASSISTANT_ID || 'default_assistant';
       const formattedPhone = this.formatPhone(phoneNumber);
 
-      console.log(`[RCS] Sending message to ${formattedPhone} (messageId: ${messageId})`);
-      console.log(`[RCS] DEBUG - Original phoneNumber: ${phoneNumber}`);
-      console.log(`[RCS] DEBUG - Formatted phoneNumber: ${formattedPhone}`);
-      console.log(`[RCS] DEBUG - User ID: ${userId}`);
-      console.log(`[RCS] DEBUG - Assistant ID: ${assistantId}`);
+      console.log(`[RCS] 📤 Sending message to ${formattedPhone} (messageId: ${messageId})`);
+      console.log(`[RCS] 📋 Campaign: ${campaignId || 'N/A'}, Template: ${templateType}`);
+      console.log(`[RCS] 👤 User: ${userId}, Assistant: ${assistantId}`);
 
       // if token not supplied, fetch capability
       let finalCapabilityToken = capabilityToken;
@@ -297,31 +298,42 @@ class JioRCSService {
       });
 
       console.log(`[RCS] ✅ Message sent successfully to ${formattedPhone}`);
+      console.log(`[RCS] 📨 RCS Message ID: ${response.data?.messageId || messageId}`);
 
       if (message) {
         await message.markAsSent(response.data?.messageId || messageId);
+        console.log(`[RCS] 💾 Message status updated to 'sent' in database`);
       }
 
       // Update campaign recipient status
       if (campaignId) {
-        const Campaign = mongoose.model('Campaign');
-        const campaign = await Campaign.findById(campaignId);
-        if (campaign) {
-          await campaign.updateRecipientStatus(formattedPhone.replace('+91', ''), 'sent', messageId);
+        try {
+          const campaign = await Campaign.findById(campaignId);
+          if (campaign) {
+            await campaign.updateRecipientStatus(formattedPhone.replace('+91', ''), 'sent', messageId);
+            console.log(`[RCS] 📊 Campaign recipient status updated to 'sent'`);
+          }
+        } catch (campaignError) {
+          console.error(`[RCS] Failed to update campaign recipient:`, campaignError.message);
         }
       }
 
-      await MessageLog.logMessageSend({
-        messageId,
-        campaignId,
-        userId,
-        success: true,
-        statusCode: response.status,
-        rcsMessageId: response.data?.messageId,
-        capabilityToken: finalCapabilityToken,
-        assistantId,
-        responseTimeMs: response.headers['x-response-time'],
-      });
+      try {
+        await MessageLog.logMessageSend({
+          messageId,
+          campaignId,
+          userId,
+          success: true,
+          statusCode: response.status,
+          rcsMessageId: response.data?.messageId,
+          capabilityToken: finalCapabilityToken,
+          assistantId,
+          responseTimeMs: response.headers['x-response-time'],
+        });
+        console.log(`[RCS] 📝 Message log created successfully`);
+      } catch (logError) {
+        console.error(`[RCS] Failed to create message log:`, logError.message);
+      }
 
       return { success: true, rcsMessageId: response.data?.messageId };
     } catch (error) {
@@ -337,17 +349,24 @@ class JioRCSService {
       const errorCode = error.response?.data?.errorCode || error.code || 'SEND_FAILED';
       const shouldRetry = ['rate_limit', 'network', 'service'].includes(errorType);
 
-      await MessageLog.logMessageSend({
-        messageId,
-        campaignId,
-        userId,
-        success: false,
-        statusCode: error.response?.status || 500,
-        errorCode,
-        errorMessage: error.message,
-        errorType,
-        retryCount: message?.retryCount || 0,
-      });
+      try {
+        await MessageLog.logMessageSend({
+          messageId,
+          campaignId,
+          userId,
+          success: false,
+          statusCode: error.response?.status || 500,
+          error: {
+            code: errorCode,
+            message: error.message,
+            type: errorType
+          },
+          retryCount: message?.retryCount || 0,
+        });
+        console.log(`[RCS] 📝 Error message log created`);
+      } catch (logError) {
+        console.error(`[RCS] Failed to create error message log:`, logError.message);
+      }
 
       if (message) {
         if (shouldRetry) await message.scheduleRetry();
@@ -794,6 +813,7 @@ class JioRCSService {
 
             // Skip capability check since frontend sends pre-validated contacts
             if (recipient.isRcsCapable === false) {
+              console.log(`[RCS] ❌ Skipping non-RCS capable contact: ${recipient.phoneNumber}`);
               await Campaign.updateOne(
                 { 
                   _id: campaignId,
@@ -814,7 +834,7 @@ class JioRCSService {
             let capabilityToken = null;
             if (recipient.isRcsCapable === true) {
               // For pre-validated numbers, we can skip the capability check
-              console.log(`[RCS] Using pre-validated RCS capable number: ${recipient.phoneNumber}`);
+              console.log(`[RCS] ✅ Using pre-validated RCS capable number: ${recipient.phoneNumber}`);
             } else {
               // Only check capability if not pre-validated
               try {
@@ -857,6 +877,7 @@ class JioRCSService {
 
             // Create message record (charge only capable numbers)
             const msgId = this.generateUUID();
+            console.log(`[RCS] 📝 Creating message record for ${recipient.phoneNumber} (ID: ${msgId})`);
             const messageDoc = {
               messageId: msgId,
               campaignId,
@@ -875,6 +896,7 @@ class JioRCSService {
 
             // Create message and update recipient atomically to prevent duplicates
             await Message.create(messageDoc);
+            console.log(`[RCS] 💾 Message record created and queued for processing`);
 
             // Update campaign recipient with messageId (only if still in processing state)
             await Campaign.updateOne(
@@ -895,6 +917,7 @@ class JioRCSService {
             const priority = campaign.recipients.length > 50000 ? 5 : 
                            campaign.recipients.length > 10000 ? 7 : 10;
 
+            const queueDelay = Math.floor(Math.random() * (delayMs * 2));
             await this.messageQueue.add(
               {
                 messageData: {
@@ -910,11 +933,12 @@ class JioRCSService {
               },
               {
                 priority,
-                delay: Math.floor(Math.random() * (delayMs * 2)),
+                delay: queueDelay,
                 attempts: 3,
                 backoff: { type: 'exponential', delay: 2000 }
               }
             );
+            console.log(`[RCS] 🚀 Message queued for sending (delay: ${queueDelay}ms, priority: ${priority})`);
 
           } catch (err) {
             console.error('[RCS] recipient error:', recipient.phoneNumber, err.message);

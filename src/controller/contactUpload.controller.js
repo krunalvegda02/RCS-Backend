@@ -79,6 +79,13 @@ export const uploadContacts = async (req, res) => {
     const { contacts, filename, campaignData } = req.body;
     const userId = req.user._id;
 
+    console.log('[Upload] Request body:', { 
+      contactsLength: contacts?.length, 
+      filename, 
+      campaignData,
+      hasContacts: Array.isArray(contacts)
+    });
+
     if (!Array.isArray(contacts) || contacts.length === 0) {
       return res.status(400).json({
         success: false,
@@ -119,6 +126,28 @@ export const uploadContacts = async (req, res) => {
         variables: campaignData?.variables || {}
       }))
     });
+
+    // If campaign ID provided, update campaign with recipients
+    if (campaignData?.campaignId) {
+      try {
+        const Campaign = (await import('../models/campaign.model.js')).default;
+        await Campaign.findByIdAndUpdate(campaignData.campaignId, {
+          $set: {
+            recipients: uniqueContacts.map(phone => ({
+              phoneNumber: phone,
+              status: 'pending',
+              variables: campaignData?.variables || {},
+              isRcsCapable: null
+            })),
+            'stats.total': uniqueContacts.length,
+            'stats.pending': uniqueContacts.length
+          }
+        });
+        console.log(`[Upload] Updated campaign ${campaignData.campaignId} with ${uniqueContacts.length} recipients`);
+      } catch (campaignError) {
+        console.error(`[Upload] Failed to update campaign:`, campaignError.message);
+      }
+    }
 
     console.log(`[Upload] Batch created with ID: ${batch._id}`);
 
@@ -235,6 +264,10 @@ capabilityQueue.process('check-batch-capability', 5, async (job) => {
       delayBetweenChunks = 500;
     }
     
+    console.log(`[Queue] 🚀 Starting capability check for batch ${batchId} (${phoneNumbers.length} contacts)`);
+    console.log(`[Queue] ⚙️ Rate limiting config - Concurrency: ${concurrency}, Chunk size: ${chunkSize}, Delay: ${delayBetweenChunks}ms`);
+    console.log(`[Queue] 📨 Auto-send enabled: ${autoSend}`);
+    
     const chunks = chunkArray(phoneNumbers, chunkSize);
     let processed = 0;
 
@@ -273,11 +306,15 @@ capabilityQueue.process('check-batch-capability', 5, async (job) => {
 
           // Auto-send message with rate limiting for large batches
           if (autoSend && result.isCapable && batch.campaignId && batch.templateId) {
+            const isLargeBatch = phoneNumbers.length > 50000;
             const sendDelay = isLargeBatch ? Math.random() * 10000 : Math.random() * 2000;
+            
+            console.log(`[Queue] 📤 Scheduling auto-send message for ${phone} (delay: ${Math.round(sendDelay)}ms)`);
             
             setTimeout(async () => {
               try {
                 const msgId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+                console.log(`[Queue] 🚀 Sending auto-message to ${phone} (ID: ${msgId})`);
                 
                 // Get template data for message
                 const template = await Template.findById(batch.templateId);
@@ -307,9 +344,9 @@ capabilityQueue.process('check-batch-capability', 5, async (job) => {
                   }
                 );
 
-                console.log(`[Queue] Message sent to ${phone}`);
+                console.log(`[Queue] ✅ Auto-message sent successfully to ${phone}`);
               } catch (sendError) {
-                console.error(`[Queue] Send failed for ${phone}:`, sendError.message);
+                console.error(`[Queue] ❌ Auto-send failed for ${phone}:`, sendError.message);
                 // Update contact status to failed
                 await ContactBatch.updateOne(
                   { batchId, 'contacts.phoneNumber': phone },
@@ -370,11 +407,12 @@ capabilityQueue.process('check-batch-capability', 5, async (job) => {
       }
     );
 
-    console.log(`[Queue] Batch ${batchId} completed. Processed: ${processed}, Auto-send: ${autoSend}`);
+    console.log(`[Queue] ✅ Batch ${batchId} completed successfully`);
+    console.log(`[Queue] 📊 Final stats - Processed: ${processed}, Auto-send: ${autoSend}`);
     return { success: true, processed, autoSend };
 
   } catch (error) {
-    console.error(`[Queue] Batch ${batchId} failed:`, error.message);
+    console.error(`[Queue] ❌ Batch ${batchId} failed:`, error.message);
     // Mark batch as failed
     await ContactBatch.updateOne(
       { batchId },

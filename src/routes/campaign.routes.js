@@ -14,7 +14,8 @@ router.post('/check-capability', CampaignController.checkCapability);
 // Send bulk messages (create and start campaign)
 router.post('/send-bulk', checkWalletBalance(1), CampaignController.create);
 
-router.post('/', checkWalletBalance(1), CampaignController.create);
+// Create simple campaign record (for contact upload integration)
+router.post('/', CampaignController.createSimple);
 router.get('/', CampaignController.getAll);
 router.get('/:id', CampaignController.getById);
 router.get('/:id/stats', CampaignController.getStats);

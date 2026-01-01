@@ -116,6 +116,54 @@ export const checkCapability = async (req, res) => {
   }
 };
 
+// Create simple campaign record
+export const createSimple = async (req, res) => {
+  try {
+    const { name, templateId, userId, status = 'draft', totalRecipients, estimatedCost } = req.body;
+    const requestUserId = req.user._id;
+
+    // Validate template exists
+    const template = await Template.findById(templateId);
+    if (!template) {
+      return res.status(404).json({
+        success: false,
+        message: 'Template not found',
+      });
+    }
+
+    const campaign = await Campaign.create({
+      name,
+      userId: requestUserId,
+      templateId,
+      status,
+      recipients: [], // Will be populated when contacts are uploaded
+      stats: {
+        total: totalRecipients || 0,
+        pending: totalRecipients || 0,
+        sent: 0,
+        failed: 0,
+        processing: 0,
+        rcsCapable: 0,
+      },
+      estimatedCost: estimatedCost || 0,
+      actualCost: 0,
+      createdAt: new Date(),
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Campaign created successfully',
+      data: campaign,
+    });
+  } catch (error) {
+    console.error('[Campaign] Simple creation error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 // Create campaign and start sending
 export const create = async (req, res) => {
   try {
