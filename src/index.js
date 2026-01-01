@@ -11,15 +11,6 @@ dotenv.config({
 });
 
 const port = process.env.PORT || 8000;
-
-console.log(`🔍 Checking port configuration:`);
-console.log(`   PORT environment variable: ${process.env.PORT}`);
-console.log(`   Using port: ${port}`);
-console.log(`   Node environment: ${process.env.NODE_ENV}`);
-console.log(`   Working directory: ${process.cwd()}`);
-console.log(`   Env file path: ${process.cwd()}/.env`);
-
-// Debug: Check if .env is loaded correctly
 if (!process.env.PORT) {
   console.log('⚠️  PORT not set in environment, using default 8000');
 }
@@ -70,14 +61,12 @@ connectDB()
 
     const server = createServer(app);
     
-    // Setup Socket.IO using centralized service
+    // Setup Socket.IO for live message tracking
     const io = setupSocketIO(server);
-    console.log('📡 Socket.IO initialized via socketIO.service.js');
-
+    
     server.listen(finalPort, () => {
       console.log(`🚀 Server is running on port ${finalPort}`);
-      console.log(`📡 Socket.IO enabled for real-time updates`);
-      // console.log(`🔗 API Base URL: http://localhost:${finalPort}/api/v1`);
+      console.log(`📡 Socket.IO enabled for live message tracking`);
       
       if (finalPort !== port) {
         console.log(`📝 Note: Using port ${finalPort} instead of ${port}`);

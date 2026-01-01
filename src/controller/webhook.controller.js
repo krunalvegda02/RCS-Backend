@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import Message from '../models/message.model.js';
 import MessageLog from '../models/messageLog.model.js';
 import Campaign from '../models/campaign.model.js';
+import User from '../models/user.model.js';
 import statsService from '../services/CampaignStatsService.js';
 
 // NO Redis client here - Bull handles Redis internally
@@ -62,6 +63,39 @@ export async function processWebhookData(data, timestamp) {
         statType = 'delivered';
         updateData.deviceType = data?.entity?.deviceInfo?.deviceType || null;
         console.log(`[Webhook] 📦 Message DELIVERED: ${messageId}`);
+        
+        // Deduct 1 from wallet on delivery
+        try {
+          const userId = await getUserIdFromMessage(messageId);
+          if (userId) {
+            const User = (await import('../models/user.model.js')).default;
+            await User.findByIdAndUpdate(userId, {
+              $inc: { 'wallet.balance': -1 },
+              $set: { 'wallet.lastUpdated': new Date() },
+              $push: {
+                'wallet.transactions': {
+                  type: 'debit',
+                  amount: 1,
+                  balanceAfter: 0, // Will be updated below
+                  description: `Message delivery charge - ${messageId}`,
+                  createdAt: new Date()
+                }
+              }
+            });
+            
+            // Update balanceAfter in the transaction
+            const user = await User.findById(userId);
+            if (user && user.wallet.transactions.length > 0) {
+              const lastTransaction = user.wallet.transactions[user.wallet.transactions.length - 1];
+              lastTransaction.balanceAfter = user.wallet.balance;
+              await user.save();
+            }
+            
+            console.log(`[Webhook] 💰 Wallet debited ₹1 for user ${userId} on message delivery`);
+          }
+        } catch (walletError) {
+          console.error(`[Webhook] Failed to deduct wallet for message ${messageId}:`, walletError.message);
+        }
         break;
 
       case "MESSAGE_READ":

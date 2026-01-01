@@ -241,6 +241,17 @@ campaignSchema.methods.updateStats = async function () {
   stats.lastUpdatedAt = new Date();
 
   this.stats = stats;
+  
+  // Auto-update campaign status based on message processing completion
+  const totalProcessed = stats.sent + stats.failed + stats.bounced;
+  const hasUnprocessedMessages = stats.pending > 0 || stats.processing > 0;
+  
+  if (this.status === 'running' && !hasUnprocessedMessages && totalProcessed >= this.recipients.length) {
+    this.status = 'completed';
+    this.completedAt = new Date();
+    console.log(`Campaign ${this._id} marked as completed - Total: ${this.recipients.length}, Processed: ${totalProcessed}`);
+  }
+  
   await this.save();
 };
 

@@ -58,6 +58,7 @@ const messageSchema = new mongoose.Schema(
       enum: [
         'draft',
         'queued',
+        'processing',
         'sent',
         'delivered',
         'failed',
@@ -194,7 +195,7 @@ messageSchema.statics.findByMessageId = function (messageId) {
 
 messageSchema.statics.findPendingMessages = function (limit = 1000) {
   return this.find({
-    status: 'queued',
+    status: { $in: ['queued', 'processing'] },
     $or: [
       { nextRetryAt: { $lte: new Date() } },
       { nextRetryAt: { $exists: false } },
