@@ -127,7 +127,7 @@ export const uploadContacts = async (req, res) => {
       }))
     });
 
-    // If campaign ID provided, update campaign with recipients
+    // If campaign ID provided, update campaign with recipients and start it
     if (campaignData?.campaignId) {
       try {
         const Campaign = (await import('../models/campaign.model.js')).default;
@@ -140,10 +140,12 @@ export const uploadContacts = async (req, res) => {
               isRcsCapable: null
             })),
             'stats.total': uniqueContacts.length,
-            'stats.pending': uniqueContacts.length
+            'stats.pending': uniqueContacts.length,
+            status: 'running',
+            startedAt: new Date()
           }
         });
-        console.log(`[Upload] Updated campaign ${campaignData.campaignId} with ${uniqueContacts.length} recipients`);
+        console.log(`[Upload] Updated campaign ${campaignData.campaignId} with ${uniqueContacts.length} recipients and started it`);
       } catch (campaignError) {
         console.error(`[Upload] Failed to update campaign:`, campaignError.message);
       }
@@ -326,6 +328,7 @@ capabilityQueue.process('check-batch-capability', 5, async (job) => {
                   messageId: msgId,
                   userId,
                   campaignId: batch.campaignId,
+                  templateId: batch.templateId,
                   templateType: template.templateType,
                   content: template.content,
                   capabilityToken: result.capabilityToken,

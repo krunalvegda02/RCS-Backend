@@ -21,5 +21,6 @@ router.get('/:id', CampaignController.getById);
 router.get('/:id/stats', CampaignController.getStats);
 router.post('/:id/start', CampaignController.start);
 router.post('/:id/pause', CampaignController.pause);
+router.post('/:id/restart', CampaignController.restart);
 
 export default router;

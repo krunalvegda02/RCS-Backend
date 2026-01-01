@@ -238,8 +238,6 @@ class JioRCSService {
    * }
    */
   async sendMessage(messageData) {
-    const requestTime = new Date();
-
     const {
       phoneNumber,
       messageId,
@@ -248,10 +246,36 @@ class JioRCSService {
       templateType,
       content,
       variables,
-      capabilityToken, // optional - if you already have it
+      capabilityToken,
     } = messageData;
 
-    const message = await Message.findOne({ messageId });
+    // Always create message record first
+    let message;
+    try {
+      message = await Message.create({
+        messageId,
+        campaignId,
+        userId,
+        recipientPhoneNumber: this.formatPhone(phoneNumber).replace('+91', ''),
+        templateId: messageData.templateId || new mongoose.Types.ObjectId(),
+        templateType,
+        content,
+        variables: variables || {},
+        status: 'queued',
+        queuedAt: new Date(),
+        cost: 1
+      });
+      console.log(`[RCS] 📝 Message record created: ${messageId}`);
+    } catch (createError) {
+      // If message already exists, find it
+      if (createError.code === 11000) {
+        message = await Message.findOne({ messageId });
+        console.log(`[RCS] 🔄 Using existing message record: ${messageId}`);
+      } else {
+        console.error(`[RCS] Failed to create message:`, createError.message);
+        throw createError;
+      }
+    }
 
     let rcsPayload = null;
 
@@ -756,6 +780,43 @@ class JioRCSService {
     return chunks;
   }
 
+  // ===================== CAMPAIGN MANAGEMENT =====================
+  /**
+   * Restart campaign processing for draft/paused campaigns
+   */
+  async restartCampaign(campaignId) {
+    try {
+      const campaign = await Campaign.findById(campaignId);
+      if (!campaign) {
+        throw new Error('Campaign not found');
+      }
+
+      // Update campaign status to running
+      await Campaign.updateOne(
+        { _id: campaignId },
+        { 
+          status: 'running',
+          startedAt: new Date()
+        }
+      );
+
+      console.log(`[RCS] 🚀 Restarting campaign ${campaignId}`);
+      
+      // Start processing immediately
+      setImmediate(() => {
+        this.processCampaignBatch(campaignId, 100, 1000)
+          .catch(error => {
+            console.error(`[RCS] Campaign restart failed:`, error);
+          });
+      });
+
+      return { success: true, message: 'Campaign restarted' };
+    } catch (error) {
+      console.error(`[RCS] Failed to restart campaign:`, error.message);
+      throw error;
+    }
+  }
+
   // ===================== CAMPAIGN BATCH PROCESSING (OPTIMIZED FOR 1 LAKH+) =====================
   /**
    * High-performance campaign processing with fixed batch size of 100
@@ -786,8 +847,8 @@ class JioRCSService {
 
       console.log(`[RCS] Processing batch of ${pendingRecipients.length} recipients (max 100) for campaign ${campaignId}`);
 
-      // Process recipients in parallel with controlled concurrency (fixed for batch of 100)
-      const concurrency = 10; // Fixed concurrency for batch of 100
+      // Process recipients in parallel - optimized for 200/sec
+      const concurrency = 50; // 50 concurrent batch processing
       const chunks = this.chunkArray(pendingRecipients, concurrency);
 
       for (const chunk of chunks) {
@@ -883,7 +944,7 @@ class JioRCSService {
               campaignId,
               userId: campaign.userId,
               recipientPhoneNumber: recipient.phoneNumber,
-              templateId: campaign.templateId?._id,
+              templateId: campaign.templateId?._id || campaign.templateId,
               templateType: campaign.templateId?.templateType,
               content: campaign.templateId?.content,
               variables: recipient.variables,
@@ -961,23 +1022,21 @@ class JioRCSService {
         // Wait for current chunk to complete before processing next
         await Promise.allSettled(promises);
         
-        // Reduced delay for pre-validated contacts
-        const chunkDelay = campaign.recipients.length > 50000 ? 100 : 
-                          campaign.recipients.length > 10000 ? 200 : 500;
+        // Minimal delay between chunks for 200/sec throughput
+        const chunkDelay = 250; // 250ms delay between chunks
         await this.sleep(chunkDelay);
       }
 
       // Update campaign stats after processing batch - use direct aggregation for efficiency
       // Skip stats update here as it will be handled by the background worker and real-time Redis stats
 
-      // Continue processing remaining recipients
+      // Continue processing remaining recipients with minimal delay
       const stillPending = campaign.getPendingRecipients(1);
-      if (stillPending.length > 0) {
-        const nextDelay = campaign.recipients.length > 50000 ? 1000 : 2000;
+      if (stillPending.length > 0 && campaign.status === 'running') {
+        const nextDelay = 500; // 500ms delay before next batch
         setTimeout(() => {
           this.processCampaignBatch(campaignId, 100, delayMs).catch(error => {
             console.error(`[RCS] Batch processing error for ${campaignId}:`, error);
-            // Mark campaign as failed on critical error
             Campaign.updateOne(
               { _id: campaignId },
               { status: 'failed', completedAt: new Date() }
@@ -1002,31 +1061,32 @@ class JioRCSService {
     }
   }
 
-  // ===================== QUEUE HANDLERS (HIGH CONCURRENCY) =====================
+  // ===================== QUEUE HANDLERS (200 MSG/SEC RATE LIMITING) =====================
   setupQueueHandlers() {
-    // Dynamic concurrency based on system load and campaign size
-    const maxConcurrency = process.env.NODE_ENV === 'production' ? 2000 : 1000;
+    // 200 messages per second = 200 concurrent with 5ms delay
+    const maxConcurrency = 200;
     
     this.messageQueue.process(maxConcurrency, async (job) => {
       const { messageData } = job.data;
+      
+      // 5ms delay = 200 messages per second
+      await this.sleep(5);
+      
       try {
         const result = await this.sendMessage(messageData);
-        
-        // Stats will be updated by webhook, no need to increment here
-        // to avoid double counting
-        
         return result;
       } catch (error) {
-        // Stats will be updated by webhook on failure too
-        // to avoid double counting
-        
-        // Let Bull retry if attempts remaining
-        if (job.attemptsMade < job.opts.attempts) {
-          console.log(`[Queue] Retrying message ${messageData.messageId} (attempt ${job.attemptsMade + 1}/${job.opts.attempts})`);
+        // Handle rate limiting
+        if (error.response?.status === 429) {
+          console.log(`[Queue] Rate limited, backing off`);
+          await this.sleep(1000);
           throw error;
         }
         
-        console.error(`[Queue] Message ${messageData.messageId} failed permanently:`, error.message);
+        if (job.attemptsMade < job.opts.attempts) {
+          throw error;
+        }
+        
         return { success: false, error: error.message };
       }
     });

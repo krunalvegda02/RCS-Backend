@@ -135,7 +135,8 @@ export const createSimple = async (req, res) => {
       name,
       userId: requestUserId,
       templateId,
-      status,
+      status: 'running', // Auto-start campaigns
+      startedAt: new Date(),
       recipients: [], // Will be populated when contacts are uploaded
       stats: {
         total: totalRecipients || 0,
@@ -445,6 +446,37 @@ export const pause = async (req, res) => {
       data: campaign,
     });
   } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// Restart campaign processing
+export const restart = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+
+    const campaign = await Campaign.findOne({ _id: id, userId });
+    if (!campaign) {
+      return res.status(404).json({
+        success: false,
+        message: 'Campaign not found',
+      });
+    }
+
+    // Restart campaign processing
+    const result = await jioRCSService.restartCampaign(id);
+    
+    res.json({
+      success: true,
+      message: 'Campaign processing restarted',
+      data: result
+    });
+  } catch (error) {
+    console.error('[Campaign] Restart error:', error);
     res.status(500).json({
       success: false,
       message: error.message,
