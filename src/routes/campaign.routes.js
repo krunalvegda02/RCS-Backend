@@ -1,10 +1,14 @@
 import express from 'express';
 import * as CampaignController from '../controller/campaign.controller.js';
-import { authenticateToken, requireUser, checkWalletBalance } from '../middlewares/auth.middleware.js';
+import { authenticateToken, requireUser, requireAdmin, checkWalletBalance } from '../middlewares/auth.middleware.js';
 
 const router = express.Router();
 
-// All campaign routes require authentication
+// Admin routes (no user restriction)
+router.get('/admin/campaigns', authenticateToken, requireAdmin, CampaignController.getAllForAdmin);
+router.get('/admin/campaigns/:id/messages', authenticateToken, requireAdmin, CampaignController.getCampaignMessages);
+
+// All other campaign routes require authentication and user role
 router.use(authenticateToken);
 router.use(requireUser);
 
@@ -19,6 +23,7 @@ router.post('/', CampaignController.createSimple);
 router.get('/', CampaignController.getAll);
 router.get('/:id', CampaignController.getById);
 router.get('/:id/stats', CampaignController.getStats);
+router.get('/:id/messages', CampaignController.getCampaignMessages);
 router.post('/:id/start', CampaignController.start);
 router.post('/:id/pause', CampaignController.pause);
 router.post('/:id/restart', CampaignController.restart);

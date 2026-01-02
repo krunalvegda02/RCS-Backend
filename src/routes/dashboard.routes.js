@@ -1,5 +1,5 @@
 import express from 'express';
-import { getDashboardStats, getRecentOrders, addWalletRequest, getAdminDashboard, getAdminSummary, getMonthlyAnalytics, getWeeklyAnalytics } from '../controller/dashboard.controller.js';
+import { getUserDashboardStats, getUserRecentCampaigns, addWalletRequest, getAdminDashboard, getAdminSummary, getMonthlyAnalytics, getWeeklyAnalytics } from '../controller/dashboard.controller.js';
 import { authenticateToken, requireAdmin } from '../middlewares/auth.middleware.js';
 
 const router = express.Router();
@@ -13,8 +13,8 @@ router.get('/admin/monthly/:userId', authenticateToken, requireAdmin, getMonthly
 router.get('/admin/weekly/:userId', authenticateToken, requireAdmin, getWeeklyAnalytics);
 
 // User dashboard routes
-router.get('/stats/:userId', authenticateToken, getDashboardStats);
-router.get('/recent-orders/:userId', authenticateToken, getRecentOrders);
+router.get('/stats/:userId', authenticateToken, getUserDashboardStats);
+router.get('/recent-campaigns/:userId', authenticateToken, getUserRecentCampaigns);
 router.post('/wallet-request', authenticateToken, addWalletRequest);
 
 export default router;

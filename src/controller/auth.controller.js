@@ -351,12 +351,99 @@ export const createUser = async (req, res) => {
   }
 };
 
-// Admin: Get all users (exclude admin role)
+// Admin: Update user details
+export const updateUser = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { name, email, phone, companyname, isActive } = req.body;
+
+    // Validation
+    if (!name || !email || !phone) {
+      return res.status(400).json({
+        success: false,
+        message: 'Name, email, and phone are required',
+      });
+    }
+
+    // Check if user exists
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    // Check if email or phone already exists for other users
+    const existingUser = await User.findOne({
+      _id: { $ne: userId },
+      $or: [{ email: email.toLowerCase() }, { phone }],
+    });
+
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        message: 'User with this email or phone already exists',
+      });
+    }
+
+    // Update user data
+    const updateData = {
+      name: name.trim(),
+      email: email.toLowerCase().trim(),
+      phone: phone.trim(),
+      companyname: companyname?.trim() || '',
+      updatedBy: req.user._id,
+    };
+
+    // Only update isActive if provided
+    if (isActive !== undefined) {
+      updateData.isActive = isActive;
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      updateData,
+      { new: true, runValidators: true }
+    );
+
+    res.json({
+      success: true,
+      message: 'User updated successfully',
+      data: updatedUser,
+    });
+  } catch (error) {
+    console.error('Update user error:', error);
+    
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern)[0];
+      return res.status(409).json({
+        success: false,
+        message: `${field} already exists`,
+      });
+    }
+
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({
+        success: false,
+        message: messages.join(', '),
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// Admin: Get all users (exclude admin role) - lightweight version
 export const getAllUsers = async (req, res) => {
   try {
     const { page = 1, limit = 10, role, isActive, search } = req.query;
 
-    const query = { role: { $ne: 'admin' } }; // Exclude admin users
+    const query = { role: { $ne: 'ADMIN' } }; // Exclude admin users
     if (role) query.role = role;
     if (isActive !== undefined) query.isActive = isActive === 'true';
     
@@ -369,7 +456,9 @@ export const getAllUsers = async (req, res) => {
       ];
     }
 
+    // Select only essential fields, exclude heavy data like transactions
     const users = await User.find(query)
+      .select('name email phone companyname role isActive isVerified wallet.balance wallet.currency createdAt lastLogin')
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit);
@@ -530,6 +619,8 @@ export const refreshToken = async (req, res) => {
     });
   }
 };
+
+
 // Update Jio RCS Configuration
 export const updateJioConfig = async (req, res) => {
   try {

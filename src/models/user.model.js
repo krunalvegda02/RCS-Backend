@@ -132,6 +132,10 @@ const userSchema = new mongoose.Schema(
         type: Number,
         default: 0,
       },
+      totalMessagesDelivered: {
+        type: Number,
+        default: 0,
+      },
       totalSpent: {
         type: Number,
         default: 0,
@@ -146,30 +150,30 @@ const userSchema = new mongoose.Schema(
     },
 
     // Rate Limiting
-    rateLimits: {
-      messagesPerDay: {
-        type: Number,
-        default: 10000,
-      },
-      campaignsPerDay: {
-        type: Number,
-        default: 50,
-      },
-      currentDayUsage: {
-        messages: {
-          type: Number,
-          default: 0,
-        },
-        campaigns: {
-          type: Number,
-          default: 0,
-        },
-        lastReset: {
-          type: Date,
-          default: Date.now,
-        },
-      },
-    },
+    // rateLimits: {
+    //   messagesPerDay: {
+    //     type: Number,
+    //     default: 10000,
+    //   },
+    //   campaignsPerDay: {
+    //     type: Number,
+    //     default: 50,
+    //   },
+    //   currentDayUsage: {
+    //     messages: {
+    //       type: Number,
+    //       default: 0,
+    //     },
+    //     campaigns: {
+    //       type: Number,
+    //       default: 0,
+    //     },
+    //     lastReset: {
+    //       type: Date,
+    //       default: Date.now,
+    //     },
+    //   },
+    // },
 
     // Security
     lastLogin: Date,
@@ -314,48 +318,103 @@ userSchema.methods.addTransactionRecord = async function (type, amount, descript
   return transaction;
 };
 
-userSchema.methods.updateStats = async function (campaignData) {
-  this.stats.totalCampaigns += 1;
-  this.stats.totalMessagesSent += campaignData.messagesSent || 0;
-  this.stats.totalSpent += campaignData.cost || 0;
+userSchema.methods.recalculateStatsOnCampaignCompletion = async function (campaignId) {
+  const Campaign = mongoose.model('Campaign');
+  const Message = mongoose.model('Message');
+  
+  // Get campaign data
+  const campaign = await Campaign.findById(campaignId);
+  if (!campaign) return;
+  
+  // Get actual message statistics from Message collection
+  const messageStats = await Message.aggregate([
+    { $match: { campaignId: new mongoose.Types.ObjectId(campaignId) } },
+    {
+      $group: {
+        _id: null,
+        totalSent: { $sum: 1 },
+        delivered: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] } },
+        failed: { $sum: { $cond: [{ $in: ['$status', ['failed', 'bounced']] }, 1, 0] } },
+        read: { $sum: { $cond: [{ $eq: ['$status', 'read'] }, 1, 0] } },
+        replied: { $sum: { $cond: [{ $eq: ['$status', 'replied'] }, 1, 0] } }
+      }
+    }
+  ]);
+  
+  const stats = messageStats[0] || { totalSent: 0, delivered: 0, failed: 0, read: 0, replied: 0 };
+  
+  // Update user stats with accurate data
+  this.stats.totalMessagesSent += stats.totalSent;
+  this.stats.totalMessagesDelivered = (this.stats.totalMessagesDelivered || 0) + stats.delivered;
+  this.stats.totalSpent += campaign.actualCost || 0;
   this.stats.lastCampaignAt = new Date();
   
-  // Calculate success rate
+  // Recalculate overall success rate
   if (this.stats.totalMessagesSent > 0) {
-    this.stats.successRate = ((this.stats.totalMessagesSent - campaignData.failedMessages || 0) / this.stats.totalMessagesSent) * 100;
+    this.stats.successRate = Math.round((this.stats.totalMessagesDelivered / this.stats.totalMessagesSent) * 100);
+  }
+  
+  await this.save();
+  
+  return {
+    campaignStats: stats,
+    userStats: this.stats
+  };
+};
+
+userSchema.methods.updateMessageStats = async function (deliveredCount = 0, failedCount = 0) {
+  // Update delivered message count
+  if (deliveredCount > 0) {
+    this.stats.totalMessagesDelivered = (this.stats.totalMessagesDelivered || 0) + deliveredCount;
+  }
+  
+  // Recalculate success rate
+  if (this.stats.totalMessagesSent > 0) {
+    this.stats.successRate = Math.round((this.stats.totalMessagesDelivered / this.stats.totalMessagesSent) * 100);
+  }
+  
+  await this.save();
+};
+
+userSchema.methods.updateStats = async function (campaignData) {
+  // Increment campaign count
+  this.stats.totalCampaigns += 1;
+  
+  // Update message counts
+  const messagesSent = campaignData.messagesSent || campaignData.totalMessages || 0;
+  const messagesDelivered = campaignData.messagesDelivered || campaignData.successCount || 0;
+  const messagesFailed = campaignData.messagesFailed || campaignData.failedCount || 0;
+  
+  this.stats.totalMessagesSent += messagesSent;
+  this.stats.totalSpent += campaignData.cost || campaignData.actualCost || 0;
+  this.stats.lastCampaignAt = new Date();
+  
+  // Calculate overall success rate based on total delivered vs total sent
+  if (this.stats.totalMessagesSent > 0) {
+    // Get total delivered messages across all campaigns
+    const totalDelivered = this.stats.totalMessagesDelivered || 0;
+    const newTotalDelivered = totalDelivered + messagesDelivered;
+    
+    // Store total delivered for future calculations
+    this.stats.totalMessagesDelivered = newTotalDelivered;
+    
+    // Calculate success rate as percentage
+    this.stats.successRate = Math.round((newTotalDelivered / this.stats.totalMessagesSent) * 100);
+  } else {
+    this.stats.successRate = 0;
   }
   
   await this.save();
 };
 
 userSchema.methods.checkRateLimit = function (type = 'messages') {
-  const now = new Date();
-  const lastReset = this.rateLimits.currentDayUsage.lastReset;
-  
-  // Reset daily usage if it's a new day
-  if (!lastReset || now.toDateString() !== lastReset.toDateString()) {
-    this.rateLimits.currentDayUsage.messages = 0;
-    this.rateLimits.currentDayUsage.campaigns = 0;
-    this.rateLimits.currentDayUsage.lastReset = now;
-  }
-  
-  if (type === 'messages') {
-    return this.rateLimits.currentDayUsage.messages < this.rateLimits.messagesPerDay;
-  } else if (type === 'campaigns') {
-    return this.rateLimits.currentDayUsage.campaigns < this.rateLimits.campaignsPerDay;
-  }
-  
-  return false;
+  // Rate limits are commented out, return true for now
+  return true;
 };
 
 userSchema.methods.incrementUsage = async function (type = 'messages', count = 1) {
-  if (type === 'messages') {
-    this.rateLimits.currentDayUsage.messages += count;
-  } else if (type === 'campaigns') {
-    this.rateLimits.currentDayUsage.campaigns += count;
-  }
-  
-  await this.save();
+  // Rate limits are commented out, no-op for now
+  return;
 };
 
 // Static Methods

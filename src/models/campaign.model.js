@@ -190,6 +190,25 @@ campaignSchema.index({ templateId: 1 });
 campaignSchema.index({ createdAt: -1 });
 campaignSchema.index({ 'recipients.status': 1 });
 
+// Pre-save middleware to update user stats when campaign completes
+campaignSchema.pre('save', async function (next) {
+  // Check if status is being changed to 'completed'
+  if (this.isModified('status') && this.status === 'completed' && this.isNew === false) {
+    try {
+      const User = mongoose.model('User');
+      const user = await User.findById(this.userId);
+      if (user) {
+        await user.recalculateStatsOnCampaignCompletion(this._id);
+        console.log(`User stats updated for completed campaign ${this._id}`);
+      }
+    } catch (error) {
+      console.error('Error updating user stats on campaign completion:', error);
+      // Don't fail the campaign save if user stats update fails
+    }
+  }
+  next();
+});
+
 // Methods
 campaignSchema.methods.updateStats = async function () {
   // Get actual message counts from Message collection for accurate stats

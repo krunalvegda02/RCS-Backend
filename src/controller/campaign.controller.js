@@ -193,6 +193,14 @@ export const create = async (req, res) => {
     if (autoStart) {
       console.log(`[Campaign] Starting background processing for campaign ${campaign._id} with ${recipients.length} recipients`);
       
+      // Update user stats when campaign is created and started
+      await req.user.updateStats({
+        messagesSent: recipients.length,
+        totalMessages: recipients.length,
+        cost: actualCost,
+        actualCost: actualCost
+      });
+      
       // Update user usage stats
       await req.user.incrementUsage('campaigns', 1);
       await req.user.incrementUsage('messages', rcsCapableRecipients.length);
@@ -439,6 +447,180 @@ export const getStats = async (req, res) => {
       stats: campaign.stats,
     });
   } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// Get all campaigns for a user (for reports)
+export const getUserCampaignReports = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { page = 1, limit = 10 } = req.query;
+    
+    const campaigns = await Campaign.find({ userId })
+      .populate('templateId', 'name templateType')
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit)
+      .select('name description status stats estimatedCost actualCost createdAt completedAt recipients')
+      .lean();
+    
+    // Transform campaigns to match frontend expectations
+    const reports = campaigns.map(campaign => ({
+      _id: campaign._id,
+      CampaignName: campaign.name,
+      type: campaign.templateId?.templateType,
+      cost: campaign.recipients?.length || 0,
+      successCount: campaign.stats?.sent || 0,
+      failedCount: campaign.stats?.failed || 0,
+      bouncedCount: campaign.stats?.bounced || 0,
+      totalDelivered: campaign.stats?.delivered || 0,
+      totalRead: campaign.stats?.read || 0,
+      totalReplied: campaign.stats?.replied || 0,
+      userClickCount: campaign.stats?.replied || 0,
+      createdAt: campaign.createdAt,
+      completedAt: campaign.completedAt,
+      status: campaign.status,
+      recipients: campaign.recipients,
+      actualCost: campaign.actualCost || 0,
+      estimatedCost: campaign.estimatedCost || 0
+    }));
+    
+    const total = await Campaign.countDocuments({ userId });
+    
+    res.json({
+      success: true,
+      data: reports,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch user campaigns',
+      error: error.message
+    });
+  }
+};
+
+// Admin: Get all campaigns from all users
+export const getAllForAdmin = async (req, res) => {
+  try {
+    const { status, userId, type } = req.query;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+
+    let query = {};
+    if (status) query.status = status;
+    if (userId) query.userId = userId;
+    if (type) query.type = type;
+
+    const campaigns = await Campaign.find(query)
+      .populate('templateId', 'name templateType')
+      .populate('userId', 'name email')
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .skip((page - 1) * limit);
+
+    const total = await Campaign.countDocuments(query);
+
+    // Transform data to match frontend expectations
+    const transformedCampaigns = campaigns.map(campaign => ({
+      _id: campaign._id,
+      CampaignName: campaign.name,
+      type: campaign.templateId?.templateType ,
+      cost: campaign.stats?.total || 0,
+      successCount: campaign.stats?.sent || 0,
+      failedCount: campaign.stats?.failed || 0,
+      status: campaign.status,
+      createdAt: campaign.createdAt,
+      userId: campaign.userId
+    }));
+
+    res.json({
+      success: true,
+      data: transformedCampaigns,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error('[Campaign] Admin get all error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// Admin: Get campaign messages
+export const getCampaignMessages = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+
+    const campaign = await Campaign.findById(id);
+    if (!campaign) {
+      return res.status(404).json({
+        success: false,
+        message: 'Campaign not found',
+      });
+    }
+
+    // Use Message model for detailed message data (same as user API)
+    const Message = (await import('../models/message.model.js')).default;
+    
+    const messages = await Message.find({ campaignId: id })
+      .select('recipientPhoneNumber status templateType sentAt deliveredAt readAt clickedAt clickedAction userText suggestionResponse userClickCount userReplyCount errorMessage createdAt')
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .skip((page - 1) * limit)
+      .lean();
+    
+    const total = await Message.countDocuments({ campaignId: id });
+
+    // Transform messages to match frontend expectations
+    const transformedMessages = messages.map(msg => ({
+      _id: msg._id,
+      phoneNumber: msg.recipientPhoneNumber,
+      status: msg.status,
+      templateType: msg.templateType,
+      sentAt: msg.sentAt,
+      deliveredAt: msg.deliveredAt,
+      readAt: msg.readAt,
+      clickedAt: msg.clickedAt,
+      clickedAction: msg.clickedAction,
+      userText: msg.userText,
+      suggestionResponse: msg.suggestionResponse,
+      interactions: msg.userClickCount || 0,
+      replies: msg.userReplyCount || 0,
+      errorMessage: msg.errorMessage,
+      createdAt: msg.createdAt
+    }));
+
+    res.json({
+      success: true,
+      data: transformedMessages,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error('[Campaign] Admin get messages error:', error);
     res.status(500).json({
       success: false,
       message: error.message,

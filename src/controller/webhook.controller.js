@@ -1,28 +1,12 @@
-import mongoose from 'mongoose';
 import Message from '../models/message.model.js';
 import MessageLog from '../models/messageLog.model.js';
 import Campaign from '../models/campaign.model.js';
 import User from '../models/user.model.js';
 import statsService from '../services/CampaignStatsService.js';
 
-// NO Redis client here - Bull handles Redis internally
-// NO queue processing here - only in worker.js
-
-// Ultra-lightweight webhook receiver - only queues, no processing
-export const webhookReceiver = async (req, res) => {
-  // This function is now deprecated - use direct queue in app.js
-  console.warn('[Webhook] webhookReceiver is deprecated - use direct queue');
-  res.status(200).json({ success: true });
-};
-
 // Process Jio webhook status updates
 export async function processWebhookData(data, timestamp) {
   try {
-    // Debug: Log database connection info
-    console.log('[Webhook] Database connection:', mongoose.connection.name);
-    console.log('[Webhook] Database host:', mongoose.connection.host);
-    console.log('[Webhook] Database state:', mongoose.connection.readyState);
-    
     const entityType = data?.entityType;
     const eventType = data?.entity?.eventType || data?.webhookData?.eventType || data?.eventType;
     const messageId = data?.entity?.messageId || data?.messageId;
@@ -63,39 +47,6 @@ export async function processWebhookData(data, timestamp) {
         statType = 'delivered';
         updateData.deviceType = data?.entity?.deviceInfo?.deviceType || null;
         console.log(`[Webhook] 📦 Message DELIVERED: ${messageId}`);
-        
-        // Deduct 1 from wallet on delivery
-        try {
-          const userId = await getUserIdFromMessage(messageId);
-          if (userId) {
-            const User = (await import('../models/user.model.js')).default;
-            await User.findByIdAndUpdate(userId, {
-              $inc: { 'wallet.balance': -1 },
-              $set: { 'wallet.lastUpdated': new Date() },
-              $push: {
-                'wallet.transactions': {
-                  type: 'debit',
-                  amount: 1,
-                  balanceAfter: 0, // Will be updated below
-                  description: `Message delivery charge - ${messageId}`,
-                  createdAt: new Date()
-                }
-              }
-            });
-            
-            // Update balanceAfter in the transaction
-            const user = await User.findById(userId);
-            if (user && user.wallet.transactions.length > 0) {
-              const lastTransaction = user.wallet.transactions[user.wallet.transactions.length - 1];
-              lastTransaction.balanceAfter = user.wallet.balance;
-              await user.save();
-            }
-            
-            console.log(`[Webhook] 💰 Wallet debited ₹1 for user ${userId} on message delivery`);
-          }
-        } catch (walletError) {
-          console.error(`[Webhook] Failed to deduct wallet for message ${messageId}:`, walletError.message);
-        }
         break;
 
       case "MESSAGE_READ":
@@ -106,11 +57,7 @@ export async function processWebhookData(data, timestamp) {
         break;
 
       case "SEND_MESSAGE_FAILURE":
-        // Enhanced error classification based on Jio error codes
         const errorCode = data?.entity?.error?.code;
-        const errorCategory = data?.entity?.error?.category;
-
-        // Comprehensive bounce detection
         const bounceErrorCodes = [
           'INVALID_PHONE', 'PHONE_NOT_REACHABLE', 'BLOCKED_NUMBER',
           'SUBSCRIBER_NOT_FOUND', 'NUMBER_PORTED', 'DEVICE_OFFLINE',
@@ -168,90 +115,23 @@ export async function processWebhookData(data, timestamp) {
       'replied': 5
     };
 
-    // Simple message lookup - webhook messageId matches messageId in database
     let currentMessage = await Message.findOne({
       messageId: messageId
     }, 'status messageId').lean();
     
     if (!currentMessage) {
-      console.log(`[Webhook] Message not found with messageId: ${messageId}`);
-      
-      // Debug: Check database connection and total messages
-      try {
-        const totalMessages = await Message.countDocuments();
-        console.log(`[Webhook] Total messages in DB: ${totalMessages}`);
-        
-        if (totalMessages === 0) {
-          console.log('[Webhook] Database appears empty - connection issue?');
-          
-          // Debug: Check what collections exist
-          const collections = await mongoose.connection.db.listCollections().toArray();
-          console.log('[Webhook] Available collections:', collections.map(c => c.name));
-          
-          // Check if messages collection exists with different name
-          const messageCollections = collections.filter(c => c.name.toLowerCase().includes('message'));
-          console.log('[Webhook] Message-related collections:', messageCollections.map(c => c.name));
-          
-          // Direct query to messages collection
-          const directCount = await mongoose.connection.db.collection('messages').countDocuments();
-          console.log('[Webhook] Direct messages collection count:', directCount);
-          
-          // Check a few documents directly
-          const directMessages = await mongoose.connection.db.collection('messages')
-            .find({})
-            .limit(3)
-            .toArray();
-          console.log('[Webhook] Direct messages sample:', directMessages.map(m => ({
-            _id: m._id,
-            messageId: m.messageId,
-            status: m.status
-          })));
-          
-          return;
-        }
-        
-        // Check recent messages
-        const recent = await Message.find({})
-          .sort({ createdAt: -1 })
-          .limit(3)
-          .select('messageId rcsMessageId status createdAt')
-          .lean();
-        console.log('[Webhook] Recent messages:', recent);
-        
-        // Try exact match with the specific messageId
-        const exactMatch = await Message.findOne({ messageId: '1767202249286_txyuhlwx' });
-        console.log('[Webhook] Test exact match for known message:', exactMatch ? 'FOUND' : 'NOT FOUND');
-        
-        // Check if current messageId exists anywhere
-        const anyMatch = await Message.findOne({
-          $or: [
-            { messageId: messageId },
-            { rcsMessageId: messageId }
-          ]
-        });
-        console.log(`[Webhook] Any match for ${messageId}:`, anyMatch ? 'FOUND' : 'NOT FOUND');
-        
-      } catch (dbError) {
-        console.error('[Webhook] Database error:', dbError.message);
-        console.error('[Webhook] Full error:', dbError);
-      }
-      
+      console.warn(`[Webhook] Message not found: ${messageId}`);
       return;
     }
-    
-    console.log(`[Webhook] Found message: ${currentMessage.messageId}`);
-
 
     const currentStatusLevel = statusHierarchy[currentMessage.status] || 0;
     const newStatusLevel = statusHierarchy[newStatus] || 0;
 
-    // Only update if new status is higher in hierarchy or same level (for retries)
     if (newStatusLevel < currentStatusLevel) {
       console.log(`[Webhook] Skipping status downgrade: ${currentMessage.status} → ${newStatus} for ${messageId}`);
       return;
     }
 
-    // Update message using messageId
     const [message, campaignId] = await Promise.all([
       Message.findOneAndUpdate(
         { messageId: messageId },
@@ -277,9 +157,7 @@ export async function processWebhookData(data, timestamp) {
       return;
     }
 
-    // Update campaign recipient status and increment Redis stats (only if message was updated)
     await Promise.all([
-      // Update recipient status in campaign (allow status progression)
       Campaign.updateOne(
         {
           _id: campaignId,
@@ -296,7 +174,6 @@ export async function processWebhookData(data, timestamp) {
           }
         }
       ),
-      // Log webhook event
       MessageLog.logWebhookEvent({
         messageId,
         campaignId,
@@ -305,11 +182,9 @@ export async function processWebhookData(data, timestamp) {
         phoneNumber: userPhoneNumber,
         isUserInteraction: false,
       }),
-      // Increment Redis stats for real-time performance (only if statType is valid)
       statType && campaignId ? statsService.incrementStat(campaignId, statType) : Promise.resolve()
     ]);
 
-    // Emit real-time update via Socket.IO (if available)
     if (global.io && campaignId) {
       global.io.to(`campaign_${campaignId}`).emit('message_status_update', {
         messageId,
@@ -345,7 +220,6 @@ export async function processUserInteraction(data, timestamp) {
 
     console.log(`[Webhook] Processing user interaction for ${orgMsgId}`);
 
-    // Get campaignId once before Promise.all
     const campaignId = await getCampaignIdFromMessage(orgMsgId);
     if (!campaignId) {
       console.warn(`[Webhook] Campaign not found for message: ${orgMsgId}`);
@@ -359,7 +233,6 @@ export async function processUserInteraction(data, timestamp) {
     };
     const incFields = {};
 
-    // Handle suggestion responses (button clicks)
     if (suggestionResponse) {
       updateFields.suggestionResponse = suggestionResponse;
       updateFields.clickedAt = new Date(userMessage?.sendTime || timestamp);
@@ -370,7 +243,6 @@ export async function processUserInteraction(data, timestamp) {
       console.log(`[Webhook] 🔘 Button clicked: ${suggestionResponse.plainText}`);
     }
 
-    // Handle text messages
     if (userText && userText.trim()) {
       updateFields.userText = userText;
       interactionType = 'text_reply';
@@ -399,7 +271,6 @@ export async function processUserInteraction(data, timestamp) {
           }
         }
       ),
-      // Log user interaction
       MessageLog.logWebhookEvent({
         messageId: orgMsgId,
         campaignId,
@@ -410,11 +281,9 @@ export async function processUserInteraction(data, timestamp) {
         interactionType,
         suggestionResponse: suggestionResponse || { text: userText },
       }),
-      // Increment replied stat in Redis
       statsService.incrementStat(campaignId, 'replied')
     ]);
 
-    // Emit real-time update
     if (global.io && campaignId) {
       global.io.to(`campaign_${campaignId}`).emit('user_interaction', {
         messageId: orgMsgId,
@@ -459,110 +328,3 @@ async function getUserIdFromMessage(messageId) {
     return null;
   }
 }
-
-
-
-
-
-
-
-
-
-// High-performance status update handler
-export const handleStatusUpdate = async (req, res) => {
-  try {
-    // Immediate response
-    res.json({ success: true });
-
-    const { messageId, status, timestamp, errorCode, errorMessage } = req.body;
-
-    if (!messageId || !status) {
-      console.warn('[Webhook] Invalid status update data');
-      return;
-    }
-
-    // Queue for background processing
-    await webhookQueue.add('status-update', {
-      data: {
-        entity: {
-          messageId,
-          eventType: status,
-          error: errorCode ? { code: errorCode, message: errorMessage } : null
-        }
-      },
-      timestamp: timestamp || new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('Status update error:', error);
-    if (!res.headersSent) {
-      res.status(200).json({ success: true }); // Don't fail webhooks
-    }
-  }
-};
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// Handle delivery webhook
-export const handleDelivery = async (req, res) => {
-  try {
-    const { messageId, deliveredAt } = req.body;
-
-    const message = await Message.findOne({ messageId });
-    if (!message) {
-      return res.status(404).json({ success: false, message: 'Message not found' });
-    }
-
-    await message.markAsDelivered();
-
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-
-// Handle read webhook
-export const handleRead = async (req, res) => {
-  try {
-    const { messageId, readAt } = req.body;
-
-    await Message.updateOne(
-      { messageId },
-      { status: 'read', clickedAt: new Date(readAt) }
-    );
-
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// Handle reply webhook
-export const handleReply = async (req, res) => {
-  try {
-    const { messageId, reply, repliedAt, action, uri } = req.body;
-
-    const message = await Message.findOne({ messageId });
-    if (!message) {
-      return res.status(404).json({ success: false, message: 'Message not found' });
-    }
-
-    await message.recordClick(action, uri);
-
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
