@@ -85,6 +85,11 @@ const userSchema = new mongoose.Schema(
         default: 0,
         min: 0,
       },
+      blockedBalance: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
       currency: {
         type: String,
         default: 'INR',
@@ -415,6 +420,35 @@ userSchema.methods.checkRateLimit = function (type = 'messages') {
 userSchema.methods.incrementUsage = async function (type = 'messages', count = 1) {
   // Rate limits are commented out, no-op for now
   return;
+};
+
+// Block wallet balance for campaign
+userSchema.methods.blockBalance = async function (amount, campaignId) {
+  const availableBalance = this.wallet.balance - (this.wallet.blockedBalance || 0);
+  
+  if (availableBalance < amount) {
+    throw new Error('Insufficient available balance');
+  }
+  
+  this.wallet.blockedBalance = (this.wallet.blockedBalance || 0) + amount;
+  this.wallet.lastUpdated = new Date();
+  
+  await this.save();
+  return this.wallet.blockedBalance;
+};
+
+// Unblock wallet balance (on campaign completion or failure)
+userSchema.methods.unblockBalance = async function (amount) {
+  this.wallet.blockedBalance = Math.max(0, (this.wallet.blockedBalance || 0) - amount);
+  this.wallet.lastUpdated = new Date();
+  
+  await this.save();
+  return this.wallet.blockedBalance;
+};
+
+// Get available balance (total - blocked)
+userSchema.methods.getAvailableBalance = function () {
+  return this.wallet.balance - (this.wallet.blockedBalance || 0);
 };
 
 // Static Methods

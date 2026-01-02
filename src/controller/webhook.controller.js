@@ -47,6 +47,26 @@ export async function processWebhookData(data, timestamp) {
         statType = 'delivered';
         updateData.deviceType = data?.entity?.deviceInfo?.deviceType || null;
         console.log(`[Webhook] 📦 Message DELIVERED: ${messageId}`);
+        
+        // Deduct ₹1 and unblock ₹1
+        const userId = await getUserIdFromMessage(messageId);
+        if (userId) {
+          try {
+            const user = await User.findById(userId);
+            if (user) {
+              await user.updateWallet(1, 'subtract', `Message delivered: ${messageId}`);
+              await user.unblockBalance(1);
+              console.log(`[Webhook] 💰 Deducted & unblocked ₹1 for ${userId}`);
+              
+              const campaignIdForCost = await getCampaignIdFromMessage(messageId);
+              if (campaignIdForCost) {
+                await Campaign.updateOne({ _id: campaignIdForCost }, { $inc: { actualCost: 1 } });
+              }
+            }
+          } catch (walletError) {
+            console.error(`[Webhook] Wallet error:`, walletError);
+          }
+        }
         break;
 
       case "MESSAGE_READ":
@@ -77,6 +97,20 @@ export async function processWebhookData(data, timestamp) {
         updateData.failedAt = new Date(sendTime || timestamp);
         updateData.errorCode = errorCode || 'UNKNOWN';
         updateData.errorMessage = data?.entity?.error?.message || 'Unknown error';
+        
+        // Unblock ₹1 for failed message
+        const failedUserId = await getUserIdFromMessage(messageId);
+        if (failedUserId) {
+          try {
+            const failedUser = await User.findById(failedUserId);
+            if (failedUser) {
+              await failedUser.unblockBalance(1);
+              console.log(`[Webhook] 🔓 Unblocked ₹1 for failed message ${messageId}`);
+            }
+          } catch (unblockError) {
+            console.error(`[Webhook] Unblock error:`, unblockError);
+          }
+        }
         break;
 
       case "MESSAGE_EXPIRED":
@@ -185,6 +219,9 @@ export async function processWebhookData(data, timestamp) {
       statType && campaignId ? statsService.incrementStat(campaignId, statType) : Promise.resolve()
     ]);
 
+    console.log(`[RCS] 📊 Campaign recipient status updated to '${newStatus}'`);
+    console.log(`[RCS] 💾 Message status updated to '${newStatus}' in database`);
+
     if (global.io && campaignId) {
       global.io.to(`campaign_${campaignId}`).emit('message_status_update', {
         messageId,
@@ -196,7 +233,7 @@ export async function processWebhookData(data, timestamp) {
       });
     }
 
-    console.log(`[Webhook] ✅ ${eventType} processed for ${messageId} → ${newStatus}`);
+    console.log(`[RCS] ✅ ${eventType} processed for ${messageId} → ${newStatus}`);
 
   } catch (error) {
     console.error('[Webhook] Error processing status update:', error);

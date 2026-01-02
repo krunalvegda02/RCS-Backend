@@ -193,9 +193,13 @@ export const getProfile = async (req, res) => {
       });
     }
 
+    const userResponse = user.toJSON();
+    // Add available balance
+    userResponse.wallet.availableBalance = user.getAvailableBalance();
+
     res.json({
       success: true,
-      data: user.toJSON(),
+      data: userResponse,
     });
   } catch (error) {
     console.error('Get profile error:', error);

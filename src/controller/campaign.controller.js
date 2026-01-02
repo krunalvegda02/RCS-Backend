@@ -124,14 +124,34 @@ export const create = async (req, res) => {
     const rcsCapableRecipients = recipients.filter(r => r.isRcsCapable === true);
     const actualCost = rcsCapableRecipients.length * 1; // ₹1 per RCS capable number
 
-    // Check wallet balance for RCS capable numbers only
-    if (req.user.wallet.balance < actualCost) {
+    // Check available balance (total - blocked)
+    const availableBalance = req.user.getAvailableBalance();
+    const blockedBalance = req.user.wallet.blockedBalance || 0;
+    
+    if (availableBalance < actualCost) {
       if (!res.headersSent) {
+        // Get active campaigns using blocked balance
+        const activeCampaigns = await Campaign.find({
+          userId: req.user._id,
+          status: { $in: ['running', 'scheduled'] },
+          blockedAmount: { $gt: 0 }
+        }).select('name blockedAmount');
+        
+        const campaignDetails = activeCampaigns.map(c => `"${c.name}" (₹${c.blockedAmount})`).join(', ');
+        
         return res.status(402).json({
           success: false,
-          message: 'Insufficient wallet balance',
+          message: blockedBalance > 0 
+            ? `Insufficient available balance. ₹${actualCost} will be deducted upfront and refunded for failed messages. Currently ₹${blockedBalance} is being used in active campaign(s): ${campaignDetails}.`
+            : `Insufficient wallet balance. ₹${actualCost} will be deducted upfront and refunded for failed messages.`,
           required: actualCost,
-          available: req.user.wallet.balance,
+          available: availableBalance,
+          totalBalance: req.user.wallet.balance,
+          blockedBalance: blockedBalance,
+          activeCampaigns: activeCampaigns.map(c => ({
+            name: c.name,
+            blockedAmount: c.blockedAmount
+          }))
         });
       }
       return;
@@ -180,14 +200,19 @@ export const create = async (req, res) => {
       startedAt: autoStart ? new Date() : null,
       estimatedCost: actualCost,
       actualCost: 0,
+      blockedAmount: 0,
     });
 
-    // Deduct wallet balance upfront for RCS capable numbers only
+    // Block wallet balance for this campaign
     if (autoStart && actualCost > 0) {
-      await req.user.updateWallet(actualCost, 'subtract');
-      campaign.actualCost = actualCost;
+      await req.user.blockBalance(actualCost, campaign._id);
+      campaign.blockedAmount = actualCost;
       await campaign.save();
+      console.log(`[Campaign] Blocked ₹${actualCost} from user wallet`);
     }
+
+    // Wallet will be deducted per message on delivery (see webhook.controller.js)
+    // No upfront deduction
 
     // Auto-start campaign processing if requested
     if (autoStart) {

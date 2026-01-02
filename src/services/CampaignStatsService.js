@@ -48,6 +48,7 @@ class CampaignStatsService {
       for (const batch of batches) {
         const bulkOps = [];
         const keysToDelete = [];
+        const campaignsToCheck = [];
         
         for (const key of batch) {
           const campaignId = key.replace('campaign_stats:', '');
@@ -88,6 +89,7 @@ class CampaignStatsService {
             });
             
             keysToDelete.push(key);
+            campaignsToCheck.push(campaignId);
           }
         }
         
@@ -95,6 +97,11 @@ class CampaignStatsService {
           try {
             // Atomic DB update first
             await Campaign.bulkWrite(bulkOps, { ordered: false });
+            
+            // Check for campaign completion after stats update
+            for (const campaignId of campaignsToCheck) {
+              await this.checkCampaignCompletion(campaignId);
+            }
             
             // Only delete Redis keys after successful DB update
             if (keysToDelete.length > 0) {
@@ -196,11 +203,85 @@ class CampaignStatsService {
       
       await redisClient.hIncrBy(`campaign_stats:${campaignId}`, statType, count);
       await redisClient.expire(`campaign_stats:${campaignId}`, 3600); // 1 hour TTL
+      
+      // Check for campaign completion after significant stat updates
+      if (['sent', 'delivered', 'failed', 'bounced'].includes(statType)) {
+        // Use setImmediate to avoid blocking the webhook response
+        setImmediate(() => this.checkCampaignCompletion(campaignId));
+      }
     } catch (error) {
       console.error(`Error incrementing stat ${statType} for campaign ${campaignId}:`, error);
     }
   }
 
+
+  // Check if campaign should be marked as completed
+  async checkCampaignCompletion(campaignId) {
+    try {
+      const campaign = await Campaign.findById(campaignId);
+      if (!campaign || campaign.status !== 'running') return;
+      
+      // Get current message counts
+      const messageCounts = await Message.aggregate([
+        { $match: { campaignId: campaignId } },
+        { $group: { _id: '$status', count: { $sum: 1 } } }
+      ]);
+      
+      const statusCounts = {
+        pending: 0,
+        queued: 0,
+        processing: 0,
+        sent: 0,
+        delivered: 0,
+        read: 0,
+        replied: 0,
+        failed: 0,
+        bounced: 0
+      };
+      
+      messageCounts.forEach(item => {
+        if (statusCounts.hasOwnProperty(item._id)) {
+          statusCounts[item._id] = item.count;
+        }
+      });
+      
+      const totalMessages = Object.values(statusCounts).reduce((sum, count) => sum + count, 0);
+      const totalRecipients = campaign.recipients.length;
+      const processedMessages = statusCounts.sent + statusCounts.delivered + statusCounts.read + statusCounts.replied + statusCounts.failed + statusCounts.bounced;
+      const pendingMessages = statusCounts.pending + statusCounts.queued + statusCounts.processing;
+      
+      // Check if all messages are processed
+      if (totalMessages >= totalRecipients && pendingMessages === 0 && processedMessages >= totalRecipients) {
+        console.log(`[Stats] Campaign ${campaignId} ready for completion - Total: ${totalRecipients}, Processed: ${processedMessages}`);
+        
+        // Update campaign status to completed
+        campaign.status = 'completed';
+        campaign.completedAt = new Date();
+        await campaign.save();
+        
+        // Emit socket event for real-time update
+        if (global.io) {
+          global.io.emitCampaignUpdate(campaignId, {
+            status: 'completed',
+            completedAt: campaign.completedAt,
+            stats: {
+              total: totalRecipients,
+              sent: statusCounts.sent + statusCounts.delivered + statusCounts.read + statusCounts.replied,
+              delivered: statusCounts.delivered + statusCounts.read + statusCounts.replied,
+              read: statusCounts.read + statusCounts.replied,
+              replied: statusCounts.replied,
+              failed: statusCounts.failed,
+              bounced: statusCounts.bounced
+            }
+          });
+        }
+        
+        console.log(`[Stats] ✅ Campaign ${campaignId} marked as completed`);
+      }
+    } catch (error) {
+      console.error(`Error checking campaign completion for ${campaignId}:`, error);
+    }
+  }
 
   
   // Get message delivery stats for real-time reporting

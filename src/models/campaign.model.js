@@ -167,6 +167,10 @@ const campaignSchema = new mongoose.Schema(
       type: Number,
       default: 0, // Actual amount charged
     },
+    blockedAmount: {
+      type: Number,
+      default: 0, // Amount blocked from user wallet
+    },
     rateLimit: {
       messagesPerSecond: {
         type: Number,
@@ -199,7 +203,8 @@ campaignSchema.pre('save', async function (next) {
       const user = await User.findById(this.userId);
       if (user) {
         await user.recalculateStatsOnCampaignCompletion(this._id);
-        console.log(`User stats updated for completed campaign ${this._id}`);
+        console.log(`[Campaign] User stats updated for completed campaign ${this._id}`);
+        console.log(`[Campaign] Deducted: ₹${this.blockedAmount}, Actual delivered: ₹${this.actualCost}`);
       }
     } catch (error) {
       console.error('Error updating user stats on campaign completion:', error);
@@ -265,10 +270,20 @@ campaignSchema.methods.updateStats = async function () {
   const totalProcessed = stats.sent + stats.failed + stats.bounced;
   const hasUnprocessedMessages = stats.pending > 0 || stats.processing > 0;
   
-  if (this.status === 'running' && !hasUnprocessedMessages && totalProcessed >= this.recipients.length) {
+  const wasRunning = this.status === 'running';
+  if (wasRunning && !hasUnprocessedMessages && totalProcessed >= this.recipients.length) {
     this.status = 'completed';
     this.completedAt = new Date();
     console.log(`Campaign ${this._id} marked as completed - Total: ${this.recipients.length}, Processed: ${totalProcessed}`);
+    
+    // Emit socket event for campaign completion
+    if (global.io) {
+      global.io.emitCampaignUpdate(this._id, {
+        status: 'completed',
+        completedAt: this.completedAt,
+        stats: stats
+      });
+    }
   }
   
   await this.save();

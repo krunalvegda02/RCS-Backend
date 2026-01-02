@@ -74,7 +74,8 @@ app.use("/api/v1", router);
 app.use("/api/realtime", authenticateToken, realtimeRoutes);
 
 app.post('/api/v1/jio/rcs/webhooks', async (req, res) => {  
-  const requestId = Math.random().toString(36).substr(2, 9);
+  // const requestId = Math.random().toString(36).substr(2, 9);
+  const requestId = "1234";
   
   // Log incoming webhook
   console.log(`🔔 [${requestId}] Webhook received:`, JSON.stringify(req.body, null, 2));

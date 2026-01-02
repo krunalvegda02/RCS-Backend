@@ -717,20 +717,20 @@ class JioRCSService {
 
   // ===================== SMART CAPABILITY CHECK =====================
   /**
-   * Smart capability check - uses single API for ≤500 numbers, batch API for >500 numbers
+   * Smart capability check - uses single API for <500 numbers, batch API for ≥500 numbers
    */
   async checkCapabilitySmart(phoneNumbers, userId) {
     if (!Array.isArray(phoneNumbers)) {
       phoneNumbers = [phoneNumbers];
     }
 
-    // Use sequential API for 500 or fewer numbers
-    if (phoneNumbers.length <= 500) {
-      console.log(`[RCS] Using sequential API for ${phoneNumbers.length} numbers`);
+    // Use sequential API for less than 500 numbers (batch API requires minimum 500)
+    if (phoneNumbers.length < 500) {
+      console.log(`[RCS] Using sequential API for ${phoneNumbers.length} numbers (batch requires min 500)`);
       return await this.checkCapabilitySequential(phoneNumbers, userId);
     }
 
-    // Use batch API for more than 500 numbers
+    // Use batch API for 500 or more numbers
     console.log(`[RCS] Using batch API for ${phoneNumbers.length} numbers`);
     return await this.checkCapabilityBatch(phoneNumbers, userId);
   }
