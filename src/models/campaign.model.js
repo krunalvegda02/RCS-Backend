@@ -194,7 +194,7 @@ campaignSchema.index({ templateId: 1 });
 campaignSchema.index({ createdAt: -1 });
 campaignSchema.index({ 'recipients.status': 1 });
 
-// Pre-save middleware to cleanup blocked balance when campaign completes
+// Pre-save middleware to update user stats when campaign completes
 campaignSchema.pre('save', async function (next) {
   // Check if status is being changed to 'completed' or 'failed'
   if (this.isModified('status') && ['completed', 'failed'].includes(this.status) && this.isNew === false) {
@@ -202,14 +202,7 @@ campaignSchema.pre('save', async function (next) {
       const User = mongoose.model('User');
       const user = await User.findById(this.userId);
       
-      if (user && user.wallet.blockedBalance > 0) {
-        // Unblock ALL remaining blocked balance (safety net)
-        const currentBlocked = user.wallet.blockedBalance;
-        if (currentBlocked > 0) {
-          await user.unblockBalance(currentBlocked);
-          console.log(`[Campaign] Unblocked ALL remaining ₹${currentBlocked} for campaign ${this._id}`);
-        }
-        
+      if (user) {
         await user.recalculateStatsOnCampaignCompletion(this._id);
         console.log(`[Campaign] User stats updated for ${this.status} campaign ${this._id}`);
       }

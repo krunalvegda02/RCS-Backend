@@ -296,8 +296,8 @@ class JioRCSService {
         `?messageId=${encodeURIComponent(messageId)}` +
         `&assistantId=${encodeURIComponent(assistantId)}`;
 
-      console.log(`[RCS] API URL: ${url}`);
-      console.log(`[RCS] Payload:`, JSON.stringify(rcsPayload, null, 2));
+      // console.log(`[RCS] API URL: ${url}`);
+      // console.log(`[RCS] Payload:`, JSON.stringify(rcsPayload, null, 2));
 
       const response = await axios.post(url, rcsPayload, {
         headers: {
@@ -307,9 +307,9 @@ class JioRCSService {
         timeout: 15000,
       });
 
-      console.log(`[RCS] 📬 API Response:+++==========================`, response.data);
-      console.log(`[RCS] ✅ Message API call successful for ${formattedPhone}`);
-      console.log(`[RCS] 📨 RCS Message ID: ${response.data?.messageId || messageId}`);
+      // console.log(`[RCS] 📬 API Response:+++==========================`, response.data);
+      // console.log(`[RCS] ✅ Message API call successful for ${formattedPhone}`);
+      // console.log(`[RCS] 📨 RCS Message ID: ${response.data?.messageId || messageId}`);
 
       // Keep status as 'processing' - will change to 'sent' only via MESSAGE_SENT webhook
       if (response.data.success === false) {
@@ -318,7 +318,7 @@ class JioRCSService {
         // Store RCS message ID but keep status as 'processing'
         message.rcsMessageId = response.data?.messageId || messageId;
         await message.save();
-        console.log(`[RCS] 💾 Message kept in 'processing' status, awaiting MESSAGE_SENT webhook`);
+        // console.log(`[RCS] 💾 Message kept in 'processing' status, awaiting MESSAGE_SENT webhook`);
       }
 
       // Keep campaign recipient status as 'processing' - will update via webhook
@@ -327,7 +327,7 @@ class JioRCSService {
           const campaign = await Campaign.findById(campaignId);
           if (campaign) {
             // Status remains 'processing' until MESSAGE_SENT webhook
-            console.log(`[RCS] 📊 Campaign recipient kept in 'processing' status`);
+            // console.log(`[RCS] 📊 Campaign recipient kept in 'processing' status`);
           }
         } catch (campaignError) {
           console.error(`[RCS] Failed to check campaign:`, campaignError.message);
@@ -346,7 +346,7 @@ class JioRCSService {
           assistantId,
           responseTimeMs: response.headers['x-response-time'],
         });
-        console.log(`[RCS] 📝 Message log created successfully`);
+        // console.log(`[RCS] 📝 Message log created successfully`);
       } catch (logError) {
         console.error(`[RCS] Failed to create message log:`, logError.message);
       }
@@ -390,16 +390,18 @@ class JioRCSService {
         } else {
           await message.markAsFailed(errorCode, error.message);
           
-          // Unblock and refund for pre-send failures (user not charged)
+          // Unblock and refund (move from blocked back to wallet)
           try {
             const user = await User.findById(userId);
             if (user) {
-              await user.unblockBalance(1);
-              await user.updateWallet(1, 'add', `Message send failed - refund: ${messageId}`);
+              user.wallet.blockedBalance = Math.max(0, (user.wallet.blockedBalance || 0) - 1);
+              user.wallet.balance += 1;
+              user.wallet.lastUpdated = new Date();
+              await user.save();
               console.log(`[RCS] 🔄 Refunded ₹1 for pre-send failure`);
             }
-          } catch (unblockError) {
-            console.error(`[RCS] Failed to refund:`, unblockError);
+          } catch (error) {
+            console.error(`[RCS] Refund error:`, error);
           }
         }
       }
@@ -982,16 +984,18 @@ class JioRCSService {
                 }
               );
               
-                  // Unblock and refund (user not charged for non-RCS capable)
+                  // Unblock and refund (move from blocked back to wallet)
               try {
                 const user = await User.findById(campaign.userId);
                 if (user) {
-                  await user.unblockBalance(1);
-                  await user.updateWallet(1, 'add', `Non-RCS capable - refund: ${recipient.phoneNumber}`);
-                  console.log(`[RCS] 🔄 Refunded ₹1 for non-RCS capable contact`);
+                  user.wallet.blockedBalance = Math.max(0, (user.wallet.blockedBalance || 0) - 1);
+                  user.wallet.balance += 1;
+                  user.wallet.lastUpdated = new Date();
+                  await user.save();
+                  console.log(`[RCS] 🔄 Refunded ₹1 for non-RCS capable`);
                 }
-              } catch (unblockError) {
-                console.error(`[RCS] Failed to refund:`, unblockError);
+              } catch (error) {
+                console.error(`[RCS] Refund error:`, error);
               }
               
               return;
@@ -1021,16 +1025,18 @@ class JioRCSService {
                     }
                   );
                   
-                  // Unblock and refund (user not charged for non-capable device)
+                  // Unblock and refund (move from blocked back to wallet)
                   try {
                     const user = await User.findById(campaign.userId);
                     if (user) {
-                      await user.unblockBalance(1);
-                      await user.updateWallet(1, 'add', `Non-capable device - refund: ${recipient.phoneNumber}`);
+                      user.wallet.blockedBalance = Math.max(0, (user.wallet.blockedBalance || 0) - 1);
+                      user.wallet.balance += 1;
+                      user.wallet.lastUpdated = new Date();
+                      await user.save();
                       console.log(`[RCS] 🔄 Refunded ₹1 for non-capable device`);
                     }
-                  } catch (unblockError) {
-                    console.error(`[RCS] Failed to refund:`, unblockError);
+                  } catch (error) {
+                    console.error(`[RCS] Refund error:`, error);
                   }
                   
                   return;
@@ -1052,16 +1058,18 @@ class JioRCSService {
                   }
                 );
                 
-                // Unblock and refund (user not charged for capability check failure)
+                // Unblock and refund (move from blocked back to wallet)
                 try {
                   const user = await User.findById(campaign.userId);
                   if (user) {
-                    await user.unblockBalance(1);
-                    await user.updateWallet(1, 'add', `Capability check failed - refund: ${recipient.phoneNumber}`);
+                    user.wallet.blockedBalance = Math.max(0, (user.wallet.blockedBalance || 0) - 1);
+                    user.wallet.balance += 1;
+                    user.wallet.lastUpdated = new Date();
+                    await user.save();
                     console.log(`[RCS] 🔄 Refunded ₹1 for capability check failure`);
                   }
-                } catch (unblockError) {
-                  console.error(`[RCS] Failed to refund:`, unblockError);
+                } catch (error) {
+                  console.error(`[RCS] Refund error:`, error);
                 }
                 
                 return;
@@ -1150,16 +1158,18 @@ class JioRCSService {
               }
             );
             
-            // Unblock and refund (user not charged for recipient error)
+            // Unblock and refund (move from blocked back to wallet)
             try {
               const user = await User.findById(campaign.userId);
               if (user) {
-                await user.unblockBalance(1);
-                await user.updateWallet(1, 'add', `Recipient error - refund: ${recipient.phoneNumber}`);
+                user.wallet.blockedBalance = Math.max(0, (user.wallet.blockedBalance || 0) - 1);
+                user.wallet.balance += 1;
+                user.wallet.lastUpdated = new Date();
+                await user.save();
                 console.log(`[RCS] 🔄 Refunded ₹1 for recipient error`);
               }
-            } catch (unblockError) {
-              console.error(`[RCS] Failed to refund:`, unblockError);
+            } catch (error) {
+              console.error(`[RCS] Refund error:`, error);
             }
           }
         });

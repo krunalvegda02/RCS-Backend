@@ -422,7 +422,7 @@ userSchema.methods.incrementUsage = async function (type = 'messages', count = 1
   return;
 };
 
-// Block wallet balance for campaign (deduct from wallet immediately)
+// Block wallet balance for campaign (deduct from wallet and track as blocked)
 userSchema.methods.blockBalance = async function (amount, campaignId) {
   if (this.wallet.balance < amount) {
     throw new Error('Insufficient wallet balance');
