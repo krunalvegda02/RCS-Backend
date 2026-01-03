@@ -385,8 +385,23 @@ class JioRCSService {
       }
 
       if (message) {
-        if (shouldRetry) await message.scheduleRetry();
-        else await message.markAsFailed(errorCode, error.message);
+        if (shouldRetry) {
+          await message.scheduleRetry();
+        } else {
+          await message.markAsFailed(errorCode, error.message);
+          
+          // Unblock immediately for pre-send failures (no webhook will come)
+          try {
+            const user = await User.findById(userId);
+            if (user) {
+              await user.unblockBalance(1);
+              await user.updateWallet(1, 'add', `Message send failed - refund: ${messageId}`);
+              console.log(`[RCS] 🔄 Refunded ₹1 for pre-send failure ${messageId}`);
+            }
+          } catch (unblockError) {
+            console.error(`[RCS] Failed to refund:`, unblockError);
+          }
+        }
       }
 
       throw error;
@@ -913,10 +928,13 @@ class JioRCSService {
       if (!pendingRecipients.length) {
         console.log(`[RCS] No pending recipients for campaign ${campaignId}`);
         // Mark campaign as completed if no pending recipients
-        await Campaign.updateOne(
-          { _id: campaignId, status: 'running' },
-          { status: 'completed', completedAt: new Date() }
-        );
+        const campaignToComplete = await Campaign.findById(campaignId);
+        if (campaignToComplete && campaignToComplete.status === 'running') {
+          campaignToComplete.status = 'completed';
+          campaignToComplete.completedAt = new Date();
+          await campaignToComplete.save(); // This triggers the pre-save hook to unblock
+          console.log(`[RCS] ✅ Campaign marked as completed, blocked balance cleaned up`);
+        }
         return;
       }
 
@@ -963,6 +981,19 @@ class JioRCSService {
                   }
                 }
               );
+              
+              // Unblock and refund immediately (no webhook will come)
+              try {
+                const user = await User.findById(campaign.userId);
+                if (user) {
+                  await user.unblockBalance(1);
+                  await user.updateWallet(1, 'add', `Non-RCS capable - refund: ${recipient.phoneNumber}`);
+                  console.log(`[RCS] 🔄 Refunded ₹1 for non-RCS capable contact`);
+                }
+              } catch (unblockError) {
+                console.error(`[RCS] Failed to refund:`, unblockError);
+              }
+              
               return;
             }
 
@@ -989,6 +1020,19 @@ class JioRCSService {
                       }
                     }
                   );
+                  
+                  // Unblock and refund immediately (no webhook will come)
+                  try {
+                    const user = await User.findById(campaign.userId);
+                    if (user) {
+                      await user.unblockBalance(1);
+                      await user.updateWallet(1, 'add', `Non-capable device - refund: ${recipient.phoneNumber}`);
+                      console.log(`[RCS] 🔄 Refunded ₹1 for non-capable device`);
+                    }
+                  } catch (unblockError) {
+                    console.error(`[RCS] Failed to refund:`, unblockError);
+                  }
+                  
                   return;
                 }
                 capabilityToken = cap.token;
@@ -1007,6 +1051,19 @@ class JioRCSService {
                     }
                   }
                 );
+                
+                // Unblock and refund immediately (no webhook will come)
+                try {
+                  const user = await User.findById(campaign.userId);
+                  if (user) {
+                    await user.unblockBalance(1);
+                    await user.updateWallet(1, 'add', `Capability check failed - refund: ${recipient.phoneNumber}`);
+                    console.log(`[RCS] 🔄 Refunded ₹1 for capability check failure`);
+                  }
+                } catch (unblockError) {
+                  console.error(`[RCS] Failed to refund:`, unblockError);
+                }
+                
                 return;
               }
             }
@@ -1092,6 +1149,18 @@ class JioRCSService {
                 }
               }
             );
+            
+            // Unblock and refund immediately (no webhook will come)
+            try {
+              const user = await User.findById(campaign.userId);
+              if (user) {
+                await user.unblockBalance(1);
+                await user.updateWallet(1, 'add', `Recipient error - refund: ${recipient.phoneNumber}`);
+                console.log(`[RCS] 🔄 Refunded ₹1 for recipient error`);
+              }
+            } catch (unblockError) {
+              console.error(`[RCS] Failed to refund:`, unblockError);
+            }
           }
         });
 
@@ -1121,11 +1190,13 @@ class JioRCSService {
         }, nextDelay);
       } else {
         // All recipients processed, mark campaign as completed
-        await Campaign.updateOne(
-          { _id: campaignId },
-          { status: 'completed', completedAt: new Date() }
-        );
-        console.log(`[RCS] ✅ Campaign ${campaignId} completed successfully`);
+        const campaign = await Campaign.findById(campaignId);
+        if (campaign) {
+          campaign.status = 'completed';
+          campaign.completedAt = new Date();
+          await campaign.save(); // This triggers the pre-save hook to unblock
+          console.log(`[RCS] ✅ Campaign ${campaignId} completed successfully`);
+        }
       }
     } catch (error) {
       console.error('[RCS] Error processing campaign batch:', error.message);

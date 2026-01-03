@@ -39,20 +39,7 @@ export async function processWebhookData(data, timestamp) {
         statType = 'sent';
         updateData.deliveryLatency = data?.entity?.deliveryInfo?.latencyMs || null;
         console.log(`[Webhook] ✅ Message SENT: ${messageId}`);
-        
-        // Unblock ₹1 when message is confirmed sent
-        const sentUserId = await getUserIdFromMessage(messageId);
-        if (sentUserId) {
-          try {
-            const sentUser = await User.findById(sentUserId);
-            if (sentUser) {
-              await sentUser.unblockBalance(1);
-              console.log(`[Webhook] 🔓 Unblocked ₹1 for sent message ${messageId}`);
-            }
-          } catch (unblockError) {
-            console.error(`[Webhook] Unblock error:`, unblockError);
-          }
-        }
+        // Balance stays blocked until delivered or failed
         break;
 
       case "MESSAGE_DELIVERED":
@@ -62,14 +49,15 @@ export async function processWebhookData(data, timestamp) {
         updateData.deviceType = data?.entity?.deviceInfo?.deviceType || null;
         console.log(`[Webhook] 📦 Message DELIVERED: ${messageId}`);
         
-        // Deduct ₹1 on delivery
+        // Deduct ₹1 from total balance AND unblock ₹1 (charge user)
         const userId = await getUserIdFromMessage(messageId);
         if (userId) {
           try {
             const user = await User.findById(userId);
             if (user) {
               await user.updateWallet(1, 'subtract', `Message delivered: ${messageId}`);
-              console.log(`[Webhook] 💰 Deducted ₹1 for ${userId}`);
+              await user.unblockBalance(1);
+              console.log(`[Webhook] 💰 Charged ₹1 and unblocked ₹1 for ${userId}`);
               
               const campaignIdForCost = await getCampaignIdFromMessage(messageId);
               if (campaignIdForCost) {
@@ -111,17 +99,18 @@ export async function processWebhookData(data, timestamp) {
         updateData.errorCode = errorCode || 'UNKNOWN';
         updateData.errorMessage = data?.entity?.error?.message || 'Unknown error';
         
-        // Unblock ₹1 for failed/bounced message
+        // Refund ₹1 to user (unblock and add back to balance)
         const failedUserId = await getUserIdFromMessage(messageId);
         if (failedUserId) {
           try {
             const failedUser = await User.findById(failedUserId);
             if (failedUser) {
               await failedUser.unblockBalance(1);
-              console.log(`[Webhook] 🔓 Unblocked ₹1 for failed message ${messageId}`);
+              await failedUser.updateWallet(1, 'add', `Message failed - refund: ${messageId}`);
+              console.log(`[Webhook] 🔄 Refunded ₹1 for failed message ${messageId}`);
             }
           } catch (unblockError) {
-            console.error(`[Webhook] Unblock error:`, unblockError);
+            console.error(`[Webhook] Refund error:`, unblockError);
           }
         }
         break;
@@ -134,17 +123,18 @@ export async function processWebhookData(data, timestamp) {
         updateData.errorMessage = 'Message expired before delivery';
         console.log(`[Webhook] ⏰ Message EXPIRED: ${messageId}`);
         
-        // Unblock ₹1 for expired message
+        // Refund ₹1 to user
         const expiredUserId = await getUserIdFromMessage(messageId);
         if (expiredUserId) {
           try {
             const expiredUser = await User.findById(expiredUserId);
             if (expiredUser) {
               await expiredUser.unblockBalance(1);
-              console.log(`[Webhook] 🔓 Unblocked ₹1 for expired message ${messageId}`);
+              await expiredUser.updateWallet(1, 'add', `Message expired - refund: ${messageId}`);
+              console.log(`[Webhook] 🔄 Refunded ₹1 for expired message ${messageId}`);
             }
           } catch (unblockError) {
-            console.error(`[Webhook] Unblock error:`, unblockError);
+            console.error(`[Webhook] Refund error:`, unblockError);
           }
         }
         break;
@@ -157,17 +147,18 @@ export async function processWebhookData(data, timestamp) {
         updateData.errorMessage = 'Message was revoked';
         console.log(`[Webhook] 🚫 Message REVOKED: ${messageId}`);
         
-        // Unblock ₹1 for revoked message
+        // Refund ₹1 to user
         const revokedUserId = await getUserIdFromMessage(messageId);
         if (revokedUserId) {
           try {
             const revokedUser = await User.findById(revokedUserId);
             if (revokedUser) {
               await revokedUser.unblockBalance(1);
-              console.log(`[Webhook] 🔓 Unblocked ₹1 for revoked message ${messageId}`);
+              await revokedUser.updateWallet(1, 'add', `Message revoked - refund: ${messageId}`);
+              console.log(`[Webhook] 🔄 Refunded ₹1 for revoked message ${messageId}`);
             }
           } catch (unblockError) {
-            console.error(`[Webhook] Unblock error:`, unblockError);
+            console.error(`[Webhook] Refund error:`, unblockError);
           }
         }
         break;

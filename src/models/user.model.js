@@ -451,6 +451,62 @@ userSchema.methods.getAvailableBalance = function () {
   return this.wallet.balance - (this.wallet.blockedBalance || 0);
 };
 
+// Cleanup stuck blocked balance for completed/failed campaigns
+userSchema.methods.cleanupBlockedBalance = async function () {
+  const Campaign = mongoose.model('Campaign');
+  
+  // Find all completed/failed campaigns for this user
+  const campaigns = await Campaign.find({
+    userId: this._id,
+    status: { $in: ['completed', 'failed'] },
+    blockedAmount: { $gt: 0 }
+  });
+  
+  let totalToUnblock = 0;
+  
+  for (const campaign of campaigns) {
+    const remainingBlocked = campaign.blockedAmount - (campaign.actualCost || 0);
+    if (remainingBlocked > 0) {
+      totalToUnblock += remainingBlocked;
+      console.log(`[Cleanup] Campaign ${campaign._id}: Blocked ₹${campaign.blockedAmount}, Actual ₹${campaign.actualCost}, To unblock ₹${remainingBlocked}`);
+    }
+  }
+  
+  if (totalToUnblock > 0) {
+    await this.unblockBalance(totalToUnblock);
+    console.log(`[Cleanup] Total unblocked for user ${this._id}: ₹${totalToUnblock}`);
+  }
+  
+  return {
+    campaignsChecked: campaigns.length,
+    amountUnblocked: totalToUnblock,
+    newBlockedBalance: this.wallet.blockedBalance
+  };
+};
+
+// Static method to cleanup all users' stuck blocked balances
+userSchema.statics.cleanupAllBlockedBalances = async function () {
+  const users = await this.find({ 'wallet.blockedBalance': { $gt: 0 } });
+  const results = [];
+  
+  for (const user of users) {
+    try {
+      const result = await user.cleanupBlockedBalance();
+      if (result.amountUnblocked > 0) {
+        results.push({
+          userId: user._id,
+          email: user.email,
+          ...result
+        });
+      }
+    } catch (error) {
+      console.error(`Error cleaning up user ${user._id}:`, error);
+    }
+  }
+  
+  return results;
+};
+
 // Static Methods
 userSchema.statics.findByEmailOrPhone = function (identifier) {
   return this.findOne({

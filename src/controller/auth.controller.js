@@ -816,3 +816,51 @@ export const updateWallet = async (req, res) => {
     });
   }
 };
+
+// Cleanup stuck blocked balance for a user
+export const cleanupUserBlockedBalance = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    const result = await user.cleanupBlockedBalance();
+
+    res.json({
+      success: true,
+      message: 'Blocked balance cleanup completed',
+      data: result,
+    });
+  } catch (error) {
+    console.error('Cleanup blocked balance error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Internal server error',
+    });
+  }
+};
+
+// Cleanup stuck blocked balance for all users
+export const cleanupAllBlockedBalances = async (req, res) => {
+  try {
+    const results = await User.cleanupAllBlockedBalances();
+
+    res.json({
+      success: true,
+      message: `Cleaned up blocked balances for ${results.length} users`,
+      data: results,
+    });
+  } catch (error) {
+    console.error('Cleanup all blocked balances error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Internal server error',
+    });
+  }
+};

@@ -23,5 +23,7 @@ router.put('/admin/user/:userId', authenticateToken, requireAdmin, AuthControlle
 router.put('/admin/wallet/:userId', authenticateToken, requireAdmin, AuthController.updateWallet);
 router.put('/admin/password/:userId', authenticateToken, requireAdmin, AuthController.updateUserPassword);
 router.get('/admin/transactions/:userId', authenticateToken, requireAdmin, AuthController.getUserTransactionHistory);
+router.post('/admin/cleanup-blocked/:userId', authenticateToken, requireAdmin, AuthController.cleanupUserBlockedBalance);
+router.post('/admin/cleanup-all-blocked', authenticateToken, requireAdmin, AuthController.cleanupAllBlockedBalances);
 
 export default router;
