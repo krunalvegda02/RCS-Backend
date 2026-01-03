@@ -4,7 +4,6 @@ import { createServer as createNetServer } from "net";
 import connectDB from "./db/index.js";
 import app from "./app.js";
 import JioRCSService from "./services/JioRCS.service.js";
-import { setupSocketIO } from "./services/socketIO.service.js";
 
 dotenv.config({
   path: "./.env",
@@ -65,7 +64,6 @@ connectDB()
     
     server.listen(finalPort, () => {
       console.log(`🚀 Server is running on port ${finalPort}`);
-      console.log(`📡 Socket.IO enabled for live message tracking`);
       
       if (finalPort !== port) {
         console.log(`📝 Note: Using port ${finalPort} instead of ${port}`);
