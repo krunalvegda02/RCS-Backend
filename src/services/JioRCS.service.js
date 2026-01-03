@@ -390,13 +390,13 @@ class JioRCSService {
         } else {
           await message.markAsFailed(errorCode, error.message);
           
-          // Unblock immediately for pre-send failures (no webhook will come)
+          // Unblock and refund for pre-send failures (user not charged)
           try {
             const user = await User.findById(userId);
             if (user) {
               await user.unblockBalance(1);
               await user.updateWallet(1, 'add', `Message send failed - refund: ${messageId}`);
-              console.log(`[RCS] 🔄 Refunded ₹1 for pre-send failure ${messageId}`);
+              console.log(`[RCS] 🔄 Refunded ₹1 for pre-send failure`);
             }
           } catch (unblockError) {
             console.error(`[RCS] Failed to refund:`, unblockError);
@@ -982,7 +982,7 @@ class JioRCSService {
                 }
               );
               
-              // Unblock and refund immediately (no webhook will come)
+                  // Unblock and refund (user not charged for non-RCS capable)
               try {
                 const user = await User.findById(campaign.userId);
                 if (user) {
@@ -1021,7 +1021,7 @@ class JioRCSService {
                     }
                   );
                   
-                  // Unblock and refund immediately (no webhook will come)
+                  // Unblock and refund (user not charged for non-capable device)
                   try {
                     const user = await User.findById(campaign.userId);
                     if (user) {
@@ -1052,7 +1052,7 @@ class JioRCSService {
                   }
                 );
                 
-                // Unblock and refund immediately (no webhook will come)
+                // Unblock and refund (user not charged for capability check failure)
                 try {
                   const user = await User.findById(campaign.userId);
                   if (user) {
@@ -1150,7 +1150,7 @@ class JioRCSService {
               }
             );
             
-            // Unblock and refund immediately (no webhook will come)
+            // Unblock and refund (user not charged for recipient error)
             try {
               const user = await User.findById(campaign.userId);
               if (user) {
