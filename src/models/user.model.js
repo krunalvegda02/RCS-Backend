@@ -1,5 +1,31 @@
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
+
+const ENCRYPTION_KEY = process.env.PASSWORD_ENCRYPTION_KEY || 'your-32-character-secret-key!!'; // Must be 32 characters
+const IV_LENGTH = 16;
+
+function encryptPassword(password) {
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY.padEnd(32, '0').slice(0, 32)), iv);
+  let encrypted = cipher.update(password);
+  encrypted = Buffer.concat([encrypted, cipher.final()]);
+  return iv.toString('hex') + ':' + encrypted.toString('hex');
+}
+
+function decryptPassword(encryptedPassword) {
+  try {
+    const parts = encryptedPassword.split(':');
+    const iv = Buffer.from(parts.shift(), 'hex');
+    const encryptedText = Buffer.from(parts.join(':'), 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY.padEnd(32, '0').slice(0, 32)), iv);
+    let decrypted = decipher.update(encryptedText);
+    decrypted = Buffer.concat([decrypted, decipher.final()]);
+    return decrypted.toString();
+  } catch (error) {
+    return null;
+  }
+}
 
 const userSchema = new mongoose.Schema(
   {
@@ -219,15 +245,14 @@ userSchema.virtual('isLocked').get(function () {
   return !!(this.lockUntil && this.lockUntil > Date.now());
 });
 
-// Pre-save middleware to hash password
+// Pre-save middleware to encrypt password
 userSchema.pre('save', async function (next) {
-  // Only hash password if it's modified
+  // Only encrypt password if it's modified
   if (!this.isModified('password')) return next();
 
   try {
-    // Hash password with cost of 12
-    const salt = await bcrypt.genSalt(12);
-    this.password = await bcrypt.hash(this.password, salt);
+    // Encrypt password with AES
+    this.password = encryptPassword(this.password);
     next();
   } catch (error) {
     next(error);
@@ -248,7 +273,13 @@ userSchema.pre('save', function (next) {
 // Instance Methods
 userSchema.methods.comparePassword = async function (candidatePassword) {
   if (!this.password) return false;
-  return bcrypt.compare(String(candidatePassword), this.password);
+  const decrypted = decryptPassword(this.password);
+  return decrypted === candidatePassword;
+};
+
+userSchema.methods.getDecryptedPassword = function () {
+  if (!this.password) return null;
+  return decryptPassword(this.password);
 };
 
 userSchema.methods.incrementLoginAttempts = async function () {
@@ -512,8 +543,7 @@ userSchema.statics.findByEmailOrPhone = function (identifier) {
     $or: [
       { email: String(identifier) },
       { phone: String(identifier) }
-    ],
-    isActive: true,
+    ]
   }).select('+password');
 };
 

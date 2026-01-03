@@ -42,9 +42,11 @@ export const authenticateToken = async (req, res, next) => {
     }
 
     if (!user.isActive) {
+      // Clear any existing tokens
       return res.status(403).json({
         success: false,
         message: 'Account is deactivated',
+        deactivated: true,
       });
     }
 

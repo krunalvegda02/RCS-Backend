@@ -23,8 +23,9 @@ router.get('/campaign-reports/user/:userId', authenticateToken, CampaignControll
 router.get('/campaign-reports/campaign/:id/messages', authenticateToken, CampaignController.getCampaignMessages);
 
 // Admin campaign routes
-router.get('/admin/campaigns', authenticateToken, requireAdmin, CampaignController.getAllForAdmin);
+router.get('/admin/campaigns/export/all', authenticateToken, requireAdmin, CampaignController.getAllCampaignsForExport);
 router.get('/admin/campaigns/:id/messages', authenticateToken, requireAdmin, CampaignController.getCampaignMessages);
+router.get('/admin/campaigns', authenticateToken, requireAdmin, CampaignController.getAllForAdmin);
 
 router.use('/auth', authRoutes);
 router.use('/templates', templateRoutes);

@@ -5,8 +5,9 @@ import { authenticateToken, requireUser, requireAdmin, checkWalletBalance } from
 const router = express.Router();
 
 // Admin routes (no user restriction)
-router.get('/admin/campaigns', authenticateToken, requireAdmin, CampaignController.getAllForAdmin);
+router.get('/admin/campaigns/export/all', authenticateToken, requireAdmin, CampaignController.getAllCampaignsForExport);
 router.get('/admin/campaigns/:id/messages', authenticateToken, requireAdmin, CampaignController.getCampaignMessages);
+router.get('/admin/campaigns', authenticateToken, requireAdmin, CampaignController.getAllForAdmin);
 
 // All other campaign routes require authentication and user role
 router.use(authenticateToken);

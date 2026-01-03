@@ -60,6 +60,7 @@ export const login = async (req, res) => {
       return res.status(403).json({
         success: false,
         message: 'Account is deactivated. Please contact administrator.',
+        deactivated: true,
       });
     }
 
@@ -84,7 +85,6 @@ export const login = async (req, res) => {
     user.lastLogin = new Date();
     await user.save();
 
-    // Remove sensitive data
     const userResponse = user.toJSON();
 
     res.json({
@@ -422,7 +422,7 @@ export const createUser = async (req, res) => {
 export const updateUser = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { name, email, phone, companyname, isActive } = req.body;
+    const { name, email, phone, companyname, isActive, jioConfig } = req.body;
 
     // Validation
     if (!name || !email || !phone) {
@@ -466,6 +466,14 @@ export const updateUser = async (req, res) => {
     // Only update isActive if provided
     if (isActive !== undefined) {
       updateData.isActive = isActive;
+    }
+
+    // Update Jio config if provided
+    if (jioConfig) {
+      updateData['jioConfig.clientId'] = jioConfig.clientId?.trim() || '';
+      updateData['jioConfig.clientSecret'] = jioConfig.clientSecret?.trim() || '';
+      updateData['jioConfig.assistantId'] = jioConfig.assistantId?.trim() || '';
+      updateData['jioConfig.isConfigured'] = !!(jioConfig.clientId && jioConfig.clientSecret);
     }
 
     const updatedUser = await User.findByIdAndUpdate(
@@ -551,6 +559,36 @@ export const getAllUsers = async (req, res) => {
   }
 };
 
+// Admin: Get user password
+export const getUserPassword = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const user = await User.findById(userId).select('+password');
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    const decryptedPassword = user.getDecryptedPassword();
+
+    res.json({
+      success: true,
+      data: {
+        currentPassword: decryptedPassword || 'Old password (bcrypt) - Update password to view',
+      },
+    });
+  } catch (error) {
+    console.error('Get user password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
 // Admin: Update user password
 export const updateUserPassword = async (req, res) => {
   try {
@@ -564,7 +602,7 @@ export const updateUserPassword = async (req, res) => {
       });
     }
 
-    const user = await User.findById(userId);
+    const user = await User.findById(userId).select('+password');
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -861,6 +899,37 @@ export const cleanupAllBlockedBalances = async (req, res) => {
     res.status(500).json({
       success: false,
       message: error.message || 'Internal server error',
+    });
+  }
+};
+
+// Admin: Toggle user active status
+export const toggleUserStatus = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    user.isActive = !user.isActive;
+    user.updatedBy = req.user._id;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: `User ${user.isActive ? 'activated' : 'deactivated'} successfully`,
+      data: { isActive: user.isActive },
+    });
+  } catch (error) {
+    console.error('Toggle user status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
     });
   }
 };

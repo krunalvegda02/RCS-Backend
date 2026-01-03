@@ -569,29 +569,71 @@ export const getUserCampaignReports = async (req, res) => {
 // Admin: Get all campaigns from all users
 export const getAllForAdmin = async (req, res) => {
   try {
-    const { status, userId, type } = req.query;
+    let { status, type, user, search, sort = 'newest' } = req.query;
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 50;
+    const limit = parseInt(req.query.limit) || 10;
+
+    // Fix: If search is an array, take the first element
+    if (Array.isArray(search)) {
+      search = search[0];
+    }
+
+    console.log('[Campaign] getAllForAdmin - Query params:', { status, type, user, search, sort, page, limit });
 
     let query = {};
     if (status) query.status = status;
-    if (userId) query.userId = userId;
-    if (type) query.type = type;
+    if (type) query['templateId.templateType'] = type;
 
-    const campaigns = await Campaign.find(query)
+    const sortOrder = sort === 'oldest' ? 1 : -1;
+
+    // Get all campaigns matching basic filters
+    let allCampaigns = await Campaign.find(query)
       .populate('templateId', 'name templateType')
       .populate('userId', 'name email')
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .skip((page - 1) * limit);
+      .sort({ createdAt: sortOrder })
+      .lean();
 
-    const total = await Campaign.countDocuments(query);
+    console.log('[Campaign] Total campaigns before filtering:', allCampaigns.length);
 
-    // Transform data to match frontend expectations
-    const transformedCampaigns = campaigns.map(campaign => ({
+    // Apply search filter
+    if (search) {
+      const searchLower = String(search).toLowerCase();
+      allCampaigns = allCampaigns.filter(c => {
+        const matchName = c.name?.toLowerCase().includes(searchLower);
+        const matchUserName = c.userId?.name?.toLowerCase().includes(searchLower);
+        const matchUserEmail = c.userId?.email?.toLowerCase().includes(searchLower);
+        const matchId = c._id.toString().toLowerCase().includes(searchLower);
+        return matchName || matchUserName || matchUserEmail || matchId;
+      });
+      console.log('[Campaign] After search filter:', allCampaigns.length);
+    }
+
+    // Apply user filter
+    if (user) {
+      allCampaigns = allCampaigns.filter(c => c.userId?.name === user);
+      console.log('[Campaign] After user filter:', allCampaigns.length);
+    }
+
+    // Apply pagination
+    const total = allCampaigns.length;
+    const startIndex = (page - 1) * limit;
+    const paginatedCampaigns = allCampaigns.slice(startIndex, startIndex + limit);
+
+    console.log('[Campaign] Paginated campaigns:', paginatedCampaigns.length);
+
+    // Get universal stats
+    const allCampaignsForStats = await Campaign.find({}).select('stats');
+    const universalStats = allCampaignsForStats.reduce((acc, campaign) => {
+      acc.totalCampaigns += 1;
+      acc.totalDelivered += campaign.stats?.sent || 0;
+      acc.totalFailed += campaign.stats?.failed || 0;
+      return acc;
+    }, { totalCampaigns: 0, totalDelivered: 0, totalFailed: 0 });
+
+    const transformedCampaigns = paginatedCampaigns.map(campaign => ({
       _id: campaign._id,
       CampaignName: campaign.name,
-      type: campaign.templateId?.templateType ,
+      type: campaign.templateId?.templateType,
       cost: campaign.stats?.total || 0,
       successCount: campaign.stats?.sent || 0,
       failedCount: campaign.stats?.failed || 0,
@@ -608,6 +650,7 @@ export const getAllForAdmin = async (req, res) => {
         limit,
         total,
         pages: Math.ceil(total / limit),
+        ...universalStats
       },
     });
   } catch (error) {
@@ -623,6 +666,7 @@ export const getAllForAdmin = async (req, res) => {
 export const getCampaignMessages = async (req, res) => {
   try {
     const { id } = req.params;
+    const { search, status } = req.query;
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
 
@@ -634,17 +678,25 @@ export const getCampaignMessages = async (req, res) => {
       });
     }
 
-    // Use Message model for detailed message data (same as user API)
+    // Use Message model for detailed message data
     const Message = (await import('../models/message.model.js')).default;
     
-    const messages = await Message.find({ campaignId: id })
-      .select('recipientPhoneNumber status templateType sentAt deliveredAt readAt clickedAt clickedAction userText suggestionResponse userClickCount userReplyCount errorMessage createdAt')
+    let query = { campaignId: id };
+    if (search) {
+      query.recipientPhoneNumber = { $regex: search, $options: 'i' };
+    }
+    if (status && status !== 'all') {
+      query.status = status;
+    }
+    
+    const messages = await Message.find(query)
+      .select('recipientPhoneNumber status templateType sentAt deliveredAt readAt clickedAt clickedAction userText suggestionResponse userClickCount userReplyCount errorMessage errorCode createdAt')
       .sort({ createdAt: -1 })
       .limit(limit)
       .skip((page - 1) * limit)
       .lean();
     
-    const total = await Message.countDocuments({ campaignId: id });
+    const total = await Message.countDocuments(query);
 
     // Transform messages to match frontend expectations
     const transformedMessages = messages.map(msg => ({
@@ -662,6 +714,7 @@ export const getCampaignMessages = async (req, res) => {
       interactions: msg.userClickCount || 0,
       replies: msg.userReplyCount || 0,
       errorMessage: msg.errorMessage,
+      errorCode: msg.errorCode,
       createdAt: msg.createdAt
     }));
 
@@ -677,6 +730,70 @@ export const getCampaignMessages = async (req, res) => {
     });
   } catch (error) {
     console.error('[Campaign] Admin get messages error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// Admin: Get ALL campaigns for export (no pagination)
+export const getAllCampaignsForExport = async (req, res) => {
+  try {
+    let { status, type, user, search, sort = 'newest' } = req.query;
+
+    // Fix: If search is an array, take the first element
+    if (Array.isArray(search)) {
+      search = search[0];
+    }
+
+    let query = {};
+    if (status) query.status = status;
+    if (type) query['templateId.templateType'] = type;
+
+    const sortOrder = sort === 'oldest' ? 1 : -1;
+
+    let campaigns = await Campaign.find(query)
+      .populate('templateId', 'name templateType')
+      .populate('userId', 'name email')
+      .sort({ createdAt: sortOrder })
+      .lean();
+
+    // Filter by user name if provided
+    if (user) {
+      campaigns = campaigns.filter(c => c.userId?.name === user);
+    }
+
+    // Filter by search
+    if (search) {
+      const searchLower = String(search).toLowerCase();
+      campaigns = campaigns.filter(c => 
+        c.name?.toLowerCase().includes(searchLower) ||
+        c.userId?.name?.toLowerCase().includes(searchLower) ||
+        c.userId?.email?.toLowerCase().includes(searchLower) ||
+        c._id.toString().includes(searchLower)
+      );
+    }
+
+    const transformedCampaigns = campaigns.map(campaign => ({
+      _id: campaign._id,
+      CampaignName: campaign.name,
+      type: campaign.templateId?.templateType,
+      cost: campaign.stats?.total || 0,
+      successCount: campaign.stats?.sent || 0,
+      failedCount: campaign.stats?.failed || 0,
+      status: campaign.status,
+      createdAt: campaign.createdAt,
+      userId: campaign.userId
+    }));
+
+    res.json({
+      success: true,
+      data: transformedCampaigns,
+      total: transformedCampaigns.length
+    });
+  } catch (error) {
+    console.error('[Campaign] Export all campaigns error:', error);
     res.status(500).json({
       success: false,
       message: error.message,
