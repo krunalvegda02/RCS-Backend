@@ -12,6 +12,7 @@ router.post('/refresh-token', AuthController.refreshToken);
 // Protected routes
 router.get('/profile', authenticateToken, AuthController.getProfile);
 router.put('/profile', authenticateToken, AuthController.updateProfile);
+router.put('/update-password', authenticateToken, AuthController.updatePassword);
 router.put('/jio-config', authenticateToken, AuthController.updateJioConfig);
 router.get('/jio-config', authenticateToken, AuthController.getJioConfig);
 

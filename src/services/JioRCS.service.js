@@ -257,9 +257,11 @@ class JioRCSService {
       throw new Error('Message record not found');
     }
 
-    // Update status to processing
-    message.status = 'processing';
-    await message.save();
+    // Update status to processing (will change to 'sent' only via webhook)
+    if (message.status === 'queued') {
+      message.status = 'processing';
+      await message.save();
+    }
 
     let rcsPayload = null;
 
@@ -305,24 +307,30 @@ class JioRCSService {
         timeout: 15000,
       });
 
-      console.log(`[RCS] ✅ Message sent successfully to ${formattedPhone}`);
+      console.log(`[RCS] 📬 API Response:+++==========================`, response.data);
+      console.log(`[RCS] ✅ Message API call successful for ${formattedPhone}`);
       console.log(`[RCS] 📨 RCS Message ID: ${response.data?.messageId || messageId}`);
 
-      if (message) {
-        await message.markAsSent(response.data?.messageId || messageId);
-        console.log(`[RCS] 💾 Message status updated to 'sent' in database`);
+      // Keep status as 'processing' - will change to 'sent' only via MESSAGE_SENT webhook
+      if (response.data.success === false) {
+        await message.markAsFailed('SEND_FAILED', response.data.message || 'Message send failed');
+      } else if (message) {
+        // Store RCS message ID but keep status as 'processing'
+        message.rcsMessageId = response.data?.messageId || messageId;
+        await message.save();
+        console.log(`[RCS] 💾 Message kept in 'processing' status, awaiting MESSAGE_SENT webhook`);
       }
 
-      // Update campaign recipient status
+      // Keep campaign recipient status as 'processing' - will update via webhook
       if (campaignId) {
         try {
           const campaign = await Campaign.findById(campaignId);
           if (campaign) {
-            await campaign.updateRecipientStatus(formattedPhone.replace('+91', ''), 'sent', messageId);
-            console.log(`[RCS] 📊 Campaign recipient status updated to 'sent'`);
+            // Status remains 'processing' until MESSAGE_SENT webhook
+            console.log(`[RCS] 📊 Campaign recipient kept in 'processing' status`);
           }
         } catch (campaignError) {
-          console.error(`[RCS] Failed to update campaign recipient:`, campaignError.message);
+          console.error(`[RCS] Failed to check campaign:`, campaignError.message);
         }
       }
 
@@ -795,10 +803,10 @@ class JioRCSService {
       // Split into chunks of 10000 (API limit)
       const chunkSize = 10000;
       const allResults = [];
-      
+
       for (let i = 0; i < uniqueNumbers.length; i += chunkSize) {
         const chunk = uniqueNumbers.slice(i, i + chunkSize);
-        
+
         const response = await axios.post(
           'https://api.businessmessaging.jio.com/v1/messaging/usersBatchGet',
           { phoneNumbers: chunk },
@@ -812,11 +820,11 @@ class JioRCSService {
         );
 
         console.log(`[RCS] Batch API full response:`, JSON.stringify(response.data, null, 2));
-        
+
         // Process reachableUsers from batch response
         const reachableUsers = response.data?.reachableUsers || [];
         console.log(`[RCS] Found ${reachableUsers.length} reachable users out of ${chunk.length} checked`);
-        
+
         // Convert reachableUsers to results format
         const chunkResults = chunk.map(phone => ({
           phoneNumber: phone,
@@ -824,7 +832,7 @@ class JioRCSService {
           features: reachableUsers.includes(phone) ? ['RCS_MESSAGING'] : [],
           capabilityToken: null
         }));
-        
+
         allResults.push(...chunkResults);
       }
 

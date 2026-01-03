@@ -148,9 +148,12 @@ messageSchema.virtual('isFailed').get(function () {
 
 // Methods
 messageSchema.methods.markAsSent = async function (rcsMessageId) {
+  // This method is now only called by webhook, not by sendMessage
   this.status = 'sent';
   this.sentAt = new Date();
-  this.rcsMessageId = rcsMessageId;
+  if (rcsMessageId) {
+    this.rcsMessageId = rcsMessageId;
+  }
   await this.save();
 };
 

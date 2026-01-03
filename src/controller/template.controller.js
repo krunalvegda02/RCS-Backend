@@ -41,12 +41,22 @@ export const create = async (req, res) => {
 export const getAll = async (req, res) => {
   try {
     const userId = req.user._id;
-    const { templateType, isActive } = req.query;
+    const { templateType, isActive, search } = req.query;
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
 
     let query = { userId, isActive: isActive !== 'false' };
     if (templateType) query.templateType = templateType;
+    
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
+        { 'content.body': { $regex: search, $options: 'i' } },
+        { 'content.text': { $regex: search, $options: 'i' } },
+        { 'content.title': { $regex: search, $options: 'i' } }
+      ];
+    }
 
     const templates = await Template.find(query)
       .sort({ createdAt: -1 })

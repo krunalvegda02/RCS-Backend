@@ -39,6 +39,20 @@ export async function processWebhookData(data, timestamp) {
         statType = 'sent';
         updateData.deliveryLatency = data?.entity?.deliveryInfo?.latencyMs || null;
         console.log(`[Webhook] ✅ Message SENT: ${messageId}`);
+        
+        // Unblock ₹1 when message is confirmed sent
+        const sentUserId = await getUserIdFromMessage(messageId);
+        if (sentUserId) {
+          try {
+            const sentUser = await User.findById(sentUserId);
+            if (sentUser) {
+              await sentUser.unblockBalance(1);
+              console.log(`[Webhook] 🔓 Unblocked ₹1 for sent message ${messageId}`);
+            }
+          } catch (unblockError) {
+            console.error(`[Webhook] Unblock error:`, unblockError);
+          }
+        }
         break;
 
       case "MESSAGE_DELIVERED":
@@ -48,15 +62,14 @@ export async function processWebhookData(data, timestamp) {
         updateData.deviceType = data?.entity?.deviceInfo?.deviceType || null;
         console.log(`[Webhook] 📦 Message DELIVERED: ${messageId}`);
         
-        // Deduct ₹1 and unblock ₹1
+        // Deduct ₹1 on delivery
         const userId = await getUserIdFromMessage(messageId);
         if (userId) {
           try {
             const user = await User.findById(userId);
             if (user) {
               await user.updateWallet(1, 'subtract', `Message delivered: ${messageId}`);
-              await user.unblockBalance(1);
-              console.log(`[Webhook] 💰 Deducted & unblocked ₹1 for ${userId}`);
+              console.log(`[Webhook] 💰 Deducted ₹1 for ${userId}`);
               
               const campaignIdForCost = await getCampaignIdFromMessage(messageId);
               if (campaignIdForCost) {
@@ -98,7 +111,7 @@ export async function processWebhookData(data, timestamp) {
         updateData.errorCode = errorCode || 'UNKNOWN';
         updateData.errorMessage = data?.entity?.error?.message || 'Unknown error';
         
-        // Unblock ₹1 for failed message
+        // Unblock ₹1 for failed/bounced message
         const failedUserId = await getUserIdFromMessage(messageId);
         if (failedUserId) {
           try {
@@ -120,6 +133,20 @@ export async function processWebhookData(data, timestamp) {
         updateData.errorCode = 'MESSAGE_EXPIRED';
         updateData.errorMessage = 'Message expired before delivery';
         console.log(`[Webhook] ⏰ Message EXPIRED: ${messageId}`);
+        
+        // Unblock ₹1 for expired message
+        const expiredUserId = await getUserIdFromMessage(messageId);
+        if (expiredUserId) {
+          try {
+            const expiredUser = await User.findById(expiredUserId);
+            if (expiredUser) {
+              await expiredUser.unblockBalance(1);
+              console.log(`[Webhook] 🔓 Unblocked ₹1 for expired message ${messageId}`);
+            }
+          } catch (unblockError) {
+            console.error(`[Webhook] Unblock error:`, unblockError);
+          }
+        }
         break;
 
       case "MESSAGE_REVOKED":
@@ -129,6 +156,20 @@ export async function processWebhookData(data, timestamp) {
         updateData.errorCode = 'MESSAGE_REVOKED';
         updateData.errorMessage = 'Message was revoked';
         console.log(`[Webhook] 🚫 Message REVOKED: ${messageId}`);
+        
+        // Unblock ₹1 for revoked message
+        const revokedUserId = await getUserIdFromMessage(messageId);
+        if (revokedUserId) {
+          try {
+            const revokedUser = await User.findById(revokedUserId);
+            if (revokedUser) {
+              await revokedUser.unblockBalance(1);
+              console.log(`[Webhook] 🔓 Unblocked ₹1 for revoked message ${messageId}`);
+            }
+          } catch (unblockError) {
+            console.error(`[Webhook] Unblock error:`, unblockError);
+          }
+        }
         break;
 
       default:
@@ -141,12 +182,14 @@ export async function processWebhookData(data, timestamp) {
     // Define valid status progressions
     const statusHierarchy = {
       'pending': 0,
-      'sent': 1,
-      'delivered': 2,
-      'read': 3,
-      'failed': 4,
-      'bounced': 4,
-      'replied': 5
+      'queued': 1,
+      'processing': 2,
+      'sent': 3,
+      'delivered': 4,
+      'read': 5,
+      'replied': 6,
+      'failed': 7,
+      'bounced': 7
     };
 
     let currentMessage = await Message.findOne({

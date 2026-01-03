@@ -113,6 +113,9 @@ export const create = async (req, res) => {
 
     const template = await Template.getValidTemplate(templateId, userId);
 
+    // Increment template usage count
+    await template.incrementUsage();
+
     if (!Array.isArray(recipients) || recipients.length === 0) {
       return res.status(400).json({
         success: false,
@@ -493,26 +496,54 @@ export const getUserCampaignReports = async (req, res) => {
       .select('name description status stats estimatedCost actualCost createdAt completedAt recipients')
       .lean();
     
+    // Get Message model to aggregate interaction counts
+    const Message = (await import('../models/message.model.js')).default;
+    
+    // Get interaction counts for all campaigns
+    const campaignIds = campaigns.map(c => c._id);
+    const interactionStats = await Message.aggregate([
+      { $match: { campaignId: { $in: campaignIds } } },
+      {
+        $group: {
+          _id: '$campaignId',
+          totalInteractions: { $sum: '$userClickCount' },
+          totalReplies: { $sum: '$userReplyCount' }
+        }
+      }
+    ]);
+    
+    // Create a map for quick lookup
+    const interactionMap = {};
+    interactionStats.forEach(stat => {
+      interactionMap[stat._id.toString()] = {
+        interactions: stat.totalInteractions || 0,
+        replies: stat.totalReplies || 0
+      };
+    });
+    
     // Transform campaigns to match frontend expectations
-    const reports = campaigns.map(campaign => ({
-      _id: campaign._id,
-      CampaignName: campaign.name,
-      type: campaign.templateId?.templateType,
-      cost: campaign.recipients?.length || 0,
-      successCount: campaign.stats?.sent || 0,
-      failedCount: campaign.stats?.failed || 0,
-      bouncedCount: campaign.stats?.bounced || 0,
-      totalDelivered: campaign.stats?.delivered || 0,
-      totalRead: campaign.stats?.read || 0,
-      totalReplied: campaign.stats?.replied || 0,
-      userClickCount: campaign.stats?.replied || 0,
-      createdAt: campaign.createdAt,
-      completedAt: campaign.completedAt,
-      status: campaign.status,
-      recipients: campaign.recipients,
-      actualCost: campaign.actualCost || 0,
-      estimatedCost: campaign.estimatedCost || 0
-    }));
+    const reports = campaigns.map(campaign => {
+      const interactions = interactionMap[campaign._id.toString()] || { interactions: 0, replies: 0 };
+      return {
+        _id: campaign._id,
+        CampaignName: campaign.name,
+        type: campaign.templateId?.templateType,
+        cost: campaign.recipients?.length || 0,
+        successCount: campaign.stats?.sent || 0,
+        failedCount: campaign.stats?.failed || 0,
+        bouncedCount: campaign.stats?.bounced || 0,
+        totalDelivered: campaign.stats?.delivered || 0,
+        totalRead: campaign.stats?.read || 0,
+        totalReplied: campaign.stats?.replied || 0,
+        userClickCount: interactions.interactions,
+        createdAt: campaign.createdAt,
+        completedAt: campaign.completedAt,
+        status: campaign.status,
+        recipients: campaign.recipients,
+        actualCost: campaign.actualCost || 0,
+        estimatedCost: campaign.estimatedCost || 0
+      };
+    });
     
     const total = await Campaign.countDocuments({ userId });
     

@@ -61,8 +61,7 @@ connectDB()
 
     const server = createServer(app);
     
-    // Setup Socket.IO for live message tracking
-    const io = setupSocketIO(server);
+
     
     server.listen(finalPort, () => {
       console.log(`🚀 Server is running on port ${finalPort}`);
