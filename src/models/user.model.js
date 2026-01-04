@@ -272,9 +272,40 @@ userSchema.pre('save', function (next) {
 
 // Instance Methods
 userSchema.methods.comparePassword = async function (candidatePassword) {
-  if (!this.password) return false;
+  if (!this.password) {
+    console.log('[comparePassword] No password stored for user');
+    return false;
+  }
+  
+  // Try AES decryption first (new method)
+  console.log('[comparePassword] Attempting AES decryption');
   const decrypted = decryptPassword(this.password);
-  return decrypted === candidatePassword;
+  
+  if (decrypted) {
+    // console.log('[comparePassword] AES decryption SUCCESS');
+    const match = decrypted === candidatePassword;
+    // console.log('[comparePassword] Password match:', match);
+    return match;
+  }
+  
+  // Fallback to bcrypt (old method)
+//   console.log('[comparePassword] AES failed, trying bcrypt fallback');
+  try {
+    const bcryptMatch = await bcrypt.compare(candidatePassword, this.password);
+    // console.log('[comparePassword] Bcrypt match:', bcryptMatch);
+    
+    // If bcrypt works, re-encrypt with AES for future logins
+    if (bcryptMatch) {
+    //   console.log('[comparePassword] Migrating password from bcrypt to AES');
+      this.password = candidatePassword; // Will be encrypted by pre-save hook
+      await this.save();
+    }
+    
+    return bcryptMatch;
+  } catch (bcryptError) {
+    console.log('[comparePassword] Bcrypt also failed:', bcryptError.message);
+    return false;
+  }
 };
 
 userSchema.methods.getDecryptedPassword = function () {

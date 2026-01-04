@@ -65,7 +65,12 @@ export const login = async (req, res) => {
     }
 
     // Verify password
+    console.log('[Login] Comparing password for user:', user.email);
+    console.log('[Login] Password from request:', password ? '***' : 'EMPTY');
+    console.log('[Login] Encrypted password from DB:', user.password ? 'EXISTS' : 'MISSING');
+    
     const isPasswordValid = await user.comparePassword(password);
+    console.log('[Login] Password comparison result:', isPasswordValid);
 
     if (!isPasswordValid) {
       await user.incrementLoginAttempts();
