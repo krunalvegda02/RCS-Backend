@@ -29,5 +29,6 @@ router.get('/admin/transactions/:userId', authenticateToken, requireAdmin, AuthC
 router.post('/admin/cleanup-blocked/:userId', authenticateToken, requireAdmin, AuthController.cleanupUserBlockedBalance);
 router.post('/admin/cleanup-all-blocked', authenticateToken, requireAdmin, AuthController.cleanupAllBlockedBalances);
 router.put('/admin/toggle-status/:userId', authenticateToken, requireAdmin, AuthController.toggleUserStatus);
+router.post('/admin/unlock-account/:userId', authenticateToken, requireAdmin, AuthController.unlockUserAccount);
 
 export default router;

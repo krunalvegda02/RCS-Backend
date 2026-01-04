@@ -49,9 +49,15 @@ export const login = async (req, res) => {
 
     // Check if account is locked
     if (user.isLocked) {
+      const lockTimeRemaining = Math.ceil((user.lockUntil - Date.now()) / (60 * 1000)); // minutes
+      const hours = Math.floor(lockTimeRemaining / 60);
+      const minutes = lockTimeRemaining % 60;
+      const timeMessage = hours > 0 ? `${hours} hour${hours > 1 ? 's' : ''} ${minutes} minute${minutes !== 1 ? 's' : ''}` : `${minutes} minute${minutes !== 1 ? 's' : ''}`;
+      
       return res.status(423).json({
         success: false,
-        message: 'Account is temporarily locked due to too many failed login attempts',
+        message: `Account is locked due to too many failed login attempts. Please try again after ${timeMessage}.`,
+        lockUntil: user.lockUntil,
       });
     }
 
@@ -932,6 +938,34 @@ export const toggleUserStatus = async (req, res) => {
     });
   } catch (error) {
     console.error('Toggle user status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+    });
+  }
+};
+
+// Admin: Unlock user account
+export const unlockUserAccount = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    await user.resetLoginAttempts();
+
+    res.json({
+      success: true,
+      message: 'User account unlocked successfully',
+    });
+  } catch (error) {
+    console.error('Unlock user account error:', error);
     res.status(500).json({
       success: false,
       message: 'Internal server error',
