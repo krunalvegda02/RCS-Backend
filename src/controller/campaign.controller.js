@@ -582,7 +582,32 @@ export const getAllForAdmin = async (req, res) => {
 
     let query = {};
     if (status) query.status = status;
-    if (type) query['templateId.templateType'] = type;
+    
+    // Handle type filter by first finding matching templates
+    let templateIds = [];
+    if (type) {
+      const Template = (await import('../models/template.model.js')).default;
+      const matchingTemplates = await Template.find({ templateType: type }).select('_id');
+      templateIds = matchingTemplates.map(t => t._id);
+      if (templateIds.length > 0) {
+        query.templateId = { $in: templateIds };
+      } else {
+        // No templates found with this type, return empty result
+        return res.json({
+          success: true,
+          data: [],
+          pagination: {
+            page,
+            limit,
+            total: 0,
+            pages: 0,
+            totalCampaigns: 0,
+            totalDelivered: 0,
+            totalFailed: 0
+          },
+        });
+      }
+    }
 
     const sortOrder = sort === 'oldest' ? 1 : -1;
 
@@ -749,7 +774,23 @@ export const getAllCampaignsForExport = async (req, res) => {
 
     let query = {};
     if (status) query.status = status;
-    if (type) query['templateId.templateType'] = type;
+    
+    // Handle type filter by first finding matching templates
+    if (type) {
+      const Template = (await import('../models/template.model.js')).default;
+      const matchingTemplates = await Template.find({ templateType: type }).select('_id');
+      const templateIds = matchingTemplates.map(t => t._id);
+      if (templateIds.length > 0) {
+        query.templateId = { $in: templateIds };
+      } else {
+        // No templates found with this type, return empty result
+        return res.json({
+          success: true,
+          data: [],
+          total: 0
+        });
+      }
+    }
 
     const sortOrder = sort === 'oldest' ? 1 : -1;
 

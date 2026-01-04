@@ -37,7 +37,7 @@ const campaignSchema = new mongoose.Schema(
           variables: mongoose.Schema.Types.Mixed, // For dynamic content
           status: {
             type: String,
-            enum: ['pending', 'queued', 'processing', 'sent', 'delivered', 'read', 'replied', 'failed', 'bounced'],
+            enum: ['pending', 'processing', 'sent', 'delivered', 'read', 'replied', 'failed', 'bounced'],
             default: 'pending',
           },
           messageId: String,
@@ -61,11 +61,8 @@ const campaignSchema = new mongoose.Schema(
       index: true,
     },
 
-    // Timing
-    // scheduledAt: Date,
-    // startedAt: Date,
+   
     completedAt: Date,
-    pausedAt: Date,
 
     // Statistics (cached for performance)
     stats: {
@@ -101,10 +98,6 @@ const campaignSchema = new mongoose.Schema(
         type: Number,
         default: 0,
       },
-      queued: {
-        type: Number,
-        default: 0,
-      },
       processing: {
         type: Number,
         default: 0,
@@ -124,21 +117,6 @@ const campaignSchema = new mongoose.Schema(
       lastUpdatedAt: Date,
     },
 
-    // Batch Processing Config
-    batchSize: {
-      type: Number,
-      default: 100,
-      min: 1,
-      max: 1000,
-    },
-    delayBetweenBatches: {
-      type: Number,
-      default: 1000, // milliseconds
-    },
-    maxRetries: {
-      type: Number,
-      default: 3,
-    },
 
     // Queue Information
     queueStatus: {
@@ -167,20 +145,6 @@ const campaignSchema = new mongoose.Schema(
       type: Number,
       default: 0, // Actual amount charged
     },
-    blockedAmount: {
-      type: Number,
-      default: 0, // Amount blocked from user wallet
-    },
-    rateLimit: {
-      messagesPerSecond: {
-        type: Number,
-        default: 10,
-      },
-      dailyLimit: {
-        type: Number,
-        default: 100000,
-      },
-    },
   },
   {
     timestamps: true,
@@ -194,39 +158,12 @@ campaignSchema.index({ templateId: 1 });
 campaignSchema.index({ createdAt: -1 });
 campaignSchema.index({ 'recipients.status': 1 });
 
-// Pre-save middleware to update user stats when campaign completes
-campaignSchema.pre('save', async function (next) {
-  // Check if status is being changed to 'completed' or 'failed'
-  if (this.isModified('status') && ['completed', 'failed'].includes(this.status) && this.isNew === false) {
-    try {
-      const User = mongoose.model('User');
-      const user = await User.findById(this.userId);
-      
-      if (user) {
-        await user.recalculateStatsOnCampaignCompletion(this._id);
-        console.log(`[Campaign] User stats updated for ${this.status} campaign ${this._id}`);
-      }
-    } catch (error) {
-      console.error('Error updating user stats on campaign completion:', error);
-      // Don't fail the campaign save if user stats update fails
-    }
-  }
-  next();
-});
-
 // Methods
 campaignSchema.methods.updateStats = async function () {
-  // Get actual message counts from Message collection for accurate stats
-  const Message = mongoose.model('Message');
-  const messageCounts = await Message.aggregate([
-    { $match: { campaignId: this._id } },
-    { $group: { _id: '$status', count: { $sum: 1 } } }
-  ]);
-  
-  // Initialize counts
+  // Count recipients by their current status
   const statusCounts = {
-    draft: 0,
-    queued: 0,
+    pending: 0,
+    processing: 0,
     sent: 0,
     delivered: 0,
     read: 0,
@@ -234,29 +171,28 @@ campaignSchema.methods.updateStats = async function () {
     failed: 0,
     bounced: 0
   };
-  
-  // Populate counts from Message collection (source of truth)
-  messageCounts.forEach(item => {
-    if (statusCounts.hasOwnProperty(item._id)) {
-      statusCounts[item._id] = item.count;
+
+  this.recipients.forEach(r => {
+    if (statusCounts.hasOwnProperty(r.status)) {
+      statusCounts[r.status]++;
     }
   });
-  
-  // Calculate total from actual messages
-  const totalMessages = Object.values(statusCounts).reduce((sum, count) => sum + count, 0);
-  
-  // Update stats based on actual message status
+
+  // Calculate cumulative stats (read includes delivered and sent, etc.)
   const stats = {
-    total: this.recipients.length, // Total recipients
-    pending: this.recipients.length - totalMessages, // Recipients without messages yet
-    processing: statusCounts.draft + statusCounts.queued, // Messages being processed
+    total: this.recipients.length,
+    pending: statusCounts.pending,
+    processing: statusCounts.processing,
+    // Sent = all messages that reached sent status or beyond
     sent: statusCounts.sent + statusCounts.delivered + statusCounts.read + statusCounts.replied,
+    // Delivered = all messages that reached delivered status or beyond
     delivered: statusCounts.delivered + statusCounts.read + statusCounts.replied,
+    // Read = all messages that reached read status or beyond
     read: statusCounts.read + statusCounts.replied,
+    // Replied = only messages with replied status
     replied: statusCounts.replied,
     failed: statusCounts.failed,
     bounced: statusCounts.bounced,
-    queued: statusCounts.queued,
     rcsCapable: this.recipients.filter(r => r.isRcsCapable === true).length,
   };
 
@@ -265,49 +201,36 @@ campaignSchema.methods.updateStats = async function () {
   stats.lastUpdatedAt = new Date();
 
   this.stats = stats;
-  
-  // Auto-update campaign status based on message processing completion
-  const totalProcessed = stats.sent + stats.failed + stats.bounced;
-  const hasUnprocessedMessages = stats.pending > 0 || stats.processing > 0;
-  
-  const wasRunning = this.status === 'running';
-  if (wasRunning && !hasUnprocessedMessages && totalProcessed >= this.recipients.length) {
-    this.status = 'completed';
-    this.completedAt = new Date();
-    console.log(`Campaign ${this._id} marked as completed - Total: ${this.recipients.length}, Processed: ${totalProcessed}`);
-    console.log(`[Campaign] Will trigger pre-save hook to unblock remaining balance`);
-    
-    // Emit socket event for campaign completion
-    if (global.io) {
-      global.io.emitCampaignUpdate(this._id, {
-        status: 'completed',
-        completedAt: this.completedAt,
-        stats: stats
-      });
-    }
-  }
-  
-  await this.save(); // Use save() to trigger pre-save hooks
+  await this.save();
 };
 
 campaignSchema.methods.getPendingRecipients = function (limit = 100) {
   return this.recipients.filter(r => r.status === 'pending').slice(0, limit);
 };
 
-campaignSchema.methods.updateRecipientStatus = async function (phoneNumber, status, messageId = null) {
+campaignSchema.methods.markRecipientAsSent = async function (phoneNumber, messageId) {
   const recipient = this.recipients.find(r => r.phoneNumber === phoneNumber);
   if (recipient) {
-    recipient.status = status;
-    if (messageId) recipient.messageId = messageId;
-    
-    const now = new Date();
-    switch (status) {
-      case 'sent': recipient.sentAt = now; break;
-      case 'delivered': recipient.deliveredAt = now; break;
-      case 'read': recipient.readAt = now; break;
-      case 'failed': recipient.failedAt = now; break;
-    }
-    
+    recipient.status = 'sent';
+    recipient.messageId = messageId;
+    recipient.sentAt = new Date();
+    await this.save();
+  }
+};
+
+campaignSchema.methods.markRecipientAsFailed = async function (phoneNumber, reason) {
+  const recipient = this.recipients.find(r => r.phoneNumber === phoneNumber);
+  if (recipient) {
+    recipient.status = 'failed';
+    recipient.failureReason = reason;
+    await this.save();
+  }
+};
+
+campaignSchema.methods.markRecipientAsProcessing = async function (phoneNumber) {
+  const recipient = this.recipients.find(r => r.phoneNumber === phoneNumber);
+  if (recipient) {
+    recipient.status = 'processing';
     await this.save();
   }
 };
