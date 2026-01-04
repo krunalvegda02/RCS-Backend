@@ -578,7 +578,7 @@ export const getAllForAdmin = async (req, res) => {
       search = search[0];
     }
 
-    console.log('[Campaign] getAllForAdmin - Query params:', { status, type, user, search, sort, page, limit });
+    // console.log('[Campaign] getAllForAdmin - Query params:', { status, type, user, search, sort, page, limit });
 
     let query = {};
     if (status) query.status = status;
@@ -593,7 +593,7 @@ export const getAllForAdmin = async (req, res) => {
       .sort({ createdAt: sortOrder })
       .lean();
 
-    console.log('[Campaign] Total campaigns before filtering:', allCampaigns.length);
+    // console.log('[Campaign] Total campaigns before filtering:', allCampaigns.length);
 
     // Apply search filter
     if (search) {
@@ -619,7 +619,7 @@ export const getAllForAdmin = async (req, res) => {
     const startIndex = (page - 1) * limit;
     const paginatedCampaigns = allCampaigns.slice(startIndex, startIndex + limit);
 
-    console.log('[Campaign] Paginated campaigns:', paginatedCampaigns.length);
+    // console.log('[Campaign] Paginated campaigns:', paginatedCampaigns.length);
 
     // Get universal stats
     const allCampaignsForStats = await Campaign.find({}).select('stats');

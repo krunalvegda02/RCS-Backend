@@ -129,6 +129,15 @@ export async function processWebhookData(data, timestamp) {
               failedUser.wallet.balance += 1;
               failedUser.wallet.lastUpdated = new Date();
               
+              // Add transaction record for refund
+              failedUser.wallet.transactions.push({
+                type: 'credit',
+                amount: 1,
+                balanceAfter: failedUser.wallet.balance,
+                description: `Message failed - refund: ${messageId}`,
+                createdAt: new Date()
+              });
+              
               await failedUser.save();
               
               console.log(`[Webhook] 🔄 Failed - Balance: ₹${beforeBalance} → ₹${failedUser.wallet.balance}, Blocked: ₹${beforeBlocked} → ₹${failedUser.wallet.blockedBalance}`);
@@ -161,6 +170,15 @@ export async function processWebhookData(data, timestamp) {
               expiredUser.wallet.balance += 1;
               expiredUser.wallet.lastUpdated = new Date();
               
+              // Add transaction record for refund
+              expiredUser.wallet.transactions.push({
+                type: 'credit',
+                amount: 1,
+                balanceAfter: expiredUser.wallet.balance,
+                description: `Message expired - refund: ${messageId}`,
+                createdAt: new Date()
+              });
+              
               await expiredUser.save();
               
               console.log(`[Webhook] 🔄 Expired - Balance: ₹${beforeBalance} → ₹${expiredUser.wallet.balance}, Blocked: ₹${beforeBlocked} → ₹${expiredUser.wallet.blockedBalance}`);
@@ -192,6 +210,15 @@ export async function processWebhookData(data, timestamp) {
               revokedUser.wallet.blockedBalance = Math.max(0, (revokedUser.wallet.blockedBalance || 0) - 1);
               revokedUser.wallet.balance += 1;
               revokedUser.wallet.lastUpdated = new Date();
+              
+              // Add transaction record for refund
+              revokedUser.wallet.transactions.push({
+                type: 'credit',
+                amount: 1,
+                balanceAfter: revokedUser.wallet.balance,
+                description: `Message revoked - refund: ${messageId}`,
+                createdAt: new Date()
+              });
               
               await revokedUser.save();
               
