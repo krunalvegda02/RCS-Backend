@@ -87,16 +87,16 @@ export const login = async (req, res) => {
     }
 
     // Reset login attempts on successful login
+    console.log('[Login] Password valid, resetting login attempts');
     await user.resetLoginAttempts();
 
+    // Refresh user document after reset
+    const refreshedUser = await User.findById(user._id);
+
     // Generate tokens
-    const { accessToken, refreshToken } = generateTokens(user._id);
+    const { accessToken, refreshToken } = generateTokens(refreshedUser._id);
 
-    // Update last login
-    user.lastLogin = new Date();
-    await user.save();
-
-    const userResponse = user.toJSON();
+    const userResponse = refreshedUser.toJSON();
 
     res.json({
       success: true,
