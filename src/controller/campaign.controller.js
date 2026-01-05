@@ -35,24 +35,46 @@ export const checkCapability = async (req, res) => {
     // Update batches with capability results if campaignId provided
     if (campaignId) {
       const ContactBatch = (await import('../models/contactBatch.model.js')).default;
-      const batches = await ContactBatch.find({ campaignId, userId });
+      const batches = await ContactBatch.find({ campaignId, userId }).lean();
+      
+      // Create a map for faster lookups
+      const resultsMap = new Map();
+      results.forEach(r => {
+        const cleanNumber = r.phoneNumber.replace(/^\+?91/, '');
+        resultsMap.set(cleanNumber, r.isCapable);
+      });
+      
+      // Prepare bulk operations for all batches at once
+      const bulkOps = [];
       
       for (const batch of batches) {
-        let updated = false;
-        batch.contacts = batch.contacts.map(contact => {
-          const result = results.find(r => r.phoneNumber.replace(/^\+?91/, '') === contact.phoneNumber);
-          if (result) {
-            updated = true;
-            return { ...contact, isRcsCapable: result.isCapable };
+        // Update contacts with results
+        const updatedContacts = batch.contacts.map(contact => {
+          if (resultsMap.has(contact.phoneNumber)) {
+            return { ...contact, isRcsCapable: resultsMap.get(contact.phoneNumber) };
           }
           return contact;
         });
         
-        if (updated) {
-          batch.rcsCapableCount = batch.contacts.filter(c => c.isRcsCapable === true).length;
-          batch.status = 'completed';
-          await batch.save();
-        }
+        const rcsCount = updatedContacts.filter(c => c.isRcsCapable === true).length;
+        
+        bulkOps.push({
+          updateOne: {
+            filter: { _id: batch._id },
+            update: {
+              $set: {
+                contacts: updatedContacts,
+                rcsCapableCount: rcsCount,
+                status: 'completed'
+              }
+            }
+          }
+        });
+      }
+      
+      // Execute all updates in a single bulk operation
+      if (bulkOps.length > 0) {
+        await ContactBatch.bulkWrite(bulkOps, { ordered: false });
       }
     }
     
