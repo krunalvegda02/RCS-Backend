@@ -33,8 +33,8 @@ export const getUserReport = async (req, res) => {
       {
         $group: {
           _id: '$campaignId',
-          read: { $sum: { $cond: [{ $eq: ['$status', 'read'] }, 1, 0] } },
-          replied: { $sum: { $cond: [{ $eq: ['$status', 'replied'] }, 1, 0] } },
+          read: { $sum: { $cond: [{ $ne: ['$readAt', null] }, 1, 0] } },
+          replied: { $sum: { $cond: [{ $or: [{ $eq: ['$status', 'replied'] }, { $gt: ['$userReplyCount', 0] }] }, 1, 0] } },
         }
       }
     ]);
@@ -51,10 +51,10 @@ export const getUserReport = async (req, res) => {
         $group: {
           _id: null,
           totalSent: { $sum: 1 },
-          delivered: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] } },
+          delivered: { $sum: { $cond: [{ $in: ['$status', ['delivered', 'read', 'replied']] }, 1, 0] } },
           failed: { $sum: { $cond: [{ $in: ['$status', ['failed', 'bounced']] }, 1, 0] } },
-          read: { $sum: { $cond: [{ $eq: ['$status', 'read'] }, 1, 0] } },
-          replied: { $sum: { $cond: [{ $eq: ['$status', 'replied'] }, 1, 0] } },
+          read: { $sum: { $cond: [{ $ne: ['$readAt', null] }, 1, 0] } },
+          replied: { $sum: { $cond: [{ $or: [{ $eq: ['$status', 'replied'] }, { $gt: ['$userReplyCount', 0] }] }, 1, 0] } },
           totalInteractions: { $sum: '$userClickCount' },
           totalReplies: { $sum: '$userReplyCount' }
         }
@@ -85,6 +85,7 @@ export const getUserReport = async (req, res) => {
     // Format campaigns with stats
     const formattedCampaigns = campaigns.map(c => {
       const campaignStats = statsMap[c._id.toString()] || { read: 0, replied: 0 };
+      const delivered = (c.stats?.delivered || 0) + campaignStats.read;
       return {
         _id: c._id,
         name: c.name,
@@ -92,7 +93,7 @@ export const getUserReport = async (req, res) => {
         status: c.status,
         recipients: c.stats?.total || 0,
         sent: c.stats?.sent || 0,
-        delivered: c.stats?.delivered || 0,
+        delivered: delivered,
         failed: c.stats?.failed || 0,
         read: campaignStats.read,
         replied: campaignStats.replied,

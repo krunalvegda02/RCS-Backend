@@ -762,6 +762,59 @@ export const getCampaignMessages = async (req, res) => {
   }
 };
 
+// Admin: Get ALL campaign messages for export (no pagination)
+export const getAllCampaignMessagesForExport = async (req, res) => {
+  try {
+    const { campaignId } = req.params;
+
+    const campaign = await Campaign.findById(campaignId);
+    if (!campaign) {
+      return res.status(404).json({
+        success: false,
+        message: 'Campaign not found',
+      });
+    }
+
+    const Message = (await import('../models/message.model.js')).default;
+    
+    const messages = await Message.find({ campaignId })
+      .select('recipientPhoneNumber status templateType sentAt deliveredAt readAt clickedAt clickedAction userText suggestionResponse userClickCount userReplyCount errorMessage errorCode createdAt')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const transformedMessages = messages.map(msg => ({
+      _id: msg._id,
+      phoneNumber: msg.recipientPhoneNumber,
+      status: msg.status,
+      templateType: msg.templateType,
+      sentAt: msg.sentAt,
+      deliveredAt: msg.deliveredAt,
+      readAt: msg.readAt,
+      clickedAt: msg.clickedAt,
+      clickedAction: msg.clickedAction,
+      userText: msg.userText,
+      suggestionResponse: msg.suggestionResponse,
+      interactions: msg.userClickCount || 0,
+      replies: msg.userReplyCount || 0,
+      errorMessage: msg.errorMessage,
+      errorCode: msg.errorCode,
+      createdAt: msg.createdAt
+    }));
+
+    res.json({
+      success: true,
+      data: transformedMessages,
+      total: transformedMessages.length
+    });
+  } catch (error) {
+    console.error('[Campaign] Export campaign messages error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 // Admin: Get ALL campaigns for export (no pagination)
 export const getAllCampaignsForExport = async (req, res) => {
   try {

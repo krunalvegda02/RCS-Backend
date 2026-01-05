@@ -6,6 +6,7 @@ const router = express.Router();
 
 // Admin routes (no user restriction)
 router.get('/admin/campaigns/export/all', authenticateToken, requireAdmin, CampaignController.getAllCampaignsForExport);
+router.get('/admin/campaigns/:campaignId/messages/all', authenticateToken, requireAdmin, CampaignController.getAllCampaignMessagesForExport);
 router.get('/admin/campaigns/:id/messages', authenticateToken, requireAdmin, CampaignController.getCampaignMessages);
 router.get('/admin/campaigns', authenticateToken, requireAdmin, CampaignController.getAllForAdmin);
 

@@ -279,12 +279,13 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
   
   // Try AES decryption first (new method)
   console.log('[comparePassword] Attempting AES decryption');
+  console.log('[comparePassword] ENCRYPTION_KEY:', ENCRYPTION_KEY);
   const decrypted = decryptPassword(this.password);
+  console.log('[comparePassword] Decrypted:', decrypted ? 'SUCCESS' : 'FAILED');
   
   if (decrypted) {
-    // console.log('[comparePassword] AES decryption SUCCESS');
     const match = decrypted === candidatePassword;
-    // console.log('[comparePassword] Password match:', match);
+    console.log('[comparePassword] Password match:', match, 'Expected:', candidatePassword, 'Got:', decrypted);
     return match;
   }
   
