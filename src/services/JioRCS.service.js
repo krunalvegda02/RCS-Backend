@@ -57,8 +57,8 @@ class JioRCSService {
   constructor() {
     this.messageQueue = new Bull('jio-rcs-messages', {
       redis: {
-        host: process.env.REDIS_HOST,
-        port: process.env.REDIS_PORT,
+        host: process.env.REDIS_HOST || 'localhost',
+        port: process.env.REDIS_PORT || 6379,
       },
       defaultJobOptions: {
         attempts: 3,
@@ -430,18 +430,7 @@ class JioRCSService {
           await message.markAsFailed(errorCode, error.message);
           
           // Unblock and refund (move from blocked back to wallet)
-          try {
-            const user = await User.findById(userId);
-            if (user) {
-              user.wallet.blockedBalance = Math.max(0, (user.wallet.blockedBalance || 0) - 1);
-              user.wallet.balance += 1;
-              user.wallet.lastUpdated = new Date();
-              await user.save();
-              console.log(`[RCS] 🔄 Refunded ₹1 for pre-send failure`);
-            }
-          } catch (error) {
-            console.error(`[RCS] Refund error:`, error);
-          }
+          await this.refundUser(userId, 1, 'pre-send failure');
         }
       }
 
@@ -618,21 +607,11 @@ class JioRCSService {
                 };
               }
               if (action.actionType === 'dialPhone') {
-                // Clean and validate phone number
-                let phoneNumber = action.uri.replace(/\D/g, ''); // Remove non-digits
-                if (phoneNumber.length === 10) {
-                  phoneNumber = `+91${phoneNumber}`;
-                } else if (phoneNumber.length === 12 && phoneNumber.startsWith('91')) {
-                  phoneNumber = `+${phoneNumber}`;
-                } else if (!phoneNumber.startsWith('+')) {
-                  phoneNumber = `+${phoneNumber}`;
-                }
-
                 return {
                   action: {
                     plainText: action.label,
                     postBack: { data: 'carousel_action' },
-                    dialerAction: { phoneNumber }
+                    dialerAction: { phoneNumber: this.formatPhoneForAction(action.uri) }
                   }
                 };
               }
@@ -676,19 +655,11 @@ class JioRCSService {
           }
 
           if (btn.actionType === 'dialPhone') {
-            // Clean and format phone number
-            let phoneNumber = value.replace(/\D/g, ''); // Remove non-digits
-            if (phoneNumber.length === 10) {
-              phoneNumber = `+91${phoneNumber}`;
-            } else if (!phoneNumber.startsWith('+')) {
-              phoneNumber = `+${phoneNumber}`;
-            }
-
             return {
               action: {
                 plainText: label,
                 postBack: { data: value },
-                dialerAction: { phoneNumber }
+                dialerAction: { phoneNumber: this.formatPhoneForAction(value) }
               }
             };
           } else if (btn.actionType === 'openUri') {
@@ -885,8 +856,6 @@ class JioRCSService {
             return `+91${cleanPhone}`;
           } else if (cleanPhone.length === 12 && cleanPhone.startsWith('91')) {
             return `+${cleanPhone}`;
-          } else if (cleanPhone.startsWith('91') && cleanPhone.length === 12) {
-            return `+${cleanPhone}`;
           }
           return phone.startsWith('+') ? phone : `+91${cleanPhone}`;
         });
@@ -940,30 +909,30 @@ class JioRCSService {
         let totalRcsCapable = 0;
         const realPhoneSet = new Set(uniqueNumbers);
 
+        // Create axios instance with better connection handling (reuse for all chunks)
+        const axiosInstance = axios.create({
+          timeout: 90000, // Increased timeout
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+            'Connection': 'close', // Force connection close after request
+            'User-Agent': 'RCS-Service/1.0'
+          },
+          // Better connection management
+          httpAgent: new http.Agent({
+            keepAlive: false,
+            maxSockets: 1
+          }),
+          httpsAgent: new https.Agent({
+            keepAlive: false,
+            maxSockets: 1,
+            rejectUnauthorized: true
+          })
+        });
+
         for (let i = 0; i < chunks.length; i++) {
           const chunk = chunks[i];
           console.log(`[RCS] Processing chunk ${i + 1}/${chunks.length} with ${chunk.length} numbers`);
-
-          // Create axios instance with better connection handling
-          const axiosInstance = axios.create({
-            timeout: 90000, // Increased timeout
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              'Content-Type': 'application/json',
-              'Connection': 'close', // Force connection close after request
-              'User-Agent': 'RCS-Service/1.0'
-            },
-            // Better connection management
-            httpAgent: new http.Agent({
-              keepAlive: false,
-              maxSockets: 1
-            }),
-            httpsAgent: new https.Agent({
-              keepAlive: false,
-              maxSockets: 1,
-              rejectUnauthorized: true
-            })
-          });
 
           let chunkResponse;
           let chunkAttempt = 0;
@@ -1195,18 +1164,7 @@ class JioRCSService {
               );
               
                   // Unblock and refund (move from blocked back to wallet)
-              try {
-                const user = await User.findById(campaign.userId);
-                if (user) {
-                  user.wallet.blockedBalance = Math.max(0, (user.wallet.blockedBalance || 0) - 1);
-                  user.wallet.balance += 1;
-                  user.wallet.lastUpdated = new Date();
-                  await user.save();
-                  console.log(`[RCS] 🔄 Refunded ₹1 for non-RCS capable`);
-                }
-              } catch (error) {
-                console.error(`[RCS] Refund error:`, error);
-              }
+              await this.refundUser(campaign.userId, 1, 'non-RCS capable');
               
               return;
             }
@@ -1236,18 +1194,7 @@ class JioRCSService {
                   );
                   
                   // Unblock and refund (move from blocked back to wallet)
-                  try {
-                    const user = await User.findById(campaign.userId);
-                    if (user) {
-                      user.wallet.blockedBalance = Math.max(0, (user.wallet.blockedBalance || 0) - 1);
-                      user.wallet.balance += 1;
-                      user.wallet.lastUpdated = new Date();
-                      await user.save();
-                      console.log(`[RCS] 🔄 Refunded ₹1 for non-capable device`);
-                    }
-                  } catch (error) {
-                    console.error(`[RCS] Refund error:`, error);
-                  }
+                  await this.refundUser(campaign.userId, 1, 'non-capable device');
                   
                   return;
                 }
@@ -1269,25 +1216,14 @@ class JioRCSService {
                 );
                 
                 // Unblock and refund (move from blocked back to wallet)
-                try {
-                  const user = await User.findById(campaign.userId);
-                  if (user) {
-                    user.wallet.blockedBalance = Math.max(0, (user.wallet.blockedBalance || 0) - 1);
-                    user.wallet.balance += 1;
-                    user.wallet.lastUpdated = new Date();
-                    await user.save();
-                    console.log(`[RCS] 🔄 Refunded ₹1 for capability check failure`);
-                  }
-                } catch (error) {
-                  console.error(`[RCS] Refund error:`, error);
-                }
+                await this.refundUser(campaign.userId, 1, 'capability check failure');
                 
                 return;
               }
             }
 
             // Create message record (charge only capable numbers)
-            const msgId = this.generateUUID();
+            const msgId = this.generateMessageId();
             console.log(`[RCS] 📝 Creating message record for ${recipient.phoneNumber} (ID: ${msgId})`);
             const messageDoc = {
               messageId: msgId,
@@ -1369,18 +1305,7 @@ class JioRCSService {
             );
             
             // Unblock and refund (move from blocked back to wallet)
-            try {
-              const user = await User.findById(campaign.userId);
-              if (user) {
-                user.wallet.blockedBalance = Math.max(0, (user.wallet.blockedBalance || 0) - 1);
-                user.wallet.balance += 1;
-                user.wallet.lastUpdated = new Date();
-                await user.save();
-                console.log(`[RCS] 🔄 Refunded ₹1 for recipient error`);
-              }
-            } catch (error) {
-              console.error(`[RCS] Refund error:`, error);
-            }
+            await this.refundUser(campaign.userId, 1, 'recipient error');
           }
         });
 
@@ -1587,14 +1512,14 @@ class JioRCSService {
         const messages = await Message.find({ campaignId: campaign._id });
         const messageMap = new Map();
         messages.forEach(msg => {
-          const phone = msg.recipientPhoneNumber.replace(/^\+91/, '').replace(/^\+/, '');
+          const phone = this.normalizePhoneForComparison(msg.recipientPhoneNumber);
           messageMap.set(phone, msg);
         });
         
         // Sync recipient statuses with message statuses
         let needsUpdate = false;
         for (const recipient of campaign.recipients) {
-          const phone = recipient.phoneNumber.replace(/^\+91/, '').replace(/^\+/, '');
+          const phone = this.normalizePhoneForComparison(recipient.phoneNumber);
           const message = messageMap.get(phone);
           
           if (message && recipient.status === 'queued' && message.status !== 'queued') {
@@ -1635,7 +1560,43 @@ class JioRCSService {
     }
   }
 
-  // ===================== HELPERS =====================
+  // Helper method to refund user wallet
+  async refundUser(userId, amount = 1, reason = 'Message failure') {
+    try {
+      const user = await User.findById(userId);
+      if (user) {
+        user.wallet.blockedBalance = Math.max(0, (user.wallet.blockedBalance || 0) - amount);
+        user.wallet.balance += amount;
+        user.wallet.lastUpdated = new Date();
+        await user.save();
+        console.log(`[RCS] 🔄 Refunded ₹${amount} for ${reason}`);
+      }
+    } catch (refundError) {
+      console.error(`[RCS] Refund error:`, refundError);
+    }
+  }
+
+  // Helper method to format phone numbers consistently
+  formatPhoneForAction(phoneNumber) {
+    // Remove all non-digits
+    let cleanPhone = phoneNumber.replace(/\D/g, '');
+    
+    // Format to +91 prefix
+    if (cleanPhone.length === 10) {
+      return `+91${cleanPhone}`;
+    } else if (cleanPhone.length === 12 && cleanPhone.startsWith('91')) {
+      return `+${cleanPhone}`;
+    } else if (!cleanPhone.startsWith('+')) {
+      return `+${cleanPhone}`;
+    }
+    
+    return cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone}`;
+  }
+
+  // Helper method to normalize phone numbers for comparison
+  normalizePhoneForComparison(phoneNumber) {
+    return phoneNumber.replace(/^\+91/, '').replace(/^\+/, '');
+  }
   formatPhone(phoneNumber) {
     if (!phoneNumber) return '';
     return phoneNumber.startsWith('+') ? phoneNumber : `+91${phoneNumber}`;
@@ -1650,7 +1611,7 @@ class JioRCSService {
     return out;
   }
 
-  generateUUID() {
+  generateMessageId() {
     return `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   }
 
@@ -1670,7 +1631,9 @@ class JioRCSService {
   async getCachedToken(key) {
     if (!redisClient) return null;
     try {
-      if (!redisClient.isOpen) await redisClient.connect();
+      if (!redisClient.isOpen) {
+        await redisClient.connect();
+      }
       const data = await redisClient.get(key);
       return data ? JSON.parse(data) : null;
     } catch (e) {
@@ -1682,7 +1645,9 @@ class JioRCSService {
   async cacheToken(key, tokenData) {
     if (!redisClient) return;
     try {
-      if (!redisClient.isOpen) await redisClient.connect();
+      if (!redisClient.isOpen) {
+        await redisClient.connect();
+      }
       await redisClient.setEx(key, 86400, JSON.stringify(tokenData)); // 24h
     } catch (e) {
       console.error('[RCS] Redis set error:', e.message);
