@@ -9,10 +9,10 @@ export const createAdmin = async () => {
 
             const adminUser = await User.create({
                 email: "admin@gmail.com",
-                password: "123456",
+                password: "admin@1234",
                 role: "ADMIN",
                 name: "Admin",
-                phone: "1234567890",
+                phone: "9898643038",
                 status: "ACTIVE",
                 wallet: { balance: 10000 },
                 jioRcsConfig: {

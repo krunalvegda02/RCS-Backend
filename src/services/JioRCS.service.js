@@ -932,10 +932,17 @@ class JioRCSService {
         // Mark campaign as completed if no pending recipients
         const campaignToComplete = await Campaign.findById(campaignId);
         if (campaignToComplete && campaignToComplete.status === 'running') {
-          campaignToComplete.status = 'completed';
-          campaignToComplete.completedAt = new Date();
-          await campaignToComplete.save(); // This triggers the pre-save hook to unblock
-          console.log(`[RCS] ✅ Campaign marked as completed, blocked balance cleaned up`);
+          // Update stats before completing
+          await campaignToComplete.updateStats();
+          
+          // Reload after updateStats
+          const freshCampaign = await Campaign.findById(campaignId);
+          if (freshCampaign && freshCampaign.status === 'running') {
+            freshCampaign.status = 'completed';
+            freshCampaign.completedAt = new Date();
+            await freshCampaign.save();
+            console.log(`[RCS] ✅ Campaign marked as completed, blocked balance cleaned up`);
+          }
         }
         return;
       }
@@ -1183,38 +1190,44 @@ class JioRCSService {
       }
 
       // Update campaign stats after processing batch
-      await Campaign.findById(campaignId).then(c => c?.updateStats());
-
-      // Continue processing remaining recipients with minimal delay
-      const stillPending = campaign.getPendingRecipients(1);
-      if (stillPending.length > 0 && campaign.status === 'running') {
-        const nextDelay = 500; // 500ms delay before next batch
-        setTimeout(() => {
-          this.processCampaignBatch(campaignId, 100, delayMs).catch(error => {
-            console.error(`[RCS] Batch processing error for ${campaignId}:`, error);
-            Campaign.updateOne(
-              { _id: campaignId },
-              { status: 'failed', completedAt: new Date() }
-            ).catch(console.error);
-          });
-        }, nextDelay);
-      } else {
-        // All recipients processed, mark campaign as completed
-        const campaign = await Campaign.findById(campaignId);
-        if (campaign) {
-          campaign.status = 'completed';
-          campaign.completedAt = new Date();
-          await campaign.save(); // This triggers the pre-save hook to unblock
+      const updatedCampaign = await Campaign.findById(campaignId);
+      if (updatedCampaign) {
+        await updatedCampaign.updateStats();
+        
+        // Reload campaign after updateStats to get fresh data
+        const freshCampaign = await Campaign.findById(campaignId);
+        if (!freshCampaign) return;
+        
+        // Check if there are any recipients still needing processing (including queued)
+        const stillPending = freshCampaign.recipients.filter(r => 
+          r.status === 'pending' || r.status === 'processing' || r.status === 'queued'
+        );
+        
+        if (stillPending.length > 0 && freshCampaign.status === 'running') {
+          console.log(`[RCS] ${stillPending.length} recipients still pending/queued, continuing...`);
+          const nextDelay = 500;
+          setTimeout(() => {
+            this.processCampaignBatch(campaignId, 100, delayMs).catch(error => {
+              console.error(`[RCS] Batch processing error for ${campaignId}:`, error);
+              console.error(`[RCS] Error stack:`, error.stack);
+              console.log(`[RCS] Campaign will continue with partial results`);
+            });
+          }, nextDelay);
+        } else if (freshCampaign.status === 'running') {
+          // All recipients processed (sent, delivered, read, or failed)
+          freshCampaign.status = 'completed';
+          freshCampaign.completedAt = new Date();
+          await freshCampaign.save();
           console.log(`[RCS] ✅ Campaign ${campaignId} completed successfully`);
         }
       }
     } catch (error) {
       console.error('[RCS] Error processing campaign batch:', error.message);
-      // Mark campaign as failed on critical error
-      await Campaign.updateOne(
-        { _id: campaignId },
-        { status: 'failed', completedAt: new Date() }
-      ).catch(console.error);
+      console.error('[RCS] Error stack:', error.stack);
+      console.error('[RCS] Campaign ID:', campaignId);
+      // Don't mark campaign as failed - individual message failures are tracked per recipient
+      // Campaign will be marked as completed when all batches finish processing
+      console.log(`[RCS] Campaign batch error logged, continuing with remaining recipients`);
     }
   }
 
@@ -1254,16 +1267,62 @@ class JioRCSService {
       }
     });
 
-    this.messageQueue.on('failed', (job, err) => {
+    this.messageQueue.on('failed', async (job, err) => {
       console.error(`[Queue] Message ${job.data.messageData.messageId} failed permanently:`, err.message);
+      
+      const { campaignId, phoneNumber, messageId } = job.data.messageData;
+      if (!campaignId) return;
+      
+      try {
+        // Update campaign recipient status
+        await Campaign.updateOne(
+          { _id: campaignId, 'recipients.phoneNumber': phoneNumber },
+          {
+            $set: {
+              'recipients.$.status': 'failed',
+              'recipients.$.failureReason': err.message,
+              'recipients.$.failedAt': new Date()
+            }
+          }
+        );
+        
+        // Update message status
+        await Message.updateOne(
+          { messageId },
+          { 
+            status: 'failed',
+            errorCode: err.response?.status === 429 ? 'RATE_LIMIT' : 'SEND_FAILED',
+            errorMessage: err.message,
+            failedAt: new Date()
+          }
+        );
+        
+        // Refund wallet
+        const campaign = await Campaign.findById(campaignId);
+        if (campaign) {
+          const user = await User.findById(campaign.userId);
+          if (user) {
+            user.wallet.blockedBalance = Math.max(0, (user.wallet.blockedBalance || 0) - 1);
+            user.wallet.balance += 1;
+            user.wallet.lastUpdated = new Date();
+            await user.save();
+            console.log(`[Queue] 🔄 Refunded ₹1 for failed message`);
+          }
+        }
+        
+        // Check if campaign should complete
+        await this.checkAndCompleteCampaign(campaignId);
+      } catch (updateError) {
+        console.error(`[Queue] Failed to update campaign:`, updateError.message);
+      }
     });
 
-    // Monitor queue health for large campaigns
+    // Monitor queue health
     this.messageQueue.on('stalled', (job) => {
       console.warn(`[Queue] Job ${job.id} stalled, will retry`);
     });
 
-    // Log queue stats periodically for large campaigns
+    // Periodic queue stats and campaign completion check
     setInterval(async () => {
       try {
         const waiting = await this.messageQueue.getWaiting();
@@ -1274,10 +1333,99 @@ class JioRCSService {
         if (waiting.length > 0 || active.length > 0) {
           console.log(`[Queue Stats] Waiting: ${waiting.length}, Active: ${active.length}, Completed: ${completed.length}, Failed: ${failed.length}`);
         }
+        
+        // Check for stuck campaigns every 30 seconds
+        await this.checkStuckCampaigns();
       } catch (error) {
         console.error('[Queue] Error getting stats:', error.message);
       }
     }, 30000); // Every 30 seconds
+  }
+
+  // Check if campaign should be completed
+  async checkAndCompleteCampaign(campaignId) {
+    try {
+      const campaign = await Campaign.findById(campaignId);
+      if (!campaign || campaign.status !== 'running') return;
+      
+      const stillPending = campaign.recipients.filter(r => 
+        r.status === 'pending' || r.status === 'processing' || r.status === 'queued'
+      );
+      
+      if (stillPending.length === 0) {
+        // Update stats (this saves the campaign)
+        await campaign.updateStats();
+        
+        // Reload to get fresh data after updateStats save
+        const freshCampaign = await Campaign.findById(campaignId);
+        if (freshCampaign && freshCampaign.status === 'running') {
+          freshCampaign.status = 'completed';
+          freshCampaign.completedAt = new Date();
+          await freshCampaign.save();
+          console.log(`[RCS] ✅ Campaign ${campaignId} auto-completed`);
+        }
+      }
+    } catch (error) {
+      console.error(`[RCS] Error checking campaign completion:`, error.message);
+    }
+  }
+
+  // Check for stuck campaigns and complete them
+  async checkStuckCampaigns() {
+    try {
+      const runningCampaigns = await Campaign.find({ status: 'running' });
+      
+      for (const campaign of runningCampaigns) {
+        // Get actual message statuses
+        const messages = await Message.find({ campaignId: campaign._id });
+        const messageMap = new Map();
+        messages.forEach(msg => {
+          const phone = msg.recipientPhoneNumber.replace(/^\+91/, '').replace(/^\+/, '');
+          messageMap.set(phone, msg);
+        });
+        
+        // Sync recipient statuses with message statuses
+        let needsUpdate = false;
+        for (const recipient of campaign.recipients) {
+          const phone = recipient.phoneNumber.replace(/^\+91/, '').replace(/^\+/, '');
+          const message = messageMap.get(phone);
+          
+          if (message && recipient.status === 'queued' && message.status !== 'queued') {
+            recipient.status = message.status;
+            if (message.sentAt) recipient.sentAt = message.sentAt;
+            if (message.deliveredAt) recipient.deliveredAt = message.deliveredAt;
+            if (message.readAt) recipient.readAt = message.readAt;
+            needsUpdate = true;
+          }
+        }
+        
+        // Save synced statuses first
+        if (needsUpdate) {
+          await campaign.save();
+          console.log(`[RCS] 🔄 Synced campaign ${campaign._id} recipient statuses`);
+        }
+        
+        // Check if should complete
+        const stillPending = campaign.recipients.filter(r => 
+          r.status === 'pending' || r.status === 'processing' || r.status === 'queued'
+        );
+        
+        if (stillPending.length === 0) {
+          // Reload campaign to get fresh data, then update stats
+          const freshCampaign = await Campaign.findById(campaign._id);
+          if (freshCampaign) {
+            await freshCampaign.updateStats();
+            
+            freshCampaign.status = 'completed';
+            freshCampaign.completedAt = new Date();
+            await freshCampaign.save();
+            console.log(`[RCS] ✅ Campaign ${campaign._id} auto-completed (stuck check)`);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[RCS] Error checking stuck campaigns:', error.message);
+    }
   }
 
   // ===================== HELPERS =====================
