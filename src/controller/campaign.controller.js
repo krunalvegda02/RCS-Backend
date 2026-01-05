@@ -23,8 +23,49 @@ export const checkCapability = async (req, res) => {
     const progressKey = `${userId}_${Date.now()}`;
     global.capabilityProgress.set(progressKey, { chunk: 0, total: phoneNumbers.length, rcsCapable: 0 });
     
-    const results = await jioRCSService.checkCapabilitySmart(phoneNumbers, userId, (progress) => {
+    // Real-time batch update callback
+    const ContactBatch = campaignId ? (await import('../models/contactBatch.model.js')).default : null;
+    
+    // Mark all batches as processing at start
+    if (campaignId && ContactBatch) {
+      await ContactBatch.updateMany(
+        { campaignId, userId, status: 'pending' },
+        { $set: { status: 'processing' } }
+      );
+    }
+    
+    const results = await jioRCSService.checkCapabilitySmart(phoneNumbers, userId, async (progress) => {
       global.capabilityProgress.set(progressKey, progress);
+      
+      // Update batches in real-time if campaignId provided
+      if (campaignId && ContactBatch && progress.chunkResults) {
+        const resultsMap = new Map();
+        progress.chunkResults.forEach(r => {
+          const cleanNumber = r.phoneNumber.replace(/^\+?91/, '');
+          resultsMap.set(cleanNumber, r.isCapable);
+        });
+        
+        const batches = await ContactBatch.find({ campaignId, userId });
+        
+        for (const batch of batches) {
+          let hasChanges = false;
+          
+          for (let i = 0; i < batch.contacts.length; i++) {
+            const contact = batch.contacts[i];
+            if ((contact.isRcsCapable === null || contact.isRcsCapable === undefined) && resultsMap.has(contact.phoneNumber)) {
+              batch.contacts[i].isRcsCapable = resultsMap.get(contact.phoneNumber);
+              hasChanges = true;
+            }
+          }
+          
+          if (hasChanges) {
+            batch.rcsCapableCount = batch.contacts.filter(c => c.isRcsCapable === true).length;
+            batch.processedContacts = batch.contacts.filter(c => c.isRcsCapable !== null && c.isRcsCapable !== undefined).length;
+            batch.status = progress.chunk >= progress.totalChunks ? 'completed' : 'processing';
+            await batch.save();
+          }
+        }
+      }
     });
     
     global.capabilityProgress.delete(progressKey);
@@ -32,50 +73,12 @@ export const checkCapability = async (req, res) => {
     const rcsCapable = results.filter(r => r.isCapable).length;
     console.log(`[Campaign] ✅ Capability check complete: ${rcsCapable} RCS-capable out of ${phoneNumbers.length}`);
     
-    // Update batches with capability results if campaignId provided
-    if (campaignId) {
-      const ContactBatch = (await import('../models/contactBatch.model.js')).default;
-      const batches = await ContactBatch.find({ campaignId, userId }).lean();
-      
-      // Create a map for faster lookups
-      const resultsMap = new Map();
-      results.forEach(r => {
-        const cleanNumber = r.phoneNumber.replace(/^\+?91/, '');
-        resultsMap.set(cleanNumber, r.isCapable);
-      });
-      
-      // Prepare bulk operations for all batches at once
-      const bulkOps = [];
-      
-      for (const batch of batches) {
-        // Update contacts with results
-        const updatedContacts = batch.contacts.map(contact => {
-          if (resultsMap.has(contact.phoneNumber)) {
-            return { ...contact, isRcsCapable: resultsMap.get(contact.phoneNumber) };
-          }
-          return contact;
-        });
-        
-        const rcsCount = updatedContacts.filter(c => c.isRcsCapable === true).length;
-        
-        bulkOps.push({
-          updateOne: {
-            filter: { _id: batch._id },
-            update: {
-              $set: {
-                contacts: updatedContacts,
-                rcsCapableCount: rcsCount,
-                status: 'completed'
-              }
-            }
-          }
-        });
-      }
-      
-      // Execute all updates in a single bulk operation
-      if (bulkOps.length > 0) {
-        await ContactBatch.bulkWrite(bulkOps, { ordered: false });
-      }
+    // Final batch update to ensure all are marked as completed
+    if (campaignId && ContactBatch) {
+      await ContactBatch.updateMany(
+        { campaignId, userId },
+        { $set: { status: 'completed' } }
+      );
     }
     
     const response = {
@@ -104,17 +107,42 @@ export const checkCapability = async (req, res) => {
 // Get capability check progress
 export const getCapabilityProgress = async (req, res) => {
   const userId = req.user._id;
-  const allProgress = [];
   
+  // Check in-memory progress first
+  let progress = null;
   if (global.capabilityProgress) {
-    for (const [key, progress] of global.capabilityProgress.entries()) {
+    for (const [key, prog] of global.capabilityProgress.entries()) {
       if (key.startsWith(userId)) {
-        allProgress.push(progress);
+        progress = prog;
+        break;
       }
     }
   }
   
-  res.json({ success: true, progress: allProgress[0] || null });
+  // If no in-memory progress, check database for actual stats
+  if (!progress) {
+    const { campaignId } = req.query;
+    if (campaignId) {
+      const ContactBatch = (await import('../models/contactBatch.model.js')).default;
+      const batches = await ContactBatch.find({ campaignId, userId }).select('totalContacts processedContacts rcsCapableCount status');
+      
+      if (batches.length > 0) {
+        const total = batches.reduce((sum, b) => sum + b.totalContacts, 0);
+        const processed = batches.reduce((sum, b) => sum + (b.processedContacts || 0), 0);
+        const rcsCapable = batches.reduce((sum, b) => sum + (b.rcsCapableCount || 0), 0);
+        
+        progress = {
+          chunk: 0,
+          totalChunks: 0,
+          total,
+          processed,
+          rcsCapable
+        };
+      }
+    }
+  }
+  
+  res.json({ success: true, progress });
 };
 
 // Create simple campaign record
