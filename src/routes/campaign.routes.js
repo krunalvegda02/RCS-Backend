@@ -16,6 +16,15 @@ router.use(requireUser);
 
 // Check RCS capability for batch of numbers
 router.post('/check-capability', CampaignController.checkCapability);
+router.get('/check-capability/progress', CampaignController.getCapabilityProgress);
+
+// Batched contact upload
+router.post('/batches/upload', CampaignController.uploadContactBatch);
+router.post('/batches/:batchId/process', CampaignController.processContactBatch);
+router.get('/batches/:campaignId', CampaignController.getContactBatches);
+router.get('/batches/:batchId/details', CampaignController.getContactBatchById);
+router.get('/batches/:campaignId/contacts', CampaignController.getAllContactsFromBatches);
+router.delete('/batches/:campaignId/contacts/:phoneNumber', CampaignController.deleteContactFromBatch);
 
 // Send bulk messages (create and start campaign)
 router.post('/send-bulk', checkWalletBalance(1), CampaignController.create);

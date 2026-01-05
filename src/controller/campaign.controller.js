@@ -5,7 +5,7 @@ import jioRCSService from '../services/JioRCS.service.js';
 // Check RCS capability for batch of numbers
 export const checkCapability = async (req, res) => {
   try {
-    const { phoneNumbers } = req.body;
+    const { phoneNumbers, countOnly = false, streaming = false, campaignId } = req.body;
     const userId = req.user._id;
 
     if (!Array.isArray(phoneNumbers) || phoneNumbers.length === 0) {
@@ -15,17 +15,50 @@ export const checkCapability = async (req, res) => {
       });
     }
 
-    console.log(`[Campaign] Checking capability for ${phoneNumbers.length} numbers`);
+    console.log(`[Campaign] Checking capability for ${phoneNumbers.length} numbers (countOnly: ${countOnly}, streaming: ${streaming})`);
     
-    // Use smart capability check (automatically selects batch or sequential)
-    const results = await jioRCSService.checkCapabilitySmart(phoneNumbers, userId);
+    // Check capability with progress callback that stores in global map
+    if (!global.capabilityProgress) global.capabilityProgress = new Map();
+    
+    const progressKey = `${userId}_${Date.now()}`;
+    global.capabilityProgress.set(progressKey, { chunk: 0, total: phoneNumbers.length, rcsCapable: 0 });
+    
+    const results = await jioRCSService.checkCapabilitySmart(phoneNumbers, userId, (progress) => {
+      global.capabilityProgress.set(progressKey, progress);
+    });
+    
+    global.capabilityProgress.delete(progressKey);
     
     const rcsCapable = results.filter(r => r.isCapable).length;
     console.log(`[Campaign] ✅ Capability check complete: ${rcsCapable} RCS-capable out of ${phoneNumbers.length}`);
     
+    // Update batches with capability results if campaignId provided
+    if (campaignId) {
+      const ContactBatch = (await import('../models/contactBatch.model.js')).default;
+      const batches = await ContactBatch.find({ campaignId, userId });
+      
+      for (const batch of batches) {
+        let updated = false;
+        batch.contacts = batch.contacts.map(contact => {
+          const result = results.find(r => r.phoneNumber.replace(/^\+?91/, '') === contact.phoneNumber);
+          if (result) {
+            updated = true;
+            return { ...contact, isRcsCapable: result.isCapable };
+          }
+          return contact;
+        });
+        
+        if (updated) {
+          batch.rcsCapableCount = batch.contacts.filter(c => c.isRcsCapable === true).length;
+          batch.status = 'completed';
+          await batch.save();
+        }
+      }
+    }
+    
     const response = {
       success: true,
-      data: results,
+      data: countOnly ? [] : results,
       summary: {
         total: phoneNumbers.length,
         rcsCapable: rcsCapable,
@@ -37,11 +70,29 @@ export const checkCapability = async (req, res) => {
     return res.json(response);
   } catch (error) {
     console.error('[Campaign] Capability check error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        message: error.message,
+      });
+    }
   }
+};
+
+// Get capability check progress
+export const getCapabilityProgress = async (req, res) => {
+  const userId = req.user._id;
+  const allProgress = [];
+  
+  if (global.capabilityProgress) {
+    for (const [key, progress] of global.capabilityProgress.entries()) {
+      if (key.startsWith(userId)) {
+        allProgress.push(progress);
+      }
+    }
+  }
+  
+  res.json({ success: true, progress: allProgress[0] || null });
 };
 
 // Create simple campaign record
@@ -889,6 +940,244 @@ export const getAllCampaignsForExport = async (req, res) => {
     res.status(500).json({
       success: false,
       message: error.message,
+    });
+  }
+};
+
+
+// Upload contacts in batches
+export const uploadContactBatch = async (req, res) => {
+  try {
+    const { campaignId, batchNumber, contacts } = req.body;
+    const userId = req.user._id;
+
+    const ContactBatch = (await import('../models/contactBatch.model.js')).default;
+
+    const batch = await ContactBatch.create({
+      campaignId,
+      userId,
+      batchNumber,
+      contacts,
+      totalContacts: contacts.length,
+      status: 'pending'
+    });
+
+    res.json({
+      success: true,
+      message: `Batch ${batchNumber} uploaded successfully`,
+      data: batch
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Process contact batch for capability check
+export const processContactBatch = async (req, res) => {
+  try {
+    const { batchId } = req.params;
+    const userId = req.user._id;
+
+    const ContactBatch = (await import('../models/contactBatch.model.js')).default;
+    const batch = await ContactBatch.findOne({ _id: batchId, userId });
+
+    if (!batch) {
+      return res.status(404).json({
+        success: false,
+        message: 'Batch not found'
+      });
+    }
+
+    await batch.startProcessing();
+
+    const phoneNumbers = batch.contacts.map(c => c.phoneNumber);
+    const results = await jioRCSService.checkCapabilitySmart(phoneNumbers, userId);
+
+    // Update contacts with capability results
+    batch.contacts = batch.contacts.map(contact => {
+      const result = results.find(r => r.phoneNumber.replace(/^\+?91/, '') === contact.phoneNumber);
+      return {
+        ...contact,
+        isRcsCapable: result?.isCapable || false
+      };
+    });
+
+    const rcsCapableCount = batch.contacts.filter(c => c.isRcsCapable).length;
+    await batch.complete(rcsCapableCount);
+
+    res.json({
+      success: true,
+      data: batch,
+      summary: {
+        total: batch.totalContacts,
+        rcsCapable: rcsCapableCount,
+        notCapable: batch.totalContacts - rcsCapableCount
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Get contact batches with pagination
+export const getContactBatches = async (req, res) => {
+  try {
+    const { campaignId } = req.params;
+    const userId = req.user._id;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const status = req.query.status;
+
+    const ContactBatch = (await import('../models/contactBatch.model.js')).default;
+    
+    let query = { campaignId, userId };
+    if (status) query.status = status;
+
+    const batches = await ContactBatch.find(query)
+      .sort({ batchNumber: 1 })
+      .limit(limit)
+      .skip((page - 1) * limit)
+      .select('-contacts')
+      .lean();
+
+    const total = await ContactBatch.countDocuments(query);
+
+    res.json({
+      success: true,
+      data: batches,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Get single batch with contacts
+export const getContactBatchById = async (req, res) => {
+  try {
+    const { batchId } = req.params;
+    const userId = req.user._id;
+
+    const ContactBatch = (await import('../models/contactBatch.model.js')).default;
+    const batch = await ContactBatch.findOne({ _id: batchId, userId });
+
+    if (!batch) {
+      return res.status(404).json({
+        success: false,
+        message: 'Batch not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: batch
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Get all contacts from batches with pagination
+export const getAllContactsFromBatches = async (req, res) => {
+  try {
+    const { campaignId } = req.params;
+    const userId = req.user._id;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+
+    const ContactBatch = (await import('../models/contactBatch.model.js')).default;
+    
+    // Get all batches regardless of status
+    const batches = await ContactBatch.find({ campaignId, userId })
+      .sort({ batchNumber: 1 })
+      .lean();
+
+    const allContacts = batches.flatMap(batch => 
+      batch.contacts.map(contact => ({
+        phoneNumber: contact.phoneNumber,
+        isRcsCapable: contact.isRcsCapable ?? null, // Use null if undefined
+        batchNumber: batch.batchNumber,
+        batchStatus: batch.status
+      }))
+    );
+
+    const total = allContacts.length;
+    const paginatedContacts = allContacts.slice((page - 1) * limit, page * limit);
+
+    res.json({
+      success: true,
+      data: paginatedContacts,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Delete contact from batch
+export const deleteContactFromBatch = async (req, res) => {
+  try {
+    const { campaignId, phoneNumber } = req.params;
+    const userId = req.user._id;
+
+    const ContactBatch = (await import('../models/contactBatch.model.js')).default;
+    
+    const batches = await ContactBatch.find({ campaignId, userId });
+    
+    let deleted = false;
+    for (const batch of batches) {
+      const initialLength = batch.contacts.length;
+      batch.contacts = batch.contacts.filter(c => c.phoneNumber !== phoneNumber);
+      
+      if (batch.contacts.length < initialLength) {
+        batch.totalContacts = batch.contacts.length;
+        batch.rcsCapableCount = batch.contacts.filter(c => c.isRcsCapable).length;
+        await batch.save();
+        deleted = true;
+        break;
+      }
+    }
+
+    if (!deleted) {
+      return res.status(404).json({
+        success: false,
+        message: 'Contact not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Contact deleted successfully'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
     });
   }
 };

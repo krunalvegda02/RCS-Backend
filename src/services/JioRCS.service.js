@@ -746,24 +746,55 @@ class JioRCSService {
   // ===================== SMART CAPABILITY CHECK =====================
   /**
    * Smart capability check - uses single API for <500 numbers, batch API for ≥500 numbers
+   * @param {Array} phoneNumbers - Array of phone numbers to check
+   * @param {String} userId - User ID
+   * @param {Function} onProgress - Optional callback for progress updates: (chunk, totalChunks, rcsCapable, processed) => {}
    */
-  async checkCapabilitySmart(phoneNumbers, userId) {
+  async checkCapabilitySmart(phoneNumbers, userId, onProgress = null) {
     if (!Array.isArray(phoneNumbers)) {
       phoneNumbers = [phoneNumbers];
     }
 
-    // Remove duplicates first
     const uniqueNumbers = [...new Set(phoneNumbers)];
     
-    // Use sequential API for less than 500 UNIQUE numbers (batch API requires minimum 500)
-    if (uniqueNumbers.length < 500) {
-      console.log(`[RCS] Using sequential API for ${uniqueNumbers.length} unique numbers (batch requires min 500)`);
-      return await this.checkCapabilitySequential(uniqueNumbers, userId);
+    if (uniqueNumbers.length >= 500) {
+      console.log(`[RCS] Using batch API for ${uniqueNumbers.length} unique numbers`);
+      return await this.checkCapabilityBatch(uniqueNumbers, userId, onProgress);
     }
+    
+    console.log(`[RCS] Padding ${uniqueNumbers.length} numbers to 500 for batch API`);
+    return await this.checkCapabilityWithDynamicBatching(uniqueNumbers, userId, onProgress);
+  }
 
-    // Use batch API for 500 or more unique numbers
-    console.log(`[RCS] Using batch API for ${uniqueNumbers.length} unique numbers`);
-    return await this.checkCapabilityBatch(uniqueNumbers, userId);
+  async checkCapabilityWithDynamicBatching(phoneNumbers, userId) {
+    const MIN_BATCH_SIZE = 500;
+    const actualCount = phoneNumbers.length;
+    const dummyCount = MIN_BATCH_SIZE - actualCount;
+    const dummyNumbers = [];
+    
+    for (let i = 0; i < dummyCount; i++) {
+      const randomNum = `9${Math.floor(Math.random() * 900000000) + 100000000}`;
+      dummyNumbers.push(`+91${randomNum}`);
+    }
+    
+    console.log(`[RCS] Padding ${actualCount} real + ${dummyCount} dummy = ${MIN_BATCH_SIZE} total`);
+    
+    const paddedNumbers = [...phoneNumbers.map(p => {
+      const cleanPhone = String(p).replace(/\D/g, '');
+      return cleanPhone.length === 10 ? `+91${cleanPhone}` : (p.startsWith('+') ? p : `+91${cleanPhone}`);
+    }), ...dummyNumbers];
+    
+    const batchResults = await this.checkCapabilityBatch(paddedNumbers, userId);
+    
+    const realPhones = new Set(phoneNumbers.map(p => {
+      const cleanPhone = String(p).replace(/\D/g, '');
+      return cleanPhone.length === 10 ? `+91${cleanPhone}` : (p.startsWith('+') ? p : `+91${cleanPhone}`);
+    }));
+    
+    const realResults = batchResults.filter(r => realPhones.has(r.phoneNumber));
+    console.log(`[RCS] Returned ${realResults.length} real results`);
+    
+    return realResults;
   }
 
   /**
@@ -796,9 +827,10 @@ class JioRCSService {
   }
 
   /**
-   * Batch capability check using actual Jio batch API
+   * Batch capability check using actual Jio batch API with optimized chunking
+   * @param {Function} onProgress - Optional callback for progress updates
    */
-  async checkCapabilityBatch(phoneNumbers, userId) {
+  async checkCapabilityBatch(phoneNumbers, userId, onProgress = null) {
     try {
       const user = await User.findById(userId).select('+jioConfig.clientSecret');
       if (!user || !user.jioConfig?.isConfigured) {
@@ -808,7 +840,7 @@ class JioRCSService {
       const accessToken = await this.getAccessToken(userId);
       // Ensure proper E.164 formatting with +91 prefix
       const formattedNumbers = phoneNumbers.map(phone => {
-        const cleanPhone = String(phone).replace(/\D/g, ''); // Remove non-digits
+        const cleanPhone = String(phone).replace(/\D/g, '');
         if (cleanPhone.length === 10) {
           return `+91${cleanPhone}`;
         } else if (cleanPhone.length === 12 && cleanPhone.startsWith('91')) {
@@ -823,12 +855,50 @@ class JioRCSService {
       const uniqueNumbers = [...new Set(formattedNumbers)];
       console.log(`[RCS] Batch checking ${uniqueNumbers.length} unique numbers...`);
 
-      // Split into chunks of 10000 (API limit)
-      const chunkSize = 10000;
-      const allResults = [];
+      // Optimized chunking: ALL chunks must be 500-10000, never exceed 10000
+      const chunks = [];
+      const total = uniqueNumbers.length;
+      
+      if (total <= 10000) {
+        // Single chunk
+        chunks.push(uniqueNumbers);
+      } else {
+        // Multiple chunks needed
+        let offset = 0;
+        
+        while (offset < total) {
+          const remaining = total - offset;
+          
+          if (remaining <= 10000) {
+            // Last portion
+            if (remaining >= 500) {
+              // Valid chunk, take all
+              chunks.push(uniqueNumbers.slice(offset));
+            } else {
+              // <500, adjust previous chunk
+              const prevChunk = chunks.pop();
+              const combined = prevChunk.length + remaining;
+              const splitAt = Math.ceil(combined / 2);
+              chunks.push(prevChunk.slice(0, splitAt));
+              chunks.push([...prevChunk.slice(splitAt), ...uniqueNumbers.slice(offset)]);
+            }
+            break;
+          } else {
+            // Take 10000 and continue
+            chunks.push(uniqueNumbers.slice(offset, offset + 10000));
+            offset += 10000;
+          }
+        }
+      }
 
-      for (let i = 0; i < uniqueNumbers.length; i += chunkSize) {
-        const chunk = uniqueNumbers.slice(i, i + chunkSize);
+      console.log(`[RCS] Split into ${chunks.length} chunks:`, chunks.map(c => c.length));
+
+      const allResults = [];
+      let totalRcsCapable = 0;
+
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        console.log(`[RCS] Processing chunk ${i + 1}/${chunks.length} with ${chunk.length} numbers`);
 
         const response = await axios.post(
           'https://api.businessmessaging.jio.com/v1/messaging/usersBatchGet',
@@ -842,11 +912,12 @@ class JioRCSService {
           }
         );
 
-        // Process reachableUsers from batch response
         const reachableUsers = response.data?.reachableUsers || [];
-        console.log(`[RCS] ✅ Found ${reachableUsers.length} RCS-capable out of ${chunk.length}`);
+        const chunkRcsCapable = reachableUsers.length;
+        totalRcsCapable += chunkRcsCapable;
+        
+        console.log(`[RCS] ✅ Found ${chunkRcsCapable} RCS-capable out of ${chunk.length}`);
 
-        // Convert reachableUsers to results format
         const chunkResults = chunk.map(phone => ({
           phoneNumber: phone,
           isCapable: reachableUsers.includes(phone),
@@ -855,6 +926,17 @@ class JioRCSService {
         }));
 
         allResults.push(...chunkResults);
+        
+        // Call progress callback if provided
+        if (onProgress) {
+          onProgress({
+            chunk: i + 1,
+            totalChunks: chunks.length,
+            processed: allResults.length,
+            total: uniqueNumbers.length,
+            rcsCapable: totalRcsCapable
+          });
+        }
       }
 
       // Map results back to original numbers (including duplicates)
@@ -1312,6 +1394,10 @@ class JioRCSService {
             await user.save();
             console.log(`[Queue] 🔄 Refunded ₹1 for failed message`);
           }
+          
+          // Update stats immediately after failure
+          await campaign.updateStats();
+          console.log(`[Queue] 📊 Campaign stats updated after failure`);
         }
         
         // Check if campaign should complete
