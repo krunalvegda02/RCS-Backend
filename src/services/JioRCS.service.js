@@ -137,7 +137,10 @@ class JioRCSService {
 
       return statusData;
     } catch (error) {
-      console.error(`[RCS] Capability status check failed for ${phoneNumber}:`, error.message);
+      // Only log non-404 errors (404 = not RCS capable, which is normal)
+      if (error.response?.status !== 404) {
+        console.error(`[RCS] Capability check failed for ${phoneNumber}:`, error.message);
+      }
 
       return {
         phoneNumber: this.formatPhone(phoneNumber),
@@ -749,15 +752,18 @@ class JioRCSService {
       phoneNumbers = [phoneNumbers];
     }
 
-    // Use sequential API for less than 500 numbers (batch API requires minimum 500)
-    if (phoneNumbers.length < 500) {
-      console.log(`[RCS] Using sequential API for ${phoneNumbers.length} numbers (batch requires min 500)`);
-      return await this.checkCapabilitySequential(phoneNumbers, userId);
+    // Remove duplicates first
+    const uniqueNumbers = [...new Set(phoneNumbers)];
+    
+    // Use sequential API for less than 500 UNIQUE numbers (batch API requires minimum 500)
+    if (uniqueNumbers.length < 500) {
+      console.log(`[RCS] Using sequential API for ${uniqueNumbers.length} unique numbers (batch requires min 500)`);
+      return await this.checkCapabilitySequential(uniqueNumbers, userId);
     }
 
-    // Use batch API for 500 or more numbers
-    console.log(`[RCS] Using batch API for ${phoneNumbers.length} numbers`);
-    return await this.checkCapabilityBatch(phoneNumbers, userId);
+    // Use batch API for 500 or more unique numbers
+    console.log(`[RCS] Using batch API for ${uniqueNumbers.length} unique numbers`);
+    return await this.checkCapabilityBatch(uniqueNumbers, userId);
   }
 
   /**
@@ -815,7 +821,7 @@ class JioRCSService {
 
       // Remove duplicates
       const uniqueNumbers = [...new Set(formattedNumbers)];
-      console.log(`[RCS] Batch capability check for ${uniqueNumbers.length} unique numbers (${formattedNumbers.length} total)`);
+      console.log(`[RCS] Batch checking ${uniqueNumbers.length} unique numbers...`);
 
       // Split into chunks of 10000 (API limit)
       const chunkSize = 10000;
@@ -836,11 +842,9 @@ class JioRCSService {
           }
         );
 
-        console.log(`[RCS] Batch API full response:`, JSON.stringify(response.data, null, 2));
-
         // Process reachableUsers from batch response
         const reachableUsers = response.data?.reachableUsers || [];
-        console.log(`[RCS] Found ${reachableUsers.length} reachable users out of ${chunk.length} checked`);
+        console.log(`[RCS] ✅ Found ${reachableUsers.length} RCS-capable out of ${chunk.length}`);
 
         // Convert reachableUsers to results format
         const chunkResults = chunk.map(phone => ({

@@ -15,28 +15,26 @@ export const checkCapability = async (req, res) => {
       });
     }
 
-    let results;
+    console.log(`[Campaign] Checking capability for ${phoneNumbers.length} numbers`);
     
-    if (phoneNumbers.length > 500) {
-      // Use batch API for more than 500 numbers
-      console.log(`[Campaign] Using batch API for ${phoneNumbers.length} numbers`);
-      results = await jioRCSService.checkCapabilityBatch(phoneNumbers, userId);
-    } else {
-      // Use smart capability check for 500 or fewer numbers
-      console.log(`[Campaign] Using sequential API for ${phoneNumbers.length} numbers`);
-      results = await jioRCSService.checkCapabilitySequential(phoneNumbers, userId);
-    }
+    // Use smart capability check (automatically selects batch or sequential)
+    const results = await jioRCSService.checkCapabilitySmart(phoneNumbers, userId);
     
-    res.json({
+    const rcsCapable = results.filter(r => r.isCapable).length;
+    console.log(`[Campaign] ✅ Capability check complete: ${rcsCapable} RCS-capable out of ${phoneNumbers.length}`);
+    
+    const response = {
       success: true,
       data: results,
       summary: {
         total: phoneNumbers.length,
-        rcsCapable: results.filter(r => r.isCapable).length,
+        rcsCapable: rcsCapable,
         notCapable: results.filter(r => !r.isCapable).length,
-        apiUsed: phoneNumbers.length > 500 ? 'batch' : 'sequential'
+        apiUsed: phoneNumbers.length >= 500 ? 'batch' : 'sequential'
       },
-    });
+    };
+    
+    return res.json(response);
   } catch (error) {
     console.error('[Campaign] Capability check error:', error);
     res.status(500).json({
