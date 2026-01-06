@@ -34,35 +34,37 @@ export const checkCapability = async (req, res) => {
       );
     }
     
-    const results = await jioRCSService.checkCapabilitySmart(phoneNumbers, userId, async (progress) => {
+    const results = await jioRCSService.checkCapabilitySmart(phoneNumbers, userId, campaignId, null, async (progress) => {
       global.capabilityProgress.set(progressKey, progress);
       
       // Update batches in real-time if campaignId provided
       if (campaignId && ContactBatch && progress.chunkResults) {
-        const resultsMap = new Map();
-        progress.chunkResults.forEach(r => {
-          const cleanNumber = r.phoneNumber.replace(/^\+?91/, '');
-          resultsMap.set(cleanNumber, r.isCapable);
-        });
-        
-        const batches = await ContactBatch.find({ campaignId, userId });
+        const batches = await ContactBatch.find({ campaignId, userId, status: 'processing' });
         
         for (const batch of batches) {
-          let hasChanges = false;
+          const batchPhoneNumbers = batch.phoneNumbers.map(p => p.replace(/^\+?91/, ''));
+          const chunkPhoneNumbers = progress.chunkResults.map(r => r.phoneNumber.replace(/^\+?91/, ''));
           
-          for (let i = 0; i < batch.contacts.length; i++) {
-            const contact = batch.contacts[i];
-            if ((contact.isRcsCapable === null || contact.isRcsCapable === undefined) && resultsMap.has(contact.phoneNumber)) {
-              batch.contacts[i].isRcsCapable = resultsMap.get(contact.phoneNumber);
-              hasChanges = true;
-            }
-          }
+          // Check if this chunk contains numbers from this batch
+          const hasOverlap = batchPhoneNumbers.some(phone => 
+            chunkPhoneNumbers.includes(phone)
+          );
           
-          if (hasChanges) {
-            batch.rcsCapableCount = batch.contacts.filter(c => c.isRcsCapable === true).length;
-            batch.processedContacts = batch.contacts.filter(c => c.isRcsCapable !== null && c.isRcsCapable !== undefined).length;
-            batch.status = progress.chunk >= progress.totalChunks ? 'completed' : 'processing';
-            await batch.save();
+          if (hasOverlap) {
+            const rcsCapableCount = progress.chunkResults.filter(r => r.isCapable).length;
+            
+            await ContactBatch.updateOne(
+              { _id: batch._id },
+              {
+                $set: {
+                  capabilityResults: progress.chunkResults,
+                  processedContacts: progress.chunkResults.length,
+                  rcsCapableCount: rcsCapableCount,
+                  status: 'completed',
+                  processingCompletedAt: new Date()
+                }
+              }
+            );
           }
         }
       }
@@ -998,7 +1000,7 @@ export const getAllCampaignsForExport = async (req, res) => {
 // Upload contacts in batches
 export const uploadContactBatch = async (req, res) => {
   try {
-    const { campaignId, batchNumber, contacts } = req.body;
+    const { campaignId, batchNumber, phoneNumbers } = req.body;
     const userId = req.user._id;
 
     const ContactBatch = (await import('../models/contactBatch.model.js')).default;
@@ -1007,8 +1009,8 @@ export const uploadContactBatch = async (req, res) => {
       campaignId,
       userId,
       batchNumber,
-      contacts,
-      totalContacts: contacts.length,
+      phoneNumbers,
+      totalContacts: phoneNumbers.length,
       status: 'pending'
     });
 
@@ -1043,28 +1045,24 @@ export const processContactBatch = async (req, res) => {
 
     await batch.startProcessing();
 
-    const phoneNumbers = batch.contacts.map(c => c.phoneNumber);
-    const results = await jioRCSService.checkCapabilitySmart(phoneNumbers, userId);
+    const results = await jioRCSService.checkCapabilityBatchWithSave(
+      batch.phoneNumbers, 
+      userId, 
+      batch.campaignId, 
+      batch.batchNumber
+    );
 
-    // Update contacts with capability results
-    batch.contacts = batch.contacts.map(contact => {
-      const result = results.find(r => r.phoneNumber.replace(/^\+?91/, '') === contact.phoneNumber);
-      return {
-        ...contact,
-        isRcsCapable: result?.isCapable || false
-      };
-    });
-
-    const rcsCapableCount = batch.contacts.filter(c => c.isRcsCapable).length;
-    await batch.complete(rcsCapableCount);
+    // Results are already saved by checkCapabilityBatchWithSave
+    // Just reload the batch to get updated data
+    const updatedBatch = await ContactBatch.findById(batchId);
 
     res.json({
       success: true,
-      data: batch,
+      data: updatedBatch,
       summary: {
-        total: batch.totalContacts,
-        rcsCapable: rcsCapableCount,
-        notCapable: batch.totalContacts - rcsCapableCount
+        total: updatedBatch.totalContacts,
+        rcsCapable: updatedBatch.rcsCapableCount,
+        notCapable: updatedBatch.totalContacts - updatedBatch.rcsCapableCount
       }
     });
   } catch (error) {
@@ -1093,7 +1091,7 @@ export const getContactBatches = async (req, res) => {
       .sort({ batchNumber: 1 })
       .limit(limit)
       .skip((page - 1) * limit)
-      .select('-contacts')
+      .select('-phoneNumbers -capabilityResults')
       .lean();
 
     const total = await ContactBatch.countDocuments(query);
@@ -1154,19 +1152,35 @@ export const getAllContactsFromBatches = async (req, res) => {
 
     const ContactBatch = (await import('../models/contactBatch.model.js')).default;
     
-    // Get all batches regardless of status
     const batches = await ContactBatch.find({ campaignId, userId })
       .sort({ batchNumber: 1 })
       .lean();
 
-    const allContacts = batches.flatMap(batch => 
-      batch.contacts.map(contact => ({
-        phoneNumber: contact.phoneNumber,
-        isRcsCapable: contact.isRcsCapable ?? null, // Use null if undefined
-        batchNumber: batch.batchNumber,
-        batchStatus: batch.status
-      }))
-    );
+    const allContacts = [];
+    
+    for (const batch of batches) {
+      if (batch.capabilityResults && batch.capabilityResults.length > 0) {
+        // Use capability results if available
+        batch.capabilityResults.forEach(result => {
+          allContacts.push({
+            phoneNumber: result.phoneNumber.replace(/^\+?91/, ''),
+            isRcsCapable: result.isRcsCapable,
+            batchNumber: batch.batchNumber,
+            batchStatus: batch.status
+          });
+        });
+      } else {
+        // Use phone numbers with null capability if not processed yet
+        batch.phoneNumbers.forEach(phone => {
+          allContacts.push({
+            phoneNumber: phone,
+            isRcsCapable: null,
+            batchNumber: batch.batchNumber,
+            batchStatus: batch.status
+          });
+        });
+      }
+    }
 
     const total = allContacts.length;
     const paginatedContacts = allContacts.slice((page - 1) * limit, page * limit);
@@ -1189,6 +1203,30 @@ export const getAllContactsFromBatches = async (req, res) => {
   }
 };
 
+// Fix missing capability results for batches
+export const fixMissingCapabilityResults = async (req, res) => {
+  try {
+    const { campaignId } = req.query;
+    const userId = req.user._id;
+
+    console.log(`[Campaign] Fixing missing capability results for user ${userId}`);
+    
+    const result = await jioRCSService.fixMissingCapabilityResults(campaignId, userId);
+    
+    res.json({
+      success: true,
+      message: `Fixed ${result.fixed} out of ${result.total} batches`,
+      data: result
+    });
+  } catch (error) {
+    console.error('[Campaign] Fix missing results error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
 // Delete contact from batch
 export const deleteContactFromBatch = async (req, res) => {
   try {
@@ -1201,12 +1239,21 @@ export const deleteContactFromBatch = async (req, res) => {
     
     let deleted = false;
     for (const batch of batches) {
-      const initialLength = batch.contacts.length;
-      batch.contacts = batch.contacts.filter(c => c.phoneNumber !== phoneNumber);
+      // Remove from phoneNumbers array
+      const initialLength = batch.phoneNumbers.length;
+      batch.phoneNumbers = batch.phoneNumbers.filter(p => p !== phoneNumber);
       
-      if (batch.contacts.length < initialLength) {
-        batch.totalContacts = batch.contacts.length;
-        batch.rcsCapableCount = batch.contacts.filter(c => c.isRcsCapable).length;
+      // Remove from capabilityResults if exists
+      if (batch.capabilityResults) {
+        batch.capabilityResults = batch.capabilityResults.filter(r => 
+          r.phoneNumber.replace(/^\+?91/, '') !== phoneNumber
+        );
+      }
+      
+      if (batch.phoneNumbers.length < initialLength) {
+        batch.totalContacts = batch.phoneNumbers.length;
+        batch.rcsCapableCount = batch.capabilityResults ? 
+          batch.capabilityResults.filter(r => r.isRcsCapable).length : 0;
         await batch.save();
         deleted = true;
         break;

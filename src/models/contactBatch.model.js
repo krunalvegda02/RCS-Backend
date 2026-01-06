@@ -17,20 +17,16 @@ const contactBatchSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
-  contacts: [{
-    phoneNumber: {
-      type: String,
-      required: true
-    },
-    isRcsCapable: {
-      type: Boolean,
-      default: null
-    },
-    variables: {
-      type: Map,
-      of: String,
-      default: {}
-    }
+  phoneNumbers: [{
+    type: String,
+    required: true
+  }],
+  capabilityResults: [{
+    phoneNumber: String,
+    isRcsCapable: Boolean,
+    features: [String],
+    checkedAt: Date,
+    error: String
   }],
   status: {
     type: String,
@@ -57,27 +53,29 @@ const contactBatchSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Compound index for efficient queries
 contactBatchSchema.index({ campaignId: 1, batchNumber: 1 });
 contactBatchSchema.index({ userId: 1, status: 1 });
 
-// Mark batch as processing
 contactBatchSchema.methods.startProcessing = async function() {
   this.status = 'processing';
   this.processingStartedAt = new Date();
   await this.save();
 };
 
-// Mark batch as completed
-contactBatchSchema.methods.complete = async function(rcsCapableCount) {
+contactBatchSchema.methods.updateCapabilityResults = async function(results) {
+  this.capabilityResults = results.map(r => ({
+    phoneNumber: r.phoneNumber,
+    isRcsCapable: r.isCapable,
+    features: r.features || [],
+    checkedAt: new Date()
+  }));
+  this.processedContacts = results.length;
+  this.rcsCapableCount = results.filter(r => r.isCapable).length;
   this.status = 'completed';
-  this.processedContacts = this.totalContacts;
-  this.rcsCapableCount = rcsCapableCount;
   this.processingCompletedAt = new Date();
   await this.save();
 };
 
-// Mark batch as failed
 contactBatchSchema.methods.fail = async function(error) {
   this.status = 'failed';
   this.error = error;

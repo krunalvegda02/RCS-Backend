@@ -10,6 +10,7 @@ import Message from '../models/message.model.js';
 import MessageLog from '../models/messageLog.model.js';
 import Campaign from '../models/campaign.model.js';
 import User from '../models/user.model.js';
+import ContactBatch from '../models/contactBatch.model.js';
 
 const JIOAPI_BASE_URL =
   process.env.JIO_API_BASE_URL || 'https://api.businessmessaging.jio.com';
@@ -752,47 +753,81 @@ class JioRCSService {
 
   // ===================== SMART CAPABILITY CHECK =====================
   /**
-   * Smart capability check - uses single API for <500 numbers, batch API for ≥500 numbers
+   * Smart capability check with dynamic batching - always uses batch API (500-10000 range)
    * @param {Array} phoneNumbers - Array of phone numbers to check
    * @param {String} userId - User ID
-   * @param {Function} onProgress - Optional callback for progress updates: (chunk, totalChunks, rcsCapable, processed) => {}
+   * @param {String} campaignId - Optional campaign ID for saving results
+   * @param {Number} batchNumber - Optional batch number for saving results
+   * @param {Function} onProgress - Optional callback for progress updates
    */
-  async checkCapabilitySmart(phoneNumbers, userId, onProgress = null) {
+  async checkCapabilitySmart(phoneNumbers, userId, campaignId = null, batchNumber = null, onProgress = null) {
     if (!Array.isArray(phoneNumbers)) {
       phoneNumbers = [phoneNumbers];
     }
 
     const uniqueNumbers = [...new Set(phoneNumbers)];
+    console.log(`[RCS] Using dynamic batch API for ${uniqueNumbers.length} unique numbers`);
     
-    if (uniqueNumbers.length >= 500) {
-      console.log(`[RCS] Using batch API for ${uniqueNumbers.length} unique numbers`);
-      return await this.checkCapabilityBatch(uniqueNumbers, userId, onProgress);
+    // Use the new method that saves results
+    if (campaignId && batchNumber !== null) {
+      return await this.checkCapabilityBatchWithSave(uniqueNumbers, userId, campaignId, batchNumber, onProgress);
+    } else {
+      return await this.checkCapabilityWithDynamicBatching(uniqueNumbers, userId, onProgress);
     }
-    
-    console.log(`[RCS] Padding ${uniqueNumbers.length} numbers to 500 for batch API`);
-    return await this.checkCapabilityWithDynamicBatching(uniqueNumbers, userId, onProgress);
   }
 
-  async checkCapabilityWithDynamicBatching(phoneNumbers, userId) {
+  async checkCapabilityWithDynamicBatching(phoneNumbers, userId, onProgress = null) {
     const MIN_BATCH_SIZE = 500;
+    const MAX_BATCH_SIZE = 9500;
     const actualCount = phoneNumbers.length;
-    const dummyCount = MIN_BATCH_SIZE - actualCount;
-    const dummyNumbers = [];
     
-    for (let i = 0; i < dummyCount; i++) {
-      const randomNum = `9${Math.floor(Math.random() * 900000000) + 100000000}`;
-      dummyNumbers.push(`+91${randomNum}`);
+    let processNumbers = [...phoneNumbers];
+    
+    // If less than 500, pad with dummy numbers
+    if (actualCount < MIN_BATCH_SIZE) {
+      const dummyCount = MIN_BATCH_SIZE - actualCount;
+      for (let i = 0; i < dummyCount; i++) {
+        const randomNum = `9${Math.floor(Math.random() * 900000000) + 100000000}`;
+        processNumbers.push(`+91${randomNum}`);
+      }
+      console.log(`[RCS] Padded ${actualCount} real + ${dummyCount} dummy = ${MIN_BATCH_SIZE} total`);
     }
     
-    console.log(`[RCS] Padding ${actualCount} real + ${dummyCount} dummy = ${MIN_BATCH_SIZE} total`);
+    // Create optimal batches (500-9500 range)
+    const chunks = [];
+    const total = processNumbers.length;
     
-    const paddedNumbers = [...phoneNumbers.map(p => {
-      const cleanPhone = String(p).replace(/\D/g, '');
-      return cleanPhone.length === 10 ? `+91${cleanPhone}` : (p.startsWith('+') ? p : `+91${cleanPhone}`);
-    }), ...dummyNumbers];
+    for (let i = 0; i < total; i += MAX_BATCH_SIZE) {
+      let chunk = processNumbers.slice(i, i + MAX_BATCH_SIZE);
+      
+      // If remaining chunk is too small, merge with previous or pad
+      const remaining = total - i - chunk.length;
+      if (remaining > 0 && remaining < MIN_BATCH_SIZE && chunks.length > 0) {
+        // Merge with previous chunk if it won't exceed MAX_BATCH_SIZE
+        const prevChunk = chunks[chunks.length - 1];
+        if (prevChunk.length + chunk.length + remaining <= MAX_BATCH_SIZE) {
+          chunks[chunks.length - 1] = [...prevChunk, ...chunk, ...processNumbers.slice(i + chunk.length)];
+          break;
+        }
+      }
+      
+      // Ensure chunk meets minimum size
+      if (chunk.length < MIN_BATCH_SIZE) {
+        const padCount = MIN_BATCH_SIZE - chunk.length;
+        for (let j = 0; j < padCount; j++) {
+          const randomNum = `9${Math.floor(Math.random() * 900000000) + 100000000}`;
+          chunk.push(`+91${randomNum}`);
+        }
+      }
+      
+      chunks.push(chunk);
+    }
     
-    const batchResults = await this.checkCapabilityBatch(paddedNumbers, userId);
+    console.log(`[RCS] Created ${chunks.length} optimal batches:`, chunks.map(c => c.length));
     
+    const batchResults = await this.checkCapabilityBatch(chunks.flat(), userId, onProgress);
+    
+    // Filter real results
     const realPhones = new Set(phoneNumbers.map(p => {
       const cleanPhone = String(p).replace(/\D/g, '');
       return cleanPhone.length === 10 ? `+91${cleanPhone}` : (p.startsWith('+') ? p : `+91${cleanPhone}`);
@@ -805,8 +840,120 @@ class JioRCSService {
   }
 
   /**
-   * Sequential capability check using single number API
+   * Fix existing ContactBatch documents that have phone numbers but no capability results
+   * This is a utility method to fix the issue where capability results weren't being saved
    */
+  async fixMissingCapabilityResults(campaignId = null, userId = null) {
+    try {
+      console.log('[RCS] 🔧 Starting to fix missing capability results...');
+      
+      // Build query to find batches with phone numbers but no capability results
+      let query = {
+        'phoneNumbers.0': { $exists: true }, // Has phone numbers
+        $or: [
+          { capabilityResults: { $exists: false } }, // No capabilityResults field
+          { capabilityResults: { $size: 0 } }, // Empty capabilityResults array
+          { capabilityResults: null } // Null capabilityResults
+        ]
+      };
+      
+      if (campaignId) query.campaignId = campaignId;
+      if (userId) query.userId = userId;
+      
+      const batchesToFix = await ContactBatch.find(query);
+      console.log(`[RCS] 📊 Found ${batchesToFix.length} batches that need capability results`);
+      
+      if (batchesToFix.length === 0) {
+        console.log('[RCS] ✅ No batches need fixing');
+        return { fixed: 0, total: 0 };
+      }
+      
+      let fixedCount = 0;
+      
+      for (const batch of batchesToFix) {
+        try {
+          console.log(`[RCS] 🔍 Processing batch ${batch.batchNumber} for campaign ${batch.campaignId}`);
+          
+          // Check capability for this batch's phone numbers
+          const results = await this.checkCapabilityBatch(batch.phoneNumbers, batch.userId);
+          
+          // Update the batch with capability results
+          await batch.updateCapabilityResults(results);
+          
+          console.log(`[RCS] ✅ Fixed batch ${batch.batchNumber}: ${results.filter(r => r.isCapable).length}/${results.length} RCS capable`);
+          fixedCount++;
+          
+          // Add small delay to prevent overwhelming the API
+          await this.sleep(1000);
+          
+        } catch (batchError) {
+          console.error(`[RCS] ❌ Failed to fix batch ${batch.batchNumber}:`, batchError.message);
+          // Continue with next batch
+        }
+      }
+      
+      console.log(`[RCS] 🎉 Fixed ${fixedCount}/${batchesToFix.length} batches`);
+      return { fixed: fixedCount, total: batchesToFix.length };
+      
+    } catch (error) {
+      console.error('[RCS] ❌ Error fixing missing capability results:', error.message);
+      throw error;
+    }
+  }
+  async saveCapabilityResults(campaignId, userId, batchNumber, phoneNumbers, capabilityResults) {
+    try {
+      const rcsCapableCount = capabilityResults.filter(r => r.isCapable).length;
+      
+      // Store complete API response in capabilityResults
+      const updateResult = await ContactBatch.updateOne(
+        {
+          campaignId,
+          userId,
+          batchNumber
+        },
+        {
+          $set: {
+            capabilityResults: capabilityResults,
+            processedContacts: capabilityResults.length,
+            rcsCapableCount: rcsCapableCount,
+            status: 'completed',
+            processingCompletedAt: new Date()
+          }
+        },
+        { upsert: false }
+      );
+      
+      if (updateResult.matchedCount === 0) {
+        throw new Error(`ContactBatch not found for campaign ${campaignId}, batch ${batchNumber}`);
+      }
+      
+      console.log(`[RCS] ✅ Saved complete API response with ${capabilityResults.length} results to batch ${batchNumber}`);
+      return updateResult;
+    } catch (error) {
+      console.error(`[RCS] Failed to save capability results:`, error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Batch capability check with database persistence
+   */
+  async checkCapabilityBatchWithSave(phoneNumbers, userId, campaignId = null, batchNumber = null, onProgress = null) {
+    try {
+      // Perform capability check
+      const results = await this.checkCapabilityBatch(phoneNumbers, userId, onProgress);
+      
+      // Save results to database if campaignId and batchNumber provided
+      if (campaignId && batchNumber !== null) {
+        await this.saveCapabilityResults(campaignId, userId, batchNumber, phoneNumbers, results);
+      }
+      
+      return results;
+    } catch (error) {
+      console.error(`[RCS] Batch capability check with save failed:`, error.message);
+      throw error;
+    }
+  }
   async checkCapabilitySequential(phoneNumbers, userId) {
     const results = [];
 
@@ -864,43 +1011,47 @@ class JioRCSService {
         const uniqueNumbers = [...new Set(formattedNumbers)];
         console.log(`[RCS] Batch checking ${uniqueNumbers.length} unique numbers (attempt ${attempt + 1}/${maxRetries})...`);
 
-        // Smaller chunks to prevent EPIPE errors - max 5000 per chunk
+        // Dynamic chunking with optimal batch sizes (500-9500)
         const chunks = [];
         const total = uniqueNumbers.length;
-        const maxChunkSize = 5000; // Reduced from 10000 to prevent connection issues
+        const maxChunkSize = 9500;
+        const minChunkSize = 500;
         
-        if (total <= maxChunkSize) {
-          // Single chunk - but ensure minimum 500 for batch API
-          if (total >= 500) {
-            chunks.push(uniqueNumbers);
-          } else {
-            // Pad with dummy numbers to reach 500 minimum
-            const paddedNumbers = [...uniqueNumbers];
-            while (paddedNumbers.length < 500) {
-              const randomNum = `9${Math.floor(Math.random() * 900000000) + 100000000}`;
-              paddedNumbers.push(`+91${randomNum}`);
-            }
-            chunks.push(paddedNumbers);
-          }
-        } else {
-          // Multiple chunks needed
-          for (let i = 0; i < total; i += maxChunkSize) {
-            const chunk = uniqueNumbers.slice(i, i + maxChunkSize);
-            if (chunk.length >= 500) {
-              chunks.push(chunk);
-            } else if (i > 0) {
-              // Merge small remainder with previous chunk
-              const prevChunk = chunks.pop();
-              chunks.push([...prevChunk, ...chunk]);
+        for (let i = 0; i < total; i += maxChunkSize) {
+          let chunk = uniqueNumbers.slice(i, i + maxChunkSize);
+          
+          // Handle remaining numbers to avoid small chunks
+          const remaining = total - i - chunk.length;
+          if (remaining > 0 && remaining < minChunkSize) {
+            // Merge remaining with current chunk if possible
+            if (chunk.length + remaining <= maxChunkSize) {
+              chunk = [...chunk, ...uniqueNumbers.slice(i + chunk.length)];
             } else {
-              // First chunk is small, pad it
-              while (chunk.length < 500) {
-                const randomNum = `9${Math.floor(Math.random() * 900000000) + 100000000}`;
-                chunk.push(`+91${randomNum}`);
-              }
-              chunks.push(chunk);
+              // Split current chunk to accommodate remaining
+              const splitPoint = Math.floor((chunk.length + remaining) / 2);
+              const firstPart = chunk.slice(0, splitPoint);
+              const secondPart = [...chunk.slice(splitPoint), ...uniqueNumbers.slice(i + chunk.length)];
+              
+              // Ensure both parts meet minimum size
+              if (firstPart.length >= minChunkSize) chunks.push(firstPart);
+              if (secondPart.length >= minChunkSize) chunks.push(secondPart);
+              break;
             }
           }
+          
+          // Ensure chunk meets minimum size
+          if (chunk.length < minChunkSize) {
+            const padCount = minChunkSize - chunk.length;
+            for (let j = 0; j < padCount; j++) {
+              const randomNum = `9${Math.floor(Math.random() * 900000000) + 100000000}`;
+              chunk.push(`+91${randomNum}`);
+            }
+          }
+          
+          chunks.push(chunk);
+          
+          // Break if we've processed all numbers
+          if (i + chunk.length >= total) break;
         }
 
         console.log(`[RCS] Split into ${chunks.length} chunks:`, chunks.map(c => c.length));
@@ -959,23 +1110,26 @@ class JioRCSService {
               throw chunkError; // Re-throw if not retryable or max retries reached
             }
           }
-
-          const reachableUsers = chunkResponse.data?.reachableUsers || [];
-          // Filter out dummy numbers from results
-          const realReachableUsers = reachableUsers.filter(phone => realPhoneSet.has(phone));
+console.log(chunkResponse)
+          
+          const apiResponse = chunkResponse.data;
+          const reachableUsers = apiResponse?.reachableUsers || [];
+          
+          // Ensure reachableUsers is an array
+          const reachableUsersArray = Array.isArray(reachableUsers) ? reachableUsers : [];
+          const realReachableUsers = reachableUsersArray.filter(phone => realPhoneSet.has(phone));
           const chunkRcsCapable = realReachableUsers.length;
           totalRcsCapable += chunkRcsCapable;
           
           console.log(`[RCS] ✅ Found ${chunkRcsCapable} RCS-capable out of ${chunk.filter(p => realPhoneSet.has(p)).length} real numbers`);
 
-          const chunkResults = chunk
-            .filter(phone => realPhoneSet.has(phone)) // Only process real numbers
-            .map(phone => ({
-              phoneNumber: phone,
-              isCapable: realReachableUsers.includes(phone),
-              features: realReachableUsers.includes(phone) ? ['RCS_MESSAGING'] : [],
-              capabilityToken: null
-            }));
+          const chunkResults = chunk.map(phone => ({
+            phoneNumber: phone,
+            isCapable: reachableUsersArray.includes(phone),
+            features: reachableUsersArray.includes(phone) ? ['RCS_MESSAGING'] : [],
+            capabilityToken: null,
+            checkedAt: new Date()
+          }));
 
           allResults.push(...chunkResults);
           
@@ -987,7 +1141,7 @@ class JioRCSService {
               processed: allResults.length,
               total: uniqueNumbers.length,
               rcsCapable: totalRcsCapable,
-              chunkResults: chunkResults // Add chunk results for real-time batch updates
+              chunkResults: chunkResults // Complete chunk results for batch saving
             });
           }
           
