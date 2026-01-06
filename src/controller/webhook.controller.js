@@ -267,48 +267,35 @@ export async function processWebhookData(data, timestamp) {
       return;
     }
 
-    const [message, campaignId] = await Promise.all([
-      Message.findOneAndUpdate(
-        { messageId: messageId },
-        {
-          status: newStatus,
-          lastWebhookAt: new Date(sendTime || timestamp),
-          sentAt: newStatus === 'sent' ? new Date(sendTime || timestamp) : undefined,
-          deliveredAt: newStatus === 'delivered' ? new Date(sendTime || timestamp) : undefined,
-          readAt: newStatus === 'read' ? new Date(sendTime || timestamp) : undefined,
-          failedAt: ['failed', 'bounced'].includes(newStatus) ? new Date(sendTime || timestamp) : undefined,
-          errorCode: ['failed', 'bounced'].includes(newStatus) ? updateData.errorCode : undefined,
-          errorMessage: ['failed', 'bounced'].includes(newStatus) ? updateData.errorMessage : undefined,
-          deviceType: updateData.deviceType || undefined,
-          deliveryLatency: updateData.deliveryLatency || undefined
-        },
-        { new: true, lean: true }
-      ),
-      getCampaignIdFromMessage(currentMessage.messageId)
-    ]);
+    const message = await Message.findOneAndUpdate(
+      { messageId: messageId },
+      {
+        status: newStatus,
+        lastWebhookAt: new Date(sendTime || timestamp),
+        sentAt: newStatus === 'sent' ? new Date(sendTime || timestamp) : undefined,
+        deliveredAt: newStatus === 'delivered' ? new Date(sendTime || timestamp) : undefined,
+        readAt: newStatus === 'read' ? new Date(sendTime || timestamp) : undefined,
+        failedAt: ['failed', 'bounced'].includes(newStatus) ? new Date(sendTime || timestamp) : undefined,
+        errorCode: ['failed', 'bounced'].includes(newStatus) ? updateData.errorCode : undefined,
+        errorMessage: ['failed', 'bounced'].includes(newStatus) ? updateData.errorMessage : undefined,
+        deviceType: updateData.deviceType || undefined,
+        deliveryLatency: updateData.deliveryLatency || undefined
+      },
+      { new: true } // Removed lean: true to allow hooks to trigger
+    );
+    
+    console.log(`[Webhook] ✅ Updated message ${messageId}: ${currentMessage.status} → ${newStatus}`);
+    
+    const campaignId = await getCampaignIdFromMessage(currentMessage.messageId);
 
-    if (!message || !campaignId) {
-      console.warn(`[Webhook] Message or campaign not found, or status unchanged: ${messageId}`);
+    if (!message) {
+      console.warn(`[Webhook] Message not found or status unchanged: ${messageId}`);
       return;
     }
 
+    // Message hook will automatically update campaign recipients
+    // Just log the webhook event and update stats
     await Promise.all([
-      Campaign.updateOne(
-        {
-          _id: campaignId,
-          'recipients.phoneNumber': userPhoneNumber
-        },
-        {
-          $set: {
-            'recipients.$.status': newStatus,
-            'recipients.$.sentAt': newStatus === 'sent' ? new Date(sendTime || timestamp) : undefined,
-            'recipients.$.deliveredAt': newStatus === 'delivered' ? new Date(sendTime || timestamp) : undefined,
-            'recipients.$.readAt': newStatus === 'read' ? new Date(sendTime || timestamp) : undefined,
-            'recipients.$.failedAt': ['failed', 'bounced'].includes(newStatus) ? new Date(sendTime || timestamp) : undefined,
-            'recipients.$.errorMessage': ['failed', 'bounced'].includes(newStatus) ? updateData.errorMessage : undefined
-          }
-        }
-      ),
       MessageLog.logWebhookEvent({
         messageId,
         campaignId,
@@ -400,7 +387,7 @@ export async function processUserInteraction(data, timestamp) {
       Campaign.updateOne(
         {
           _id: campaignId,
-          'recipients.phoneNumber': userPhoneNumber
+          'recipients.messageId': orgMsgId
         },
         {
           $set: {

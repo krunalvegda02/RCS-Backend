@@ -231,36 +231,106 @@ messageSchema.statics.getDailyStats = async function (userId, date) {
   ]);
 };
 
-// Post-save middleware to update campaign stats when message status changes
-messageSchema.post('save', async function(doc, next) {
+// Post-save middleware to update campaign when message status changes
+messageSchema.post('save', async function(doc) {
   try {
-    if (doc.campaignId && doc.isModified('status')) {
+    console.log(`[Message Hook] save triggered for ${doc.messageId}, status: ${doc.status}, campaignId: ${doc.campaignId}`);
+    if (doc.campaignId) {
       const Campaign = mongoose.model('Campaign');
       const campaign = await Campaign.findById(doc.campaignId);
       if (campaign) {
-        await campaign.updateStats();
+        const recipient = campaign.recipients.find(r => r.messageId === doc.messageId);
+        if (recipient) {
+          console.log(`[Message Hook] Found recipient ${recipient.phoneNumber}, current status: ${recipient.status}, new status: ${doc.status}`);
+          if (recipient.status !== doc.status) {
+            recipient.status = doc.status;
+            recipient.sentAt = doc.sentAt;
+            recipient.deliveredAt = doc.deliveredAt;
+            recipient.readAt = doc.readAt;
+            recipient.failedAt = doc.failedAt;
+            recipient.errorMessage = doc.errorMessage;
+            await campaign.save();
+            await campaign.updateStats();
+            console.log(`[Message Hook] ✅ Updated campaign recipient ${recipient.phoneNumber}: ${doc.status}`);
+          }
+        } else {
+          console.log(`[Message Hook] ⚠️ Recipient not found for messageId: ${doc.messageId}`);
+        }
       }
     }
   } catch (error) {
-    console.error('Error updating campaign stats:', error);
+    console.error('[Message Hook] Error updating campaign from save:', error);
   }
-  next();
 });
 
-// Post-update middleware for findOneAndUpdate operations
-messageSchema.post('findOneAndUpdate', async function(doc, next) {
+// Post-update middleware for findOneAndUpdate
+messageSchema.post('findOneAndUpdate', async function(doc) {
   try {
+    console.log(`[Message Hook] findOneAndUpdate triggered for ${doc?.messageId}, status: ${doc?.status}, campaignId: ${doc?.campaignId}`);
     if (doc && doc.campaignId) {
       const Campaign = mongoose.model('Campaign');
       const campaign = await Campaign.findById(doc.campaignId);
       if (campaign) {
-        await campaign.updateStats();
+        const recipient = campaign.recipients.find(r => r.messageId === doc.messageId);
+        if (recipient) {
+          console.log(`[Message Hook] Found recipient ${recipient.phoneNumber}, current status: ${recipient.status}, new status: ${doc.status}`);
+          if (recipient.status !== doc.status) {
+            recipient.status = doc.status;
+            recipient.sentAt = doc.sentAt;
+            recipient.deliveredAt = doc.deliveredAt;
+            recipient.readAt = doc.readAt;
+            recipient.failedAt = doc.failedAt;
+            recipient.errorMessage = doc.errorMessage;
+            await campaign.save();
+            await campaign.updateStats();
+            console.log(`[Message Hook] ✅ Updated campaign recipient ${recipient.phoneNumber}: ${doc.status}`);
+          }
+        } else {
+          console.log(`[Message Hook] ⚠️ Recipient not found for messageId: ${doc.messageId}`);
+        }
       }
     }
   } catch (error) {
-    console.error('Error updating campaign stats:', error);
+    console.error('[Message Hook] Error updating campaign from findOneAndUpdate:', error);
   }
-  next();
+});
+
+// Post-update middleware for updateOne
+messageSchema.post('updateOne', async function(result) {
+  try {
+    const filter = this.getFilter();
+    console.log(`[Message Hook] updateOne triggered with filter:`, filter);
+    if (filter.messageId) {
+      const Message = mongoose.model('Message');
+      const doc = await Message.findOne(filter).lean();
+      if (doc && doc.campaignId) {
+        console.log(`[Message Hook] Found message ${doc.messageId}, status: ${doc.status}, campaignId: ${doc.campaignId}`);
+        const Campaign = mongoose.model('Campaign');
+        const campaign = await Campaign.findById(doc.campaignId);
+        if (campaign) {
+          const recipient = campaign.recipients.find(r => r.messageId === doc.messageId);
+          if (recipient) {
+            console.log(`[Message Hook] Found recipient ${recipient.phoneNumber}, current status: ${recipient.status}, new status: ${doc.status}`);
+            if (recipient.status !== doc.status) {
+              recipient.status = doc.status;
+              recipient.sentAt = doc.sentAt;
+              recipient.deliveredAt = doc.deliveredAt;
+              recipient.readAt = doc.readAt;
+              recipient.failedAt = doc.failedAt;
+              recipient.errorMessage = doc.errorMessage;
+              await campaign.save();
+              await campaign.updateStats();
+              console.log(`[Message Hook] ✅ Updated campaign recipient ${recipient.phoneNumber}: ${doc.status}`);
+            }
+          } else {
+            console.log(`[Message Hook] ⚠️ Recipient not found for messageId: ${doc.messageId}`);
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error('[Message Hook] Error updating campaign from updateOne:', error);
+  }
 });
 
 export default mongoose.model('Message', messageSchema);

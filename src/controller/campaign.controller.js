@@ -500,6 +500,9 @@ export const getAll = async (req, res) => {
       .limit(limit)
       .skip((page - 1) * limit);
 
+    // Wait for sync (cached for 10s)
+    await Promise.all(campaigns.map(c => c.syncFromMessages()));
+
     const total = await Campaign.countDocuments(query);
 
     res.json({
@@ -537,6 +540,9 @@ export const getById = async (req, res) => {
         message: 'Campaign not found',
       });
     }
+
+    // Sync campaign recipients from messages for accurate status
+    await campaign.syncFromMessages();
 
     res.json({
       success: true,
@@ -762,8 +768,10 @@ export const getUserCampaignReports = async (req, res) => {
       .sort({ createdAt: sortOrder })
       .limit(limit)
       .skip((page - 1) * limit)
-      .select('name description status stats estimatedCost actualCost createdAt completedAt')
-      .lean();
+      .select('name description status stats estimatedCost actualCost createdAt completedAt');
+    
+    // Wait for sync (cached for 10s)
+    await Promise.all(campaigns.map(c => c.syncFromMessages()));
     
     // Get Message model to aggregate interaction counts
     const Message = (await import('../models/message.model.js')).default;
@@ -792,29 +800,28 @@ export const getUserCampaignReports = async (req, res) => {
     
     // Transform campaigns to match frontend expectations
     const reports = campaigns.map(campaign => {
+      const campaignObj = campaign.toObject();
       const interactions = interactionMap[campaign._id.toString()] || { interactions: 0, replies: 0 };
       return {
-        _id: campaign._id,
-        CampaignName: campaign.name,
-        type: campaign.templateId?.templateType,
-        cost: campaign.stats?.total || 0,
-        successCount: campaign.stats?.sent || 0,
-        failedCount: campaign.stats?.failed || 0,
-        bouncedCount: campaign.stats?.bounced || 0,
-        totalDelivered: campaign.stats?.delivered || 0,
-        totalRead: campaign.stats?.read || 0,
-        totalReplied: campaign.stats?.replied || 0,
+        _id: campaignObj._id,
+        CampaignName: campaignObj.name,
+        type: campaignObj.templateId?.templateType,
+        cost: campaignObj.stats?.total || 0,
+        successCount: campaignObj.stats?.sent || 0,
+        failedCount: campaignObj.stats?.failed || 0,
+        bouncedCount: campaignObj.stats?.bounced || 0,
+        totalDelivered: campaignObj.stats?.delivered || 0,
+        totalRead: campaignObj.stats?.read || 0,
+        totalReplied: campaignObj.stats?.replied || 0,
         userClickCount: interactions.interactions,
-        createdAt: campaign.createdAt,
-        completedAt: campaign.completedAt,
-        status: campaign.status,
+        createdAt: campaignObj.createdAt,
+        completedAt: campaignObj.completedAt,
+        status: campaignObj.status,
         recipients: undefined,
-        actualCost: campaign.actualCost || 0,
-        estimatedCost: campaign.estimatedCost || 0
+        actualCost: campaignObj.actualCost || 0,
+        estimatedCost: campaignObj.estimatedCost || 0
       };
     });
-    
-
     
     // Calculate aggregate stats for all campaigns (not just current page) - exclude archived
     const allCampaigns = await Campaign.find({ userId, isArchived: false }).select('stats').lean();
@@ -857,8 +864,6 @@ export const getAllForAdmin = async (req, res) => {
       search = search[0];
     }
 
-    // console.log('[Campaign] getAllForAdmin - Query params:', { status, type, user, search, sort, page, limit });
-
     let query = {};
     if (status) query.status = status;
     
@@ -894,10 +899,7 @@ export const getAllForAdmin = async (req, res) => {
     let allCampaigns = await Campaign.find(query)
       .populate('templateId', 'name templateType')
       .populate('userId', 'name email')
-      .sort({ createdAt: sortOrder })
-      .lean();
-
-    // console.log('[Campaign] Total campaigns before filtering:', allCampaigns.length);
+      .sort({ createdAt: sortOrder });
 
     // Apply search filter
     if (search) {
@@ -909,13 +911,11 @@ export const getAllForAdmin = async (req, res) => {
         const matchId = c._id.toString().toLowerCase().includes(searchLower);
         return matchName || matchUserName || matchUserEmail || matchId;
       });
-      console.log('[Campaign] After search filter:', allCampaigns.length);
     }
 
     // Apply user filter
     if (user) {
       allCampaigns = allCampaigns.filter(c => c.userId?.name === user);
-      console.log('[Campaign] After user filter:', allCampaigns.length);
     }
 
     // Apply pagination
@@ -923,7 +923,8 @@ export const getAllForAdmin = async (req, res) => {
     const startIndex = (page - 1) * limit;
     const paginatedCampaigns = allCampaigns.slice(startIndex, startIndex + limit);
 
-    // console.log('[Campaign] Paginated campaigns:', paginatedCampaigns.length);
+    // Wait for sync (cached for 10s)
+    await Promise.all(paginatedCampaigns.map(c => c.syncFromMessages()));
 
     // Get universal stats
     const allCampaignsForStats = await Campaign.find({}).select('stats');
@@ -934,17 +935,20 @@ export const getAllForAdmin = async (req, res) => {
       return acc;
     }, { totalCampaigns: 0, totalDelivered: 0, totalFailed: 0 });
 
-    const transformedCampaigns = paginatedCampaigns.map(campaign => ({
-      _id: campaign._id,
-      CampaignName: campaign.name,
-      type: campaign.templateId?.templateType,
-      cost: campaign.stats?.total || 0,
-      successCount: campaign.stats?.sent || 0,
-      failedCount: campaign.stats?.failed || 0,
-      status: campaign.status,
-      createdAt: campaign.createdAt,
-      userId: campaign.userId
-    }));
+    const transformedCampaigns = paginatedCampaigns.map(campaign => {
+      const campaignObj = campaign.toObject ? campaign.toObject() : campaign;
+      return {
+        _id: campaignObj._id,
+        CampaignName: campaignObj.name,
+        type: campaignObj.templateId?.templateType,
+        cost: campaignObj.stats?.total || 0,
+        successCount: campaignObj.stats?.sent || 0,
+        failedCount: campaignObj.stats?.failed || 0,
+        status: campaignObj.status,
+        createdAt: campaignObj.createdAt,
+        userId: campaignObj.userId
+      };
+    });
 
     res.json({
       success: true,

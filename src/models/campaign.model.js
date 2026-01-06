@@ -37,7 +37,7 @@ const campaignSchema = new mongoose.Schema(
           variables: mongoose.Schema.Types.Mixed, // For dynamic content
           status: {
             type: String,
-            enum: ['pending', 'processing', 'sent', 'delivered', 'read', 'replied', 'failed', 'bounced'],
+            enum: ['pending', 'queued', 'processing', 'sent', 'delivered', 'read', 'replied', 'failed', 'bounced'],
             default: 'pending',
           },
           messageId: String,
@@ -169,6 +169,7 @@ campaignSchema.methods.updateStats = async function () {
   // Count recipients by their current status
   const statusCounts = {
     pending: 0,
+    queued: 0,
     processing: 0,
     sent: 0,
     delivered: 0,
@@ -216,7 +217,7 @@ campaignSchema.methods.updateStats = async function () {
   const stats = {
     total: totalCount,
     pending: statusCounts.pending,
-    processing: statusCounts.processing,
+    processing: statusCounts.processing + statusCounts.queued, // Include queued in processing
     // Sent = all messages that reached sent status or beyond
     sent: statusCounts.sent + statusCounts.delivered + statusCounts.read + statusCounts.replied,
     // Delivered = all messages that reached delivered status or beyond
@@ -236,6 +237,66 @@ campaignSchema.methods.updateStats = async function () {
 
   this.stats = stats;
   await this.save();
+};
+
+// Sync campaign recipients status from Message collection for accurate data
+campaignSchema.methods.syncFromMessages = async function (force = false) {
+  try {
+    // Skip if recently synced (within last 10 seconds) unless forced
+    if (!force && this.stats?.lastUpdatedAt) {
+      const timeSinceLastSync = Date.now() - new Date(this.stats.lastUpdatedAt).getTime();
+      if (timeSinceLastSync < 10 * 1000) {
+        return { synced: false, reason: 'Recently synced', cached: true };
+      }
+    }
+    
+    const Message = mongoose.model('Message');
+    const messages = await Message.find({ campaignId: this._id }).lean();
+    
+    if (messages.length === 0) {
+      return { synced: false, reason: 'No messages found' };
+    }
+    
+    // Create a map of messageId to message status
+    const messageStatusMap = new Map();
+    messages.forEach(msg => {
+      messageStatusMap.set(msg.messageId, {
+        status: msg.status,
+        sentAt: msg.sentAt,
+        deliveredAt: msg.deliveredAt,
+        readAt: msg.readAt,
+        failedAt: msg.failedAt,
+        errorMessage: msg.errorMessage
+      });
+    });
+    
+    // Update recipients with message status
+    let updated = 0;
+    this.recipients.forEach(recipient => {
+      if (recipient.messageId && messageStatusMap.has(recipient.messageId)) {
+        const msgData = messageStatusMap.get(recipient.messageId);
+        recipient.status = msgData.status;
+        recipient.sentAt = msgData.sentAt;
+        recipient.deliveredAt = msgData.deliveredAt;
+        recipient.readAt = msgData.readAt;
+        recipient.failedAt = msgData.failedAt;
+        recipient.errorMessage = msgData.errorMessage;
+        updated++;
+      }
+    });
+    
+    await this.save();
+    await this.updateStats();
+    
+    return {
+      synced: true,
+      totalRecipients: this.recipients.length,
+      updated: updated
+    };
+  } catch (error) {
+    console.error('[Campaign] Error syncing from Messages:', error);
+    return { synced: false, reason: error.message };
+  }
 };
 
 // Sync ContactBatch data to main campaign recipients
