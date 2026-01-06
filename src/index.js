@@ -4,6 +4,7 @@ import { createServer as createNetServer } from "net";
 import connectDB from "./db/index.js";
 import app from "./app.js";
 import JioRCSService from "./services/JioRCS.service.js";
+import { scheduleArchivedCampaignCleanup } from "./schedulers/campaign.scheduler.js";
 
 dotenv.config({
   path: "./.env",
@@ -60,7 +61,8 @@ connectDB()
 
     const server = createServer(app);
     
-
+    // Initialize schedulers
+    scheduleArchivedCampaignCleanup();
     
     server.listen(finalPort, () => {
       console.log(`🚀 Server is running on port ${finalPort}`);
