@@ -43,25 +43,57 @@ export const checkCapability = async (req, res) => {
         
         for (const batch of batches) {
           const batchPhoneNumbers = batch.phoneNumbers.map(p => p.replace(/^\+?91/, ''));
-          const chunkPhoneNumbers = progress.chunkResults.map(r => r.phoneNumber.replace(/^\+?91/, ''));
           
-          // Check if this chunk contains numbers from this batch
-          const hasOverlap = batchPhoneNumbers.some(phone => 
-            chunkPhoneNumbers.includes(phone)
+          // Filter chunk results that belong to this specific batch
+          const batchResults = progress.chunkResults.filter(r => 
+            batchPhoneNumbers.includes(r.phoneNumber.replace(/^\+?91/, ''))
           );
           
-          if (hasOverlap) {
-            const rcsCapableCount = progress.chunkResults.filter(r => r.isCapable).length;
+          if (batchResults.length > 0) {
+            const rcsCapableCount = batchResults.filter(r => r.isCapable).length;
             
+            // Transform results to match schema (isCapable -> isRcsCapable)
+            const transformedResults = batchResults.map(r => ({
+              phoneNumber: r.phoneNumber,
+              isRcsCapable: r.isCapable,
+              features: r.features || [],
+              checkedAt: new Date()
+            }));
+            
+            // Remove existing results for these phone numbers to avoid duplicates
+            const phoneNumbersToUpdate = batchResults.map(r => r.phoneNumber);
+            await ContactBatch.updateOne(
+              { _id: batch._id },
+              {
+                $pull: {
+                  capabilityResults: { phoneNumber: { $in: phoneNumbersToUpdate } }
+                }
+              }
+            );
+            
+            // Add new results
+            await ContactBatch.updateOne(
+              { _id: batch._id },
+              {
+                $push: {
+                  capabilityResults: { $each: transformedResults }
+                },
+                $set: {
+                  status: 'completed',
+                  processingCompletedAt: new Date()
+                }
+              }
+            );
+            
+            // Recalculate counts from actual data
+            const updatedBatch = await ContactBatch.findById(batch._id);
+            const actualRcsCount = updatedBatch.capabilityResults.filter(r => r.isRcsCapable).length;
             await ContactBatch.updateOne(
               { _id: batch._id },
               {
                 $set: {
-                  capabilityResults: progress.chunkResults,
-                  processedContacts: progress.chunkResults.length,
-                  rcsCapableCount: rcsCapableCount,
-                  status: 'completed',
-                  processingCompletedAt: new Date()
+                  processedContacts: updatedBatch.capabilityResults.length,
+                  rcsCapableCount: actualRcsCount
                 }
               }
             );
