@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 
-const ENCRYPTION_KEY = process.env.PASSWORD_ENCRYPTION_KEY || 'your-32-character-secret-key!!'; // Must be 32 characters
+const ENCRYPTION_KEY = process.env.PASSWORD_ENCRYPTION_KEY || 'Z9a8xM2kP7Lq1dFhR3CwdwdwdWnA5Se'; // Must be 32 characters
 const IV_LENGTH = 16;
 
 function encryptPassword(password) {
