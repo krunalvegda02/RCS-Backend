@@ -28,6 +28,14 @@ const contactBatchSchema = new mongoose.Schema({
     checkedAt: Date,
     error: String
   }],
+  // Store complete API response for efficiency
+  apiResponse: [{
+    chunkNumber: Number,
+    reachableUsers: [String],
+    totalRandomSampleUserCount: Number,
+    reachableRandomSampleUserCount: Number,
+    processedAt: Date
+  }],
   status: {
     type: String,
     enum: ['pending', 'processing', 'completed', 'failed'],
@@ -62,13 +70,24 @@ contactBatchSchema.methods.startProcessing = async function() {
   await this.save();
 };
 
-contactBatchSchema.methods.updateCapabilityResults = async function(results) {
+contactBatchSchema.methods.updateCapabilityResults = async function(results, apiResponse = null) {
   this.capabilityResults = results.map(r => ({
     phoneNumber: r.phoneNumber,
     isRcsCapable: r.isCapable,
     features: r.features || [],
     checkedAt: new Date()
   }));
+  
+  // Store complete API response if provided
+  if (apiResponse) {
+    this.apiResponse = {
+      reachableUsers: apiResponse.reachableUsers || [],
+      totalRandomSampleUserCount: apiResponse.totalRandomSampleUserCount || 0,
+      reachableRandomSampleUserCount: apiResponse.reachableRandomSampleUserCount || 0,
+      processedAt: new Date()
+    };
+  }
+  
   this.processedContacts = results.length;
   this.rcsCapableCount = results.filter(r => r.isCapable).length;
   this.status = 'completed';

@@ -329,7 +329,7 @@ class JioRCSService {
       let response;
       let sendAttempt = 0;
       const maxSendRetries = 2;
-      
+
       while (sendAttempt < maxSendRetries) {
         try {
           response = await axiosInstance.post(url, rcsPayload);
@@ -337,7 +337,7 @@ class JioRCSService {
         } catch (sendError) {
           sendAttempt++;
           console.error(`[RCS] Send attempt ${sendAttempt} failed for ${formattedPhone}:`, sendError.code || sendError.message);
-          
+
           if ((sendError.code === 'EPIPE' || sendError.code === 'ECONNRESET' || sendError.code === 'ETIMEDOUT') && sendAttempt < maxSendRetries) {
             console.log(`[RCS] Retrying message send in 1 second...`);
             await this.sleep(1000);
@@ -429,7 +429,7 @@ class JioRCSService {
           await message.scheduleRetry();
         } else {
           await message.markAsFailed(errorCode, error.message);
-          
+
           // Unblock and refund (move from blocked back to wallet)
           await this.refundUser(userId, 1, 'pre-send failure');
         }
@@ -767,7 +767,7 @@ class JioRCSService {
 
     const uniqueNumbers = [...new Set(phoneNumbers)];
     console.log(`[RCS] Using dynamic batch API for ${uniqueNumbers.length} unique numbers`);
-    
+
     // Use the new method that saves results
     if (campaignId && batchNumber !== null) {
       return await this.checkCapabilityBatchWithSave(uniqueNumbers, userId, campaignId, batchNumber, onProgress);
@@ -777,66 +777,83 @@ class JioRCSService {
   }
 
   async checkCapabilityWithDynamicBatching(phoneNumbers, userId, onProgress = null) {
-    const MIN_BATCH_SIZE = 500;
-    const MAX_BATCH_SIZE = 9500;
     const actualCount = phoneNumbers.length;
-    
-    let processNumbers = [...phoneNumbers];
-    
-    // If less than 500, pad with dummy numbers
-    if (actualCount < MIN_BATCH_SIZE) {
-      const dummyCount = MIN_BATCH_SIZE - actualCount;
-      for (let i = 0; i < dummyCount; i++) {
-        const randomNum = `9${Math.floor(Math.random() * 900000000) + 100000000}`;
-        processNumbers.push(`+91${randomNum}`);
-      }
-      console.log(`[RCS] Padded ${actualCount} real + ${dummyCount} dummy = ${MIN_BATCH_SIZE} total`);
+
+    // Use sequential API for small batches (< 500)
+    if (actualCount < 500) {
+      console.log(`[RCS] Small batch (${actualCount}), using sequential API calls`);
+      return await this.checkCapabilitySequential(phoneNumbers, userId);
     }
+
+    // Use batch API for 500+ contacts with dynamic batching
+    console.log(`[RCS] Large batch (${actualCount}), using dynamic batch API`);
+    return await this.createOptimalBatches(phoneNumbers, userId, onProgress);
+  }
+
+  /**
+   * Create optimal batches for large contact lists
+   * Example: 40,200 contacts -> [10000, 10000, 10000, 10000, 200] -> adjust last to [10000, 10000, 10000, 9600, 600]
+   */
+  async createOptimalBatches(phoneNumbers, userId, onProgress = null) {
+    const MAX_BATCH_SIZE = 10000;
+    const MIN_BATCH_SIZE = 500;
+    const total = phoneNumbers.length;
     
-    // Create optimal batches (500-9500 range)
     const chunks = [];
-    const total = processNumbers.length;
-    
-    for (let i = 0; i < total; i += MAX_BATCH_SIZE) {
-      let chunk = processNumbers.slice(i, i + MAX_BATCH_SIZE);
-      
-      // If remaining chunk is too small, merge with previous or pad
-      const remaining = total - i - chunk.length;
-      if (remaining > 0 && remaining < MIN_BATCH_SIZE && chunks.length > 0) {
-        // Merge with previous chunk if it won't exceed MAX_BATCH_SIZE
-        const prevChunk = chunks[chunks.length - 1];
-        if (prevChunk.length + chunk.length + remaining <= MAX_BATCH_SIZE) {
-          chunks[chunks.length - 1] = [...prevChunk, ...chunk, ...processNumbers.slice(i + chunk.length)];
-          break;
-        }
+    let remaining = total;
+    let processed = 0;
+
+    while (remaining > 0) {
+      if (remaining <= MAX_BATCH_SIZE) {
+        // Last chunk - take all remaining
+        chunks.push(phoneNumbers.slice(processed));
+        break;
       }
       
-      // Ensure chunk meets minimum size
-      if (chunk.length < MIN_BATCH_SIZE) {
-        const padCount = MIN_BATCH_SIZE - chunk.length;
-        for (let j = 0; j < padCount; j++) {
-          const randomNum = `9${Math.floor(Math.random() * 900000000) + 100000000}`;
-          chunk.push(`+91${randomNum}`);
-        }
-      }
+      // Check if remaining after this chunk would be too small
+      const afterThisChunk = remaining - MAX_BATCH_SIZE;
       
-      chunks.push(chunk);
+      if (afterThisChunk > 0 && afterThisChunk < MIN_BATCH_SIZE) {
+        // Adjust current chunk size to make last chunk >= 500
+        const adjustedSize = MAX_BATCH_SIZE - (MIN_BATCH_SIZE - afterThisChunk);
+        chunks.push(phoneNumbers.slice(processed, processed + adjustedSize));
+        processed += adjustedSize;
+        remaining -= adjustedSize;
+      } else {
+        // Normal max size chunk
+        chunks.push(phoneNumbers.slice(processed, processed + MAX_BATCH_SIZE));
+        processed += MAX_BATCH_SIZE;
+        remaining -= MAX_BATCH_SIZE;
+      }
     }
-    
+
     console.log(`[RCS] Created ${chunks.length} optimal batches:`, chunks.map(c => c.length));
-    
-    const batchResults = await this.checkCapabilityBatch(chunks.flat(), userId, onProgress);
-    
-    // Filter real results
-    const realPhones = new Set(phoneNumbers.map(p => {
-      const cleanPhone = String(p).replace(/\D/g, '');
-      return cleanPhone.length === 10 ? `+91${cleanPhone}` : (p.startsWith('+') ? p : `+91${cleanPhone}`);
-    }));
-    
-    const realResults = batchResults.filter(r => realPhones.has(r.phoneNumber));
-    console.log(`[RCS] Returned ${realResults.length} real results`);
-    
-    return realResults;
+
+    const allResults = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      console.log(`[RCS] Processing batch ${i + 1}/${chunks.length} with ${chunk.length} contacts`);
+      
+      const chunkResults = await this.checkCapabilityBatch(chunk, userId);
+      allResults.push(...chunkResults);
+      
+      if (onProgress) {
+        onProgress({
+          chunk: i + 1,
+          totalChunks: chunks.length,
+          processed: allResults.length,
+          total: phoneNumbers.length,
+          rcsCapable: allResults.filter(r => r.isCapable).length
+        });
+      }
+      
+      // Small delay between batches
+      if (i < chunks.length - 1) {
+        await this.sleep(1000);
+      }
+    }
+
+    return allResults;
   }
 
   /**
@@ -846,7 +863,7 @@ class JioRCSService {
   async fixMissingCapabilityResults(campaignId = null, userId = null) {
     try {
       console.log('[RCS] 🔧 Starting to fix missing capability results...');
-      
+
       // Build query to find batches with phone numbers but no capability results
       let query = {
         'phoneNumbers.0': { $exists: true }, // Has phone numbers
@@ -856,45 +873,45 @@ class JioRCSService {
           { capabilityResults: null } // Null capabilityResults
         ]
       };
-      
+
       if (campaignId) query.campaignId = campaignId;
       if (userId) query.userId = userId;
-      
+
       const batchesToFix = await ContactBatch.find(query);
       console.log(`[RCS] 📊 Found ${batchesToFix.length} batches that need capability results`);
-      
+
       if (batchesToFix.length === 0) {
         console.log('[RCS] ✅ No batches need fixing');
         return { fixed: 0, total: 0 };
       }
-      
+
       let fixedCount = 0;
-      
+
       for (const batch of batchesToFix) {
         try {
           console.log(`[RCS] 🔍 Processing batch ${batch.batchNumber} for campaign ${batch.campaignId}`);
-          
+
           // Check capability for this batch's phone numbers
           const results = await this.checkCapabilityBatch(batch.phoneNumbers, batch.userId);
-          
+
           // Update the batch with capability results
           await batch.updateCapabilityResults(results);
-          
+
           console.log(`[RCS] ✅ Fixed batch ${batch.batchNumber}: ${results.filter(r => r.isCapable).length}/${results.length} RCS capable`);
           fixedCount++;
-          
+
           // Add small delay to prevent overwhelming the API
           await this.sleep(1000);
-          
+
         } catch (batchError) {
           console.error(`[RCS] ❌ Failed to fix batch ${batch.batchNumber}:`, batchError.message);
           // Continue with next batch
         }
       }
-      
+
       console.log(`[RCS] 🎉 Fixed ${fixedCount}/${batchesToFix.length} batches`);
       return { fixed: fixedCount, total: batchesToFix.length };
-      
+
     } catch (error) {
       console.error('[RCS] ❌ Error fixing missing capability results:', error.message);
       throw error;
@@ -903,8 +920,7 @@ class JioRCSService {
   async saveCapabilityResults(campaignId, userId, batchNumber, phoneNumbers, capabilityResults) {
     try {
       const rcsCapableCount = capabilityResults.filter(r => r.isCapable).length;
-      
-      // Store complete API response in capabilityResults
+
       const updateResult = await ContactBatch.updateOne(
         {
           campaignId,
@@ -914,7 +930,7 @@ class JioRCSService {
         {
           $set: {
             capabilityResults: capabilityResults,
-            processedContacts: capabilityResults.length,
+            processedContacts: phoneNumbers.length,
             rcsCapableCount: rcsCapableCount,
             status: 'completed',
             processingCompletedAt: new Date()
@@ -922,12 +938,12 @@ class JioRCSService {
         },
         { upsert: false }
       );
-      
+
       if (updateResult.matchedCount === 0) {
         throw new Error(`ContactBatch not found for campaign ${campaignId}, batch ${batchNumber}`);
       }
-      
-      console.log(`[RCS] ✅ Saved complete API response with ${capabilityResults.length} results to batch ${batchNumber}`);
+
+      console.log(`[RCS] ✅ Saved ${capabilityResults.length} capability results to batch ${batchNumber}`);
       return updateResult;
     } catch (error) {
       console.error(`[RCS] Failed to save capability results:`, error.message);
@@ -942,18 +958,19 @@ class JioRCSService {
     try {
       // Perform capability check
       const results = await this.checkCapabilityBatch(phoneNumbers, userId, onProgress);
-      
+
       // Save results to database if campaignId and batchNumber provided
       if (campaignId && batchNumber !== null) {
         await this.saveCapabilityResults(campaignId, userId, batchNumber, phoneNumbers, results);
       }
-      
+
       return results;
     } catch (error) {
       console.error(`[RCS] Batch capability check with save failed:`, error.message);
       throw error;
     }
   }
+
   async checkCapabilitySequential(phoneNumbers, userId) {
     const results = [];
 
@@ -963,7 +980,7 @@ class JioRCSService {
         results.push({
           phoneNumber: phone,
           isCapable: result.isCapable,
-          cached: false, // Single API calls are not cached in this context
+          cached: false,
           features: result.features,
           capabilityToken: result.capabilityToken
         });
@@ -972,6 +989,7 @@ class JioRCSService {
           phoneNumber: phone,
           isCapable: false,
           cached: false,
+          features: [],
           error: error.message
         });
       }
@@ -987,7 +1005,7 @@ class JioRCSService {
   async checkCapabilityBatch(phoneNumbers, userId, onProgress = null) {
     const maxRetries = 3;
     let attempt = 0;
-    
+
     while (attempt < maxRetries) {
       try {
         const user = await User.findById(userId).select('+jioConfig.clientSecret');
@@ -1011,47 +1029,20 @@ class JioRCSService {
         const uniqueNumbers = [...new Set(formattedNumbers)];
         console.log(`[RCS] Batch checking ${uniqueNumbers.length} unique numbers (attempt ${attempt + 1}/${maxRetries})...`);
 
-        // Dynamic chunking with optimal batch sizes (500-9500)
+        // Dynamic chunking - only split if batch exceeds API limit
         const chunks = [];
         const total = uniqueNumbers.length;
-        const maxChunkSize = 9500;
-        const minChunkSize = 500;
-        
-        for (let i = 0; i < total; i += maxChunkSize) {
-          let chunk = uniqueNumbers.slice(i, i + maxChunkSize);
-          
-          // Handle remaining numbers to avoid small chunks
-          const remaining = total - i - chunk.length;
-          if (remaining > 0 && remaining < minChunkSize) {
-            // Merge remaining with current chunk if possible
-            if (chunk.length + remaining <= maxChunkSize) {
-              chunk = [...chunk, ...uniqueNumbers.slice(i + chunk.length)];
-            } else {
-              // Split current chunk to accommodate remaining
-              const splitPoint = Math.floor((chunk.length + remaining) / 2);
-              const firstPart = chunk.slice(0, splitPoint);
-              const secondPart = [...chunk.slice(splitPoint), ...uniqueNumbers.slice(i + chunk.length)];
-              
-              // Ensure both parts meet minimum size
-              if (firstPart.length >= minChunkSize) chunks.push(firstPart);
-              if (secondPart.length >= minChunkSize) chunks.push(secondPart);
-              break;
-            }
+        const maxApiLimit = 10000; // Jio API limit
+
+        if (total <= maxApiLimit) {
+          // Single chunk if within API limit
+          chunks.push(uniqueNumbers);
+        } else {
+          // Split into chunks only if exceeding API limit
+          for (let i = 0; i < total; i += maxApiLimit) {
+            const chunk = uniqueNumbers.slice(i, i + maxApiLimit);
+            chunks.push(chunk);
           }
-          
-          // Ensure chunk meets minimum size
-          if (chunk.length < minChunkSize) {
-            const padCount = minChunkSize - chunk.length;
-            for (let j = 0; j < padCount; j++) {
-              const randomNum = `9${Math.floor(Math.random() * 900000000) + 100000000}`;
-              chunk.push(`+91${randomNum}`);
-            }
-          }
-          
-          chunks.push(chunk);
-          
-          // Break if we've processed all numbers
-          if (i + chunk.length >= total) break;
         }
 
         console.log(`[RCS] Split into ${chunks.length} chunks:`, chunks.map(c => c.length));
@@ -1088,7 +1079,7 @@ class JioRCSService {
           let chunkResponse;
           let chunkAttempt = 0;
           const maxChunkRetries = 2;
-          
+
           while (chunkAttempt < maxChunkRetries) {
             try {
               chunkResponse = await axiosInstance.post(
@@ -1099,7 +1090,7 @@ class JioRCSService {
             } catch (chunkError) {
               chunkAttempt++;
               console.error(`[RCS] Chunk ${i + 1} attempt ${chunkAttempt} failed:`, chunkError.code || chunkError.message);
-              
+
               if (chunkError.code === 'EPIPE' || chunkError.code === 'ECONNRESET' || chunkError.code === 'ETIMEDOUT') {
                 if (chunkAttempt < maxChunkRetries) {
                   console.log(`[RCS] Retrying chunk ${i + 1} in 2 seconds...`);
@@ -1110,17 +1101,68 @@ class JioRCSService {
               throw chunkError; // Re-throw if not retryable or max retries reached
             }
           }
-console.log(chunkResponse)
-          
+
           const apiResponse = chunkResponse.data;
-          const reachableUsers = apiResponse?.reachableUsers || [];
+          console.log(apiResponse);
           
+          // Directly push to database if campaignId is available
+          if (global.currentCampaignId && global.currentUserId) {
+            try {
+              // Fetch current batch to calculate cumulative RCS capable count
+              const currentBatch = await ContactBatch.findOne({ 
+                campaignId: global.currentCampaignId, 
+                userId: global.currentUserId 
+              });
+              
+              // Count all RCS capable from existing chunks + current chunk
+              const allReachableUsers = new Set();
+              if (currentBatch?.apiResponse) {
+                currentBatch.apiResponse.forEach(chunk => {
+                  if (chunk.reachableUsers) {
+                    chunk.reachableUsers.forEach(phone => allReachableUsers.add(phone));
+                  }
+                });
+              }
+              
+              // Add current chunk's reachable users
+              if (apiResponse?.reachableUsers) {
+                apiResponse.reachableUsers.forEach(phone => allReachableUsers.add(phone));
+              }
+              
+              await ContactBatch.updateMany(
+                { campaignId: global.currentCampaignId, userId: global.currentUserId },
+                {
+                  $push: {
+                    apiResponse: {
+                      chunkNumber: i + 1,
+                      reachableUsers: apiResponse?.reachableUsers || [],
+                      totalRandomSampleUserCount: apiResponse?.totalRandomSampleUserCount || 0,
+                      reachableRandomSampleUserCount: apiResponse?.reachableRandomSampleUserCount || 0,
+                      processedAt: new Date()
+                    }
+                  },
+                  $set: {
+                    processedContacts: allResults.length,
+                    rcsCapableCount: allReachableUsers.size,
+                    status: i === chunks.length - 1 ? 'completed' : 'processing',
+                    processingCompletedAt: i === chunks.length - 1 ? new Date() : undefined
+                  }
+                },
+              );
+              console.log(`[RCS] ✅ Pushed API response for chunk ${i + 1}, Total RCS capable: ${allReachableUsers.size}/${allResults.length}`);
+            } catch (dbError) {
+              console.error(`[RCS] Failed to push API response to database:`, dbError.message);
+            }
+          }
+          
+          const reachableUsers = apiResponse?.reachableUsers || [];
+
           // Ensure reachableUsers is an array
           const reachableUsersArray = Array.isArray(reachableUsers) ? reachableUsers : [];
-          const realReachableUsers = reachableUsersArray.filter(phone => realPhoneSet.has(phone));
-          const chunkRcsCapable = realReachableUsers.length;
+   
+          const chunkRcsCapable = reachableUsersArray.length;
           totalRcsCapable += chunkRcsCapable;
-          
+
           console.log(`[RCS] ✅ Found ${chunkRcsCapable} RCS-capable out of ${chunk.filter(p => realPhoneSet.has(p)).length} real numbers`);
 
           const chunkResults = chunk.map(phone => ({
@@ -1132,7 +1174,7 @@ console.log(chunkResponse)
           }));
 
           allResults.push(...chunkResults);
-          
+
           // Call progress callback if provided
           if (onProgress) {
             onProgress({
@@ -1141,10 +1183,17 @@ console.log(chunkResponse)
               processed: allResults.length,
               total: uniqueNumbers.length,
               rcsCapable: totalRcsCapable,
-              chunkResults: chunkResults // Complete chunk results for batch saving
+              chunkResults: chunkResults,
+              apiResponse: {
+                chunkNumber: i + 1,
+                reachableUsers: apiResponse?.reachableUsers || [],
+                totalRandomSampleUserCount: apiResponse?.totalRandomSampleUserCount || 0,
+                reachableRandomSampleUserCount: apiResponse?.reachableRandomSampleUserCount || 0,
+                processedAt: new Date()
+              }
             });
           }
-          
+
           // Add delay between chunks to prevent overwhelming the API
           if (i < chunks.length - 1) {
             await this.sleep(1000); // 1 second delay between chunks
@@ -1164,7 +1213,7 @@ console.log(chunkResponse)
         });
 
         return results;
-        
+
       } catch (error) {
         attempt++;
         console.error(`[RCS] Batch capability check attempt ${attempt} failed:`, {
@@ -1173,7 +1222,7 @@ console.log(chunkResponse)
           status: error.response?.status,
           data: error.response?.data
         });
-        
+
         // Check if this is a retryable error
         const isRetryable = (
           error.code === 'EPIPE' ||
@@ -1184,14 +1233,14 @@ console.log(chunkResponse)
           (error.response?.status >= 500 && error.response?.status < 600) ||
           error.response?.status === 429
         );
-        
+
         if (isRetryable && attempt < maxRetries) {
           const backoffDelay = Math.min(1000 * Math.pow(2, attempt - 1), 10000); // Exponential backoff, max 10s
           console.log(`[RCS] Retrying in ${backoffDelay}ms... (attempt ${attempt + 1}/${maxRetries})`);
           await this.sleep(backoffDelay);
           continue;
         }
-        
+
         // If not retryable or max retries reached, throw the error
         throw error;
       }
@@ -1260,7 +1309,7 @@ console.log(chunkResponse)
         if (campaignToComplete && campaignToComplete.status === 'running') {
           // Update stats before completing
           await campaignToComplete.updateStats();
-          
+
           // Reload after updateStats
           const freshCampaign = await Campaign.findById(campaignId);
           if (freshCampaign && freshCampaign.status === 'running') {
@@ -1316,10 +1365,10 @@ console.log(chunkResponse)
                   }
                 }
               );
-              
-                  // Unblock and refund (move from blocked back to wallet)
+
+              // Unblock and refund (move from blocked back to wallet)
               await this.refundUser(campaign.userId, 1, 'non-RCS capable');
-              
+
               return;
             }
 
@@ -1346,10 +1395,10 @@ console.log(chunkResponse)
                       }
                     }
                   );
-                  
+
                   // Unblock and refund (move from blocked back to wallet)
                   await this.refundUser(campaign.userId, 1, 'non-capable device');
-                  
+
                   return;
                 }
                 capabilityToken = cap.token;
@@ -1368,10 +1417,10 @@ console.log(chunkResponse)
                     }
                   }
                 );
-                
+
                 // Unblock and refund (move from blocked back to wallet)
                 await this.refundUser(campaign.userId, 1, 'capability check failure');
-                
+
                 return;
               }
             }
@@ -1457,7 +1506,7 @@ console.log(chunkResponse)
                 }
               }
             );
-            
+
             // Unblock and refund (move from blocked back to wallet)
             await this.refundUser(campaign.userId, 1, 'recipient error');
           }
@@ -1475,16 +1524,16 @@ console.log(chunkResponse)
       const updatedCampaign = await Campaign.findById(campaignId);
       if (updatedCampaign) {
         await updatedCampaign.updateStats();
-        
+
         // Reload campaign after updateStats to get fresh data
         const freshCampaign = await Campaign.findById(campaignId);
         if (!freshCampaign) return;
-        
+
         // Check if there are any recipients still needing processing (including queued)
-        const stillPending = freshCampaign.recipients.filter(r => 
+        const stillPending = freshCampaign.recipients.filter(r =>
           r.status === 'pending' || r.status === 'processing' || r.status === 'queued'
         );
-        
+
         if (stillPending.length > 0 && freshCampaign.status === 'running') {
           console.log(`[RCS] ${stillPending.length} recipients still pending/queued, continuing...`);
           const nextDelay = 500;
@@ -1551,10 +1600,10 @@ console.log(chunkResponse)
 
     this.messageQueue.on('failed', async (job, err) => {
       console.error(`[Queue] Message ${job.data.messageData.messageId} failed permanently:`, err.message);
-      
+
       const { campaignId, phoneNumber, messageId } = job.data.messageData;
       if (!campaignId) return;
-      
+
       try {
         // Update campaign recipient status
         await Campaign.updateOne(
@@ -1567,18 +1616,18 @@ console.log(chunkResponse)
             }
           }
         );
-        
+
         // Update message status
         await Message.updateOne(
           { messageId },
-          { 
+          {
             status: 'failed',
             errorCode: err.response?.status === 429 ? 'RATE_LIMIT' : 'SEND_FAILED',
             errorMessage: err.message,
             failedAt: new Date()
           }
         );
-        
+
         // Refund wallet
         const campaign = await Campaign.findById(campaignId);
         if (campaign) {
@@ -1590,12 +1639,12 @@ console.log(chunkResponse)
             await user.save();
             console.log(`[Queue] 🔄 Refunded ₹1 for failed message`);
           }
-          
+
           // Update stats immediately after failure
           await campaign.updateStats();
           console.log(`[Queue] 📊 Campaign stats updated after failure`);
         }
-        
+
         // Check if campaign should complete
         await this.checkAndCompleteCampaign(campaignId);
       } catch (updateError) {
@@ -1619,7 +1668,7 @@ console.log(chunkResponse)
         if (waiting.length > 0 || active.length > 0) {
           console.log(`[Queue Stats] Waiting: ${waiting.length}, Active: ${active.length}, Completed: ${completed.length}, Failed: ${failed.length}`);
         }
-        
+
         // Check for stuck campaigns every 30 seconds
         await this.checkStuckCampaigns();
       } catch (error) {
@@ -1633,15 +1682,15 @@ console.log(chunkResponse)
     try {
       const campaign = await Campaign.findById(campaignId);
       if (!campaign || campaign.status !== 'running') return;
-      
-      const stillPending = campaign.recipients.filter(r => 
+
+      const stillPending = campaign.recipients.filter(r =>
         r.status === 'pending' || r.status === 'processing' || r.status === 'queued'
       );
-      
+
       if (stillPending.length === 0) {
         // Update stats (this saves the campaign)
         await campaign.updateStats();
-        
+
         // Reload to get fresh data after updateStats save
         const freshCampaign = await Campaign.findById(campaignId);
         if (freshCampaign && freshCampaign.status === 'running') {
@@ -1660,7 +1709,7 @@ console.log(chunkResponse)
   async checkStuckCampaigns() {
     try {
       const runningCampaigns = await Campaign.find({ status: 'running' });
-      
+
       for (const campaign of runningCampaigns) {
         // Get actual message statuses
         const messages = await Message.find({ campaignId: campaign._id });
@@ -1669,13 +1718,13 @@ console.log(chunkResponse)
           const phone = this.normalizePhoneForComparison(msg.recipientPhoneNumber);
           messageMap.set(phone, msg);
         });
-        
+
         // Sync recipient statuses with message statuses
         let needsUpdate = false;
         for (const recipient of campaign.recipients) {
           const phone = this.normalizePhoneForComparison(recipient.phoneNumber);
           const message = messageMap.get(phone);
-          
+
           if (message && recipient.status === 'queued' && message.status !== 'queued') {
             recipient.status = message.status;
             if (message.sentAt) recipient.sentAt = message.sentAt;
@@ -1684,24 +1733,24 @@ console.log(chunkResponse)
             needsUpdate = true;
           }
         }
-        
+
         // Save synced statuses first
         if (needsUpdate) {
           await campaign.save();
           console.log(`[RCS] 🔄 Synced campaign ${campaign._id} recipient statuses`);
         }
-        
+
         // Check if should complete
-        const stillPending = campaign.recipients.filter(r => 
+        const stillPending = campaign.recipients.filter(r =>
           r.status === 'pending' || r.status === 'processing' || r.status === 'queued'
         );
-        
+
         if (stillPending.length === 0) {
           // Reload campaign to get fresh data, then update stats
           const freshCampaign = await Campaign.findById(campaign._id);
           if (freshCampaign) {
             await freshCampaign.updateStats();
-            
+
             freshCampaign.status = 'completed';
             freshCampaign.completedAt = new Date();
             await freshCampaign.save();
@@ -1734,7 +1783,7 @@ console.log(chunkResponse)
   formatPhoneForAction(phoneNumber) {
     // Remove all non-digits
     let cleanPhone = phoneNumber.replace(/\D/g, '');
-    
+
     // Format to +91 prefix
     if (cleanPhone.length === 10) {
       return `+91${cleanPhone}`;
@@ -1743,7 +1792,7 @@ console.log(chunkResponse)
     } else if (!cleanPhone.startsWith('+')) {
       return `+${cleanPhone}`;
     }
-    
+
     return cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone}`;
   }
 

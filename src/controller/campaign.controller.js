@@ -32,77 +32,50 @@ export const checkCapability = async (req, res) => {
         { campaignId, userId, status: 'pending' },
         { $set: { status: 'processing' } }
       );
+      
+      // Set global variables for direct database access
+      global.currentCampaignId = campaignId;
+      global.currentUserId = userId;
     }
+    
+    let allReachableUsers = [];
     
     const results = await jioRCSService.checkCapabilitySmart(phoneNumbers, userId, campaignId, null, async (progress) => {
       global.capabilityProgress.set(progressKey, progress);
       
-      // Update batches in real-time if campaignId provided
-      if (campaignId && ContactBatch && progress.chunkResults) {
-        const batches = await ContactBatch.find({ campaignId, userId, status: 'processing' });
-        
-        for (const batch of batches) {
-          const batchPhoneNumbers = batch.phoneNumbers.map(p => p.replace(/^\+?91/, ''));
-          
-          // Filter chunk results that belong to this specific batch
-          const batchResults = progress.chunkResults.filter(r => 
-            batchPhoneNumbers.includes(r.phoneNumber.replace(/^\+?91/, ''))
-          );
-          
-          if (batchResults.length > 0) {
-            const rcsCapableCount = batchResults.filter(r => r.isCapable).length;
-            
-            // Transform results to match schema (isCapable -> isRcsCapable)
-            const transformedResults = batchResults.map(r => ({
-              phoneNumber: r.phoneNumber,
-              isRcsCapable: r.isCapable,
-              features: r.features || [],
-              checkedAt: new Date()
-            }));
-            
-            // Remove existing results for these phone numbers to avoid duplicates
-            const phoneNumbersToUpdate = batchResults.map(r => r.phoneNumber);
-            await ContactBatch.updateOne(
-              { _id: batch._id },
-              {
-                $pull: {
-                  capabilityResults: { phoneNumber: { $in: phoneNumbersToUpdate } }
-                }
-              }
-            );
-            
-            // Add new results
-            await ContactBatch.updateOne(
-              { _id: batch._id },
-              {
-                $push: {
-                  capabilityResults: { $each: transformedResults }
-                },
-                $set: {
-                  status: 'completed',
-                  processingCompletedAt: new Date()
-                }
-              }
-            );
-            
-            // Recalculate counts from actual data
-            const updatedBatch = await ContactBatch.findById(batch._id);
-            const actualRcsCount = updatedBatch.capabilityResults.filter(r => r.isRcsCapable).length;
-            await ContactBatch.updateOne(
-              { _id: batch._id },
-              {
-                $set: {
-                  processedContacts: updatedBatch.capabilityResults.length,
-                  rcsCapableCount: actualRcsCount
-                }
-              }
-            );
-          }
-        }
+      // Accumulate reachable users from all chunks
+      if (progress.apiResponse?.reachableUsers) {
+        allReachableUsers = [...allReachableUsers, ...progress.apiResponse.reachableUsers];
       }
     });
     
+    // For sequential API calls (< 500 contacts), manually save results
+    if (campaignId && ContactBatch && phoneNumbers.length < 500) {
+      const rcsCapable = results.filter(r => r.isCapable).length;
+      
+      await ContactBatch.updateMany(
+        { campaignId, userId },
+        {
+          $set: {
+            capabilityResults: results,
+            processedContacts: phoneNumbers.length,
+            rcsCapableCount: rcsCapable,
+            status: 'completed',
+            processingCompletedAt: new Date()
+          }
+        }
+      );
+      
+      console.log(`[Campaign] Sequential API: Saved ${results.length} results, ${rcsCapable} RCS capable`);
+    }
+    
     global.capabilityProgress.delete(progressKey);
+    
+    // Clean up global variables
+    if (global.currentCampaignId) {
+      delete global.currentCampaignId;
+      delete global.currentUserId;
+    }
     
     const rcsCapable = results.filter(r => r.isCapable).length;
     console.log(`[Campaign] ✅ Capability check complete: ${rcsCapable} RCS-capable out of ${phoneNumbers.length}`);
@@ -231,15 +204,74 @@ export const createSimple = async (req, res) => {
 // Create campaign and start sending
 export const create = async (req, res) => {
   try {
-    const { name, description, templateId, recipients, batchSize, autoStart = true } = req.body;
+    const { name, description, templateId, recipients, campaignId, batchSize, autoStart = true, isArchived } = req.body;
     const userId = req.user._id;
 
+    console.log(`[Campaign] Bulk send request received:`);
+    console.log(`[Campaign] - name: ${name}`);
+    console.log(`[Campaign] - templateId: ${templateId}`);
+    console.log(`[Campaign] - campaignId: ${campaignId}`);
+    console.log(`[Campaign] - isArchived: ${isArchived}`);
+    console.log(`[Campaign] - autoStart: ${autoStart}`);
+    console.log(`[Campaign] - recipients: ${recipients ? recipients.length : 'fetching from batches'}`);
+
+    // If campaignId is provided, fetch all RCS contacts from batches
+    let finalRecipients = recipients;
+    if (campaignId && (!recipients || recipients.length === 0)) {
+      const ContactBatch = (await import('../models/contactBatch.model.js')).default;
+      const batches = await ContactBatch.find({ campaignId, userId }).lean();
+      
+      console.log(`[Campaign] Found ${batches.length} contact batches for campaignId ${campaignId}`);
+      
+      const rcsContacts = [];
+      for (const batch of batches) {
+        console.log(`[Campaign] Processing batch ${batch.batchNumber}: ${batch.totalContacts} total contacts, ${batch.rcsCapableCount} RCS capable`);
+        
+        if (batch.apiResponse && batch.apiResponse.length > 0) {
+          batch.apiResponse.forEach(chunkResponse => {
+            if (chunkResponse.reachableUsers) {
+              console.log(`[Campaign] - Found ${chunkResponse.reachableUsers.length} reachable users in API response`);
+              chunkResponse.reachableUsers.forEach(phoneNumber => {
+                const cleanNumber = phoneNumber.replace(/^\+?91/, '');
+                rcsContacts.push({
+                  phoneNumber: cleanNumber,
+                  isRcsCapable: true,
+                  variables: {}
+                });
+                console.log(`[Campaign] - Added RCS contact: ${cleanNumber}`);
+              });
+            }
+          });
+        } else if (batch.capabilityResults && batch.capabilityResults.length > 0) {
+          console.log(`[Campaign] - Processing ${batch.capabilityResults.length} capability results`);
+          batch.capabilityResults.forEach(result => {
+            const isCapable = result.isCapable !== undefined ? 
+              result.isCapable : 
+              (result.features && result.features.length > 0);
+            if (isCapable) {
+              const cleanNumber = result.phoneNumber.replace(/^\+?91/, '');
+              rcsContacts.push({
+                phoneNumber: cleanNumber,
+                isRcsCapable: true,
+                variables: {}
+              });
+              console.log(`[Campaign] - Added RCS contact: ${cleanNumber}`);
+            }
+          });
+        }
+      }
+      
+      finalRecipients = rcsContacts;
+      console.log(`[Campaign] ✅ Total RCS contacts fetched: ${finalRecipients.length}`);
+      console.log(`[Campaign] ✅ Contact list: ${finalRecipients.map(r => r.phoneNumber).join(', ')}`);
+    }
+
     // Immediate response for large campaigns
-    if (recipients.length > 10000) {
+    if (finalRecipients.length > 10000) {
       res.status(202).json({
         success: true,
-        message: `Large campaign accepted for processing. ${recipients.length} recipients will be processed in background.`,
-        campaignSize: recipients.length,
+        message: `Large campaign accepted for processing. ${finalRecipients.length} recipients will be processed in background.`,
+        campaignSize: finalRecipients.length,
         processing: true
       });
     }
@@ -249,7 +281,7 @@ export const create = async (req, res) => {
     // Increment template usage count
     await template.incrementUsage();
 
-    if (!Array.isArray(recipients) || recipients.length === 0) {
+    if (!Array.isArray(finalRecipients) || finalRecipients.length === 0) {
       return res.status(400).json({
         success: false,
         message: 'Recipients array is required and must not be empty',
@@ -257,7 +289,7 @@ export const create = async (req, res) => {
     }
 
     // Count only RCS capable recipients for billing
-    const rcsCapableRecipients = recipients.filter(r => r.isRcsCapable === true);
+    const rcsCapableRecipients = finalRecipients.filter(r => r.isRcsCapable === true);
     const actualCost = rcsCapableRecipients.length * 1; // ₹1 per RCS capable number
 
     // Check available balance (total - blocked)
@@ -307,37 +339,74 @@ export const create = async (req, res) => {
     }
 
     // Dynamic batch size based on campaign volume (max 500)
-    const optimizedBatchSize = recipients.length > 50000 ? 500 : 
-                              recipients.length > 10000 ? 300 : 
-                              recipients.length > 1000 ? 200 : 100;
+    const optimizedBatchSize = finalRecipients.length > 50000 ? 500 : 
+                              finalRecipients.length > 10000 ? 300 : 
+                              finalRecipients.length > 1000 ? 200 : 100;
 
-    const campaign = await Campaign.create({
-      name,
-      description,
-      userId,
-      templateId,
-      recipients: recipients.map(r => ({
-        phoneNumber: r.phoneNumber,
-        variables: r.variables || {},
-        status: 'pending',
-        isRcsCapable: r.isRcsCapable || false,
-      })),
-      batchSize: batchSize || optimizedBatchSize,
-      createdBy: userId,
-      stats: {
-        total: recipients.length,
-        pending: recipients.length,
-        sent: 0,
-        failed: 0,
-        processing: 0,
-        rcsCapable: rcsCapableRecipients.length,
-      },
-      status: autoStart ? 'running' : 'draft',
-      startedAt: autoStart ? new Date() : null,
-      estimatedCost: actualCost,
-      actualCost: 0,
-      blockedAmount: 0,
-    });
+    // Update existing campaign or create new one
+    let campaign;
+    if (campaignId) {
+      // Update existing campaign with recipients and start it
+      campaign = await Campaign.findByIdAndUpdate(
+        campaignId,
+        {
+          recipients: finalRecipients.map(r => ({
+            phoneNumber: r.phoneNumber,
+            variables: r.variables || {},
+            status: 'pending',
+            isRcsCapable: r.isRcsCapable || false,
+          })),
+          batchSize: batchSize || optimizedBatchSize,
+          stats: {
+            total: finalRecipients.length,
+            pending: finalRecipients.length,
+            sent: 0,
+            failed: 0,
+            processing: 0,
+            rcsCapable: rcsCapableRecipients.length,
+          },
+          status: autoStart ? 'running' : 'draft',
+          startedAt: autoStart ? new Date() : null,
+          isArchived: isArchived !== undefined ? isArchived : false,
+          estimatedCost: actualCost,
+          actualCost: 0,
+          blockedAmount: 0,
+        },
+        { new: true }
+      );
+      console.log(`[Campaign] Updated existing campaign ${campaignId}`);
+    } else {
+      // Create new campaign
+      campaign = await Campaign.create({
+        name,
+        description,
+        userId,
+        templateId,
+        recipients: finalRecipients.map(r => ({
+          phoneNumber: r.phoneNumber,
+          variables: r.variables || {},
+          status: 'pending',
+          isRcsCapable: r.isRcsCapable || false,
+        })),
+        batchSize: batchSize || optimizedBatchSize,
+        createdBy: userId,
+        stats: {
+          total: finalRecipients.length,
+          pending: finalRecipients.length,
+          sent: 0,
+          failed: 0,
+          processing: 0,
+          rcsCapable: rcsCapableRecipients.length,
+        },
+        status: autoStart ? 'running' : 'draft',
+        startedAt: autoStart ? new Date() : null,
+        isArchived: false,
+        estimatedCost: actualCost,
+        actualCost: 0,
+        blockedAmount: 0,
+      });
+      console.log(`[Campaign] Created new campaign ${campaign._id}`);
+    }
 
     // Block wallet balance for this campaign
     if (autoStart && actualCost > 0) {
@@ -352,12 +421,15 @@ export const create = async (req, res) => {
 
     // Auto-start campaign processing if requested
     if (autoStart) {
-      console.log(`[Campaign] Starting background processing for campaign ${campaign._id} with ${recipients.length} recipients`);
+      console.log(`[Campaign] Starting campaign "${name}" (${campaign._id})`);
+      console.log(`[Campaign] Sending to ${rcsCapableRecipients.length} RCS-capable recipients:`);
+      console.log(`[Campaign] Phone numbers: ${rcsCapableRecipients.map(r => r.phoneNumber).join(', ')}`);
+      console.log(`[Campaign] Total recipients: ${finalRecipients.length}, RCS capable: ${rcsCapableRecipients.length}, Cost: ₹${actualCost}`);
       
       // Update user stats when campaign is created and started
       await req.user.updateStats({
-        messagesSent: recipients.length,
-        totalMessages: recipients.length,
+        messagesSent: finalRecipients.length,
+        totalMessages: finalRecipients.length,
         cost: actualCost,
         actualCost: actualCost
       });
@@ -367,7 +439,7 @@ export const create = async (req, res) => {
       await req.user.incrementUsage('messages', rcsCapableRecipients.length);
       
       // For large campaigns, use setImmediate to prevent blocking
-      if (recipients.length > 10000) {
+      if (finalRecipients.length > 10000) {
         setImmediate(() => {
           jioRCSService.processCampaignBatch(campaign._id, optimizedBatchSize, 500)
             .catch(error => {
@@ -389,11 +461,11 @@ export const create = async (req, res) => {
     }
 
     // Send appropriate response based on campaign size
-    if (recipients.length <= 10000) {
+    if (finalRecipients.length <= 10000) {
       res.status(201).json({
         success: true,
         message: autoStart 
-          ? `Campaign created and started! Processing ${recipients.length} total recipients (${rcsCapableRecipients.length} RCS capable, ₹${actualCost} charged)`
+          ? `Campaign created and started! Processing ${finalRecipients.length} total recipients (${rcsCapableRecipients.length} RCS capable, ₹${actualCost} charged)`
           : 'Campaign created successfully',
         data: campaign,
       });
@@ -615,24 +687,88 @@ export const getStats = async (req, res) => {
   }
 };
 
-// Get all campaigns for a user (for reports)
+// Get all campaigns for a user (for reports) with backend pagination
 export const getUserCampaignReports = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { page = 1, limit = 10 } = req.query;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const { search, status, type, campaign, startDate, endDate, sort = 'newest' } = req.query;
     
-    const campaigns = await Campaign.find({ userId })
+    // Build query - always filter out archived campaigns
+    let query = { userId, isArchived: false };
+    
+    // Status filter
+    if (status && status !== 'all') {
+      if (status === 'processing') {
+        query.status = { $in: ['processing', 'running'] };
+      } else {
+        query.status = status;
+      }
+    }
+    
+    // Campaign name filter
+    if (campaign && campaign !== 'all') {
+      query.name = campaign;
+    }
+    
+    // Date range filter
+    if (startDate && endDate) {
+      query.createdAt = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate)
+      };
+    }
+    
+    // Type filter - need to get template IDs first
+    if (type && type !== 'all') {
+      const matchingTemplates = await Template.find({ templateType: type }).select('_id');
+      const templateIds = matchingTemplates.map(t => t._id);
+      if (templateIds.length > 0) {
+        query.templateId = { $in: templateIds };
+      } else {
+        // No templates found, return empty
+        return res.json({
+          success: true,
+          data: [],
+          pagination: {
+            page,
+            limit,
+            total: 0,
+            pages: 0,
+            totalDelivered: 0,
+            totalFailed: 0
+          }
+        });
+      }
+    }
+    
+    // Search filter in MongoDB query
+    if (search && search.trim()) {
+      query.$or = [
+        { name: { $regex: search.trim(), $options: 'i' } }
+      ];
+    }
+    
+    // Sort order
+    const sortOrder = sort === 'oldest' ? 1 : -1;
+    
+    // Get total count with filters
+    const total = await Campaign.countDocuments(query);
+    
+    // Get paginated campaigns
+    const campaigns = await Campaign.find(query)
       .populate('templateId', 'name templateType')
-      .sort({ createdAt: -1 })
-      .limit(limit * 1)
+      .sort({ createdAt: sortOrder })
+      .limit(limit)
       .skip((page - 1) * limit)
-      .select('name description status stats estimatedCost actualCost createdAt completedAt recipients')
+      .select('name description status stats estimatedCost actualCost createdAt completedAt')
       .lean();
     
     // Get Message model to aggregate interaction counts
     const Message = (await import('../models/message.model.js')).default;
     
-    // Get interaction counts for all campaigns
+    // Get interaction counts for current page campaigns only
     const campaignIds = campaigns.map(c => c._id);
     const interactionStats = await Message.aggregate([
       { $match: { campaignId: { $in: campaignIds } } },
@@ -661,7 +797,7 @@ export const getUserCampaignReports = async (req, res) => {
         _id: campaign._id,
         CampaignName: campaign.name,
         type: campaign.templateId?.templateType,
-        cost: campaign.recipients?.length || 0,
+        cost: campaign.stats?.total || 0,
         successCount: campaign.stats?.sent || 0,
         failedCount: campaign.stats?.failed || 0,
         bouncedCount: campaign.stats?.bounced || 0,
@@ -672,13 +808,21 @@ export const getUserCampaignReports = async (req, res) => {
         createdAt: campaign.createdAt,
         completedAt: campaign.completedAt,
         status: campaign.status,
-        recipients: campaign.recipients,
+        recipients: undefined,
         actualCost: campaign.actualCost || 0,
         estimatedCost: campaign.estimatedCost || 0
       };
     });
     
-    const total = await Campaign.countDocuments({ userId });
+
+    
+    // Calculate aggregate stats for all campaigns (not just current page) - exclude archived
+    const allCampaigns = await Campaign.find({ userId, isArchived: false }).select('stats').lean();
+    const aggregateStats = allCampaigns.reduce((acc, campaign) => {
+      acc.totalDelivered += campaign.stats?.delivered || 0;
+      acc.totalFailed += campaign.stats?.failed || 0;
+      return acc;
+    }, { totalDelivered: 0, totalFailed: 0 });
     
     res.json({
       success: true,
@@ -687,7 +831,9 @@ export const getUserCampaignReports = async (req, res) => {
         page: parseInt(page),
         limit: parseInt(limit),
         total,
-        pages: Math.ceil(total / limit)
+        pages: Math.ceil(total / limit),
+        totalDelivered: aggregateStats.totalDelivered,
+        totalFailed: aggregateStats.totalFailed
       }
     });
   } catch (error) {
@@ -1041,7 +1187,7 @@ export const uploadContactBatch = async (req, res) => {
       campaignId,
       userId,
       batchNumber,
-      phoneNumbers,
+      phoneNumbers: phoneNumbers, // Store phone numbers
       totalContacts: phoneNumbers.length,
       status: 'pending'
     });
@@ -1095,6 +1241,42 @@ export const processContactBatch = async (req, res) => {
         total: updatedBatch.totalContacts,
         rcsCapable: updatedBatch.rcsCapableCount,
         notCapable: updatedBatch.totalContacts - updatedBatch.rcsCapableCount
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Get contact batches with pagination and populate data
+export const getContactBatchesWithData = async (req, res) => {
+  try {
+    const { campaignId } = req.params;
+    const userId = req.user._id;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+
+    const ContactBatch = (await import('../models/contactBatch.model.js')).default;
+    
+    const batches = await ContactBatch.find({ campaignId, userId })
+      .sort({ batchNumber: 1 })
+      .limit(limit)
+      .skip((page - 1) * limit)
+      .lean();
+
+    const total = await ContactBatch.countDocuments({ campaignId, userId });
+
+    res.json({
+      success: true,
+      data: batches,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
       }
     });
   } catch (error) {
@@ -1191,26 +1373,64 @@ export const getAllContactsFromBatches = async (req, res) => {
     const allContacts = [];
     
     for (const batch of batches) {
-      if (batch.capabilityResults && batch.capabilityResults.length > 0) {
-        // Use capability results if available
+      if (batch.apiResponse && batch.apiResponse.length > 0 && batch.phoneNumbers && batch.phoneNumbers.length > 0) {
+        // Collect all reachableUsers from API response
+        const reachableSet = new Set();
+        batch.apiResponse.forEach(chunkResponse => {
+          if (chunkResponse.reachableUsers) {
+            chunkResponse.reachableUsers.forEach(phone => {
+              reachableSet.add(phone.replace(/^\+?91/, ''));
+            });
+          }
+        });
+        
+        // Add ALL contacts with proper capability status
+        batch.phoneNumbers.forEach(phoneNumber => {
+          const cleanPhone = phoneNumber.replace(/^\+?91/, '');
+          allContacts.push({
+            phoneNumber: cleanPhone,
+            isRcsCapable: reachableSet.has(cleanPhone),
+            batchNumber: batch.batchNumber,
+            batchStatus: batch.status
+          });
+        });
+      } else if (batch.capabilityResults && batch.capabilityResults.length > 0) {
+        // Fallback to capability results if available
         batch.capabilityResults.forEach(result => {
+          // Determine isCapable from features array if isCapable field is missing
+          const isCapable = result.isCapable !== undefined ? 
+            result.isCapable : 
+            (result.features && result.features.length > 0);
+            
           allContacts.push({
             phoneNumber: result.phoneNumber.replace(/^\+?91/, ''),
-            isRcsCapable: result.isRcsCapable,
+            isRcsCapable: isCapable,
             batchNumber: batch.batchNumber,
             batchStatus: batch.status
           });
         });
       } else {
-        // Use phone numbers with null capability if not processed yet
-        batch.phoneNumbers.forEach(phone => {
-          allContacts.push({
-            phoneNumber: phone,
-            isRcsCapable: null,
-            batchNumber: batch.batchNumber,
-            batchStatus: batch.status
+        // Fallback: If no data available but totalContacts > 0, show placeholder contacts
+        if (batch.totalContacts > 0 && batch.phoneNumbers.length === 0) {
+          for (let i = 0; i < Math.min(batch.totalContacts, 1000); i++) {
+            allContacts.push({
+              phoneNumber: `Contact ${i + 1}`,
+              isRcsCapable: null,
+              batchNumber: batch.batchNumber,
+              batchStatus: batch.status
+            });
+          }
+        } else {
+          // Use phone numbers with null capability if not processed yet
+          batch.phoneNumbers.forEach(phone => {
+            allContacts.push({
+              phoneNumber: phone,
+              isRcsCapable: null,
+              batchNumber: batch.batchNumber,
+              batchStatus: batch.status
+            });
           });
-        });
+        }
       }
     }
 
@@ -1259,6 +1479,80 @@ export const fixMissingCapabilityResults = async (req, res) => {
   }
 };
 
+// Get paginated reachable users for sending messages
+export const getReachableUsers = async (req, res) => {
+  try {
+    const { campaignId } = req.params;
+    const userId = req.user._id;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const batchNumber = req.query.batchNumber;
+
+    const ContactBatch = (await import('../models/contactBatch.model.js')).default;
+    
+    let query = { campaignId, userId };
+    if (batchNumber) query.batchNumber = batchNumber;
+    
+    const batches = await ContactBatch.find(query)
+      .sort({ batchNumber: 1 })
+      .lean();
+
+    const reachableUsers = [];
+    
+    for (const batch of batches) {
+      if (batch.apiResponse && batch.apiResponse.length > 0) {
+        // Collect all reachableUsers from all chunks (batch API)
+        batch.apiResponse.forEach(chunkResponse => {
+          if (chunkResponse.reachableUsers) {
+            chunkResponse.reachableUsers.forEach(phoneNumber => {
+              reachableUsers.push({
+                phoneNumber: phoneNumber.replace(/^\+?91/, ''),
+                isRcsCapable: true,
+                batchNumber: batch.batchNumber
+              });
+            });
+          }
+        });
+      } else if (batch.capabilityResults && batch.capabilityResults.length > 0) {
+        // Collect RCS capable users from capabilityResults (sequential API)
+        batch.capabilityResults.forEach(result => {
+          // Determine isCapable from features array if isCapable field is missing
+          const isCapable = result.isCapable !== undefined ? 
+            result.isCapable : 
+            (result.features && result.features.length > 0);
+            
+          if (isCapable) {
+            reachableUsers.push({
+              phoneNumber: result.phoneNumber.replace(/^\+?91/, ''),
+              isRcsCapable: true,
+              batchNumber: batch.batchNumber
+            });
+          }
+        });
+      }
+    }
+
+    const total = reachableUsers.length;
+    const paginatedUsers = reachableUsers.slice((page - 1) * limit, page * limit);
+
+    res.json({
+      success: true,
+      data: paginatedUsers,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
 // Delete contact from batch
 export const deleteContactFromBatch = async (req, res) => {
   try {
@@ -1270,26 +1564,49 @@ export const deleteContactFromBatch = async (req, res) => {
     const batches = await ContactBatch.find({ campaignId, userId });
     
     let deleted = false;
+    let wasRcsCapable = false;
+    
     for (const batch of batches) {
-      // Remove from phoneNumbers array
-      const initialLength = batch.phoneNumbers.length;
-      batch.phoneNumbers = batch.phoneNumbers.filter(p => p !== phoneNumber);
+      const cleanPhone = phoneNumber.replace(/^\+?91/, '');
+      const formattedPhone = `+91${cleanPhone}`;
+      
+      // Check if contact exists in phoneNumbers
+      const phoneIndex = batch.phoneNumbers.findIndex(p => 
+        p.replace(/^\+?91/, '') === cleanPhone
+      );
+      
+      if (phoneIndex === -1) continue;
+      
+      // Check if it was RCS capable (in apiResponse)
+      if (batch.apiResponse && batch.apiResponse.length > 0) {
+        for (const chunk of batch.apiResponse) {
+          if (chunk.reachableUsers && chunk.reachableUsers.includes(formattedPhone)) {
+            wasRcsCapable = true;
+            // Remove from reachableUsers
+            chunk.reachableUsers = chunk.reachableUsers.filter(p => p !== formattedPhone);
+          }
+        }
+      }
+      
+      // Remove from phoneNumbers
+      batch.phoneNumbers.splice(phoneIndex, 1);
       
       // Remove from capabilityResults if exists
-      if (batch.capabilityResults) {
+      if (batch.capabilityResults && batch.capabilityResults.length > 0) {
         batch.capabilityResults = batch.capabilityResults.filter(r => 
-          r.phoneNumber.replace(/^\+?91/, '') !== phoneNumber
+          r.phoneNumber.replace(/^\+?91/, '') !== cleanPhone
         );
       }
       
-      if (batch.phoneNumbers.length < initialLength) {
-        batch.totalContacts = batch.phoneNumbers.length;
-        batch.rcsCapableCount = batch.capabilityResults ? 
-          batch.capabilityResults.filter(r => r.isRcsCapable).length : 0;
-        await batch.save();
-        deleted = true;
-        break;
+      // Update counts
+      batch.totalContacts = batch.phoneNumbers.length;
+      if (wasRcsCapable && batch.rcsCapableCount > 0) {
+        batch.rcsCapableCount -= 1;
       }
+      
+      await batch.save();
+      deleted = true;
+      break;
     }
 
     if (!deleted) {

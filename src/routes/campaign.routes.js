@@ -22,8 +22,10 @@ router.get('/check-capability/progress', CampaignController.getCapabilityProgres
 router.post('/batches/upload', CampaignController.uploadContactBatch);
 router.post('/batches/:batchId/process', CampaignController.processContactBatch);
 router.get('/batches/:campaignId', CampaignController.getContactBatches);
+router.get('/batches/:campaignId/with-data', CampaignController.getContactBatchesWithData);
 router.get('/batches/:batchId/details', CampaignController.getContactBatchById);
 router.get('/batches/:campaignId/contacts', CampaignController.getAllContactsFromBatches);
+router.get('/batches/:campaignId/reachable-users', CampaignController.getReachableUsers);
 router.delete('/batches/:campaignId/contacts/:phoneNumber', CampaignController.deleteContactFromBatch);
 
 // Send bulk messages (create and start campaign)
