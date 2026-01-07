@@ -666,6 +666,28 @@ class JioRCSService {
         // Store RCS message ID but keep status as 'processing'
         message.rcsMessageId = response.data?.messageId || messageId;
         await message.save();
+        
+        // CRITICAL: Also store Jio RCS messageId in ContactCampaignMessage for webhook lookup
+        const jioMessageId = response.data?.messageId;
+        if (jioMessageId && campaignId) {
+          try {
+            await Message.updateOne(
+              {
+                'campaigns.messageId': messageId,
+                'campaigns.campaignId': campaignId
+              },
+              {
+                $set: {
+                  'campaigns.$.rcsMessageId': jioMessageId,
+                  'campaigns.$.jioMessageId': jioMessageId
+                }
+              }
+            );
+            console.log(`[RCS] 💾 Stored Jio messageId ${jioMessageId} for webhook lookup`);
+          } catch (updateError) {
+            console.error(`[RCS] Failed to store Jio messageId:`, updateError.message);
+          }
+        }
         // console.log(`[RCS] 💾 Message kept in 'processing' status, awaiting MESSAGE_SENT webhook`);
       }
 
