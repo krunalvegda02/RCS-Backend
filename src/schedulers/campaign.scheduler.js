@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import Campaign from '../models/campaign.model.js';
-import ContactBatch from '../models/contactBatch.model.js';
+// import ContactBatch from '../models/contactBatch.model.js';
 
 // Delete archived campaigns at midnight (00:00) every day
 export const scheduleArchivedCampaignCleanup = () => {
@@ -18,10 +18,10 @@ export const scheduleArchivedCampaignCleanup = () => {
 
       const campaignIds = archivedCampaigns.map(c => c._id);
       
-      // Delete associated contact batches
-      const batchDeleteResult = await ContactBatch.deleteMany({ 
-        campaignId: { $in: campaignIds } 
-      });
+      // // Delete associated contact batches
+      // const batchDeleteResult = await ContactBatch.deleteMany({ 
+      //   campaignId: { $in: campaignIds } 
+      // });
       
       // Delete archived campaigns
       const campaignDeleteResult = await Campaign.deleteMany({ 

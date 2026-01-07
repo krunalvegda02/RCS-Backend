@@ -3,16 +3,12 @@ import mongoose from 'mongoose';
 
 const campaignSchema = new mongoose.Schema(
   {
-    // Basic Info
     name: {
       type: String,
       required: [true, 'Campaign name is required'],
       trim: true,
       maxlength: 100,
     },
-    description: String,
-
-    // Campaign Configuration
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -25,43 +21,16 @@ const campaignSchema = new mongoose.Schema(
       required: true,
     },
 
-    // Recipients & Content
-    recipients: {
-      type: [
-        {
-          phoneNumber: {
-            type: String,
-            required: true,
-            match: /^[0-9]{10,15}$/,
-          },
-          variables: mongoose.Schema.Types.Mixed, // For dynamic content
-          status: {
-            type: String,
-            enum: ['pending', 'queued', 'processing', 'sent', 'delivered', 'read', 'replied', 'failed', 'bounced'],
-            default: 'pending',
-          },
-          messageId: String,
-          sentAt: Date,
-          deliveredAt: Date,
-          readAt: Date,
-          failedAt: Date,
-          lastInteractionAt: Date,
-          errorMessage: String,
-          failureReason: String,
-        },
-      ],
-      default: [],
-    },
+
 
     // Campaign Status
     status: {
       type: String,
-      enum: ['draft', 'scheduled', 'running', 'paused', 'completed', 'failed'],
-      default: 'draft',
+      enum: ['pending', 'completed'],
+      default: 'pending',
       index: true,
     },
 
-   
     completedAt: Date,
 
     isArchived: {
@@ -80,18 +49,6 @@ const campaignSchema = new mongoose.Schema(
         type: Number,
         default: 0,
       },
-      delivered: {
-        type: Number,
-        default: 0,
-      },
-      read: {
-        type: Number,
-        default: 0,
-      },
-      replied: {
-        type: Number,
-        default: 0,
-      },
       failed: {
         type: Number,
         default: 0,
@@ -100,46 +57,10 @@ const campaignSchema = new mongoose.Schema(
         type: Number,
         default: 0,
       },
-      pending: {
-        type: Number,
-        default: 0,
-      },
-      processing: {
-        type: Number,
-        default: 0,
-      },
-      rcsCapable: {
-        type: Number,
-        default: 0, // Count of RCS capable recipients
-      },
-      successRate: {
-        type: Number,
-        default: 0,
-      },
-      failureRate: {
-        type: Number,
-        default: 0,
-      },
-      lastUpdatedAt: Date,
     },
 
-
-    // Queue Information
-    queueStatus: {
-      currentBatch: Number,
-      totalBatches: Number,
-      processedBatches: Number,
-      failedBatches: Number,
-    },
-
-    // Audit
-    createdBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-    },
-    updatedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
+    payload: {
+      type: String, 
     },
 
     // Budget/Rate Limit
@@ -203,7 +124,7 @@ campaignSchema.methods.updateStats = async function () {
           }
         }
       ]);
-      
+
       if (batchSummary.length > 0) {
         totalCount = batchSummary[0].totalContacts || 0;
         rcsCapableCount = batchSummary[0].totalRcsCapable || 0;
@@ -249,14 +170,14 @@ campaignSchema.methods.syncFromMessages = async function (force = false) {
         return { synced: false, reason: 'Recently synced', cached: true };
       }
     }
-    
+
     const Message = mongoose.model('Message');
     const messages = await Message.find({ campaignId: this._id }).lean();
-    
+
     if (messages.length === 0) {
       return { synced: false, reason: 'No messages found' };
     }
-    
+
     // Create a map of messageId to message status
     const messageStatusMap = new Map();
     messages.forEach(msg => {
@@ -269,25 +190,27 @@ campaignSchema.methods.syncFromMessages = async function (force = false) {
         errorMessage: msg.errorMessage
       });
     });
-    
+
     // Update recipients with message status
     let updated = 0;
-    this.recipients.forEach(recipient => {
-      if (recipient.messageId && messageStatusMap.has(recipient.messageId)) {
-        const msgData = messageStatusMap.get(recipient.messageId);
-        recipient.status = msgData.status;
-        recipient.sentAt = msgData.sentAt;
-        recipient.deliveredAt = msgData.deliveredAt;
-        recipient.readAt = msgData.readAt;
-        recipient.failedAt = msgData.failedAt;
-        recipient.errorMessage = msgData.errorMessage;
-        updated++;
-      }
-    });
-    
+    if (this.recipients && Array.isArray(this.recipients)) {
+      this.recipients.forEach(recipient => {
+        if (recipient.messageId && messageStatusMap.has(recipient.messageId)) {
+          const msgData = messageStatusMap.get(recipient.messageId);
+          recipient.status = msgData.status;
+          recipient.sentAt = msgData.sentAt;
+          recipient.deliveredAt = msgData.deliveredAt;
+          recipient.readAt = msgData.readAt;
+          recipient.failedAt = msgData.failedAt;
+          recipient.errorMessage = msgData.errorMessage;
+          updated++;
+        }
+      });
+    }
+
     await this.save();
     await this.updateStats();
-    
+
     return {
       synced: true,
       totalRecipients: this.recipients.length,
@@ -304,15 +227,15 @@ campaignSchema.methods.syncFromContactBatches = async function () {
   try {
     const ContactBatch = mongoose.model('ContactBatch');
     const batches = await ContactBatch.find({ campaignId: this._id });
-    
+
     if (batches.length === 0) {
       return { synced: false, reason: 'No contact batches found' };
     }
-    
+
     // Build recipients array from batches
     const recipients = [];
     let totalRcsCapable = 0;
-    
+
     for (const batch of batches) {
       if (batch.capabilityResults && batch.capabilityResults.length > 0) {
         for (const result of batch.capabilityResults) {
@@ -322,7 +245,7 @@ campaignSchema.methods.syncFromContactBatches = async function () {
             status: 'pending',
             isRcsCapable: result.isRcsCapable
           });
-          
+
           if (result.isRcsCapable === true) {
             totalRcsCapable++;
           }
@@ -338,15 +261,15 @@ campaignSchema.methods.syncFromContactBatches = async function () {
         }
       }
     }
-    
+
     // Update campaign with recipients from batches
     this.recipients = recipients;
     this.stats.total = recipients.length;
     this.stats.pending = recipients.length;
     this.stats.rcsCapable = totalRcsCapable;
-    
+
     await this.save();
-    
+
     return {
       synced: true,
       totalRecipients: recipients.length,
@@ -363,7 +286,7 @@ campaignSchema.methods.getAccurateRcsCount = async function () {
   // First try from recipients
   let rcsCapableCount = this.recipients.filter(r => r.isRcsCapable === true).length;
   let totalCount = this.recipients.length;
-  
+
   // If no recipients, check ContactBatch data
   if (this.recipients.length === 0) {
     try {
@@ -378,7 +301,7 @@ campaignSchema.methods.getAccurateRcsCount = async function () {
           }
         }
       ]);
-      
+
       if (batchSummary.length > 0) {
         totalCount = batchSummary[0].totalContacts || 0;
         rcsCapableCount = batchSummary[0].totalRcsCapable || 0;
@@ -387,7 +310,7 @@ campaignSchema.methods.getAccurateRcsCount = async function () {
       console.log('[Campaign] Could not access ContactBatch data:', error.message);
     }
   }
-  
+
   return {
     total: totalCount,
     rcsCapable: rcsCapableCount,

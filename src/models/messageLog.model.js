@@ -77,7 +77,16 @@ const messageLogSchema = new mongoose.Schema(
       phoneNumber: String,
       interactionType: String,
       suggestionResponse: mongoose.Schema.Types.Mixed,
+      rawPayload: mongoose.Schema.Types.Mixed, // Store full webhook payload
     },
+
+    // Processing Status
+    processed: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    processedAt: Date,
 
     // Cost Tracking
     cost: {
@@ -103,7 +112,7 @@ const messageLogSchema = new mongoose.Schema(
     },
   },
   {
-    timestamps: false, // Using custom timestamp field
+    timestamps: false, 
     collection: 'message_logs',
   }
 );
@@ -114,6 +123,7 @@ messageLogSchema.index({ messageId: 1, eventType: 1 });
 messageLogSchema.index({ campaignId: 1, status: 1 });
 messageLogSchema.index({ status: 1, timestamp: -1 });
 messageLogSchema.index({ eventType: 1, timestamp: -1 });
+messageLogSchema.index({ processed: 1, timestamp: 1 }); // For batch processing
 
 // TTL Index - auto-delete after 90 days
 messageLogSchema.index(
@@ -176,6 +186,14 @@ messageLogSchema.statics.logMessageSend = function(data) {
 };
 
 messageLogSchema.statics.logWebhookEvent = function(data) {
+  console.log('[MessageLog] Creating webhook log:', {
+    messageId: data.messageId,
+    campaignId: data.campaignId,
+    userId: data.userId,
+    eventType: data.eventType,
+    isUserInteraction: data.isUserInteraction
+  });
+  
   return this.create({
     messageId: data.messageId,
     campaignId: data.campaignId,
@@ -187,11 +205,38 @@ messageLogSchema.statics.logWebhookEvent = function(data) {
       phoneNumber: data.phoneNumber,
       interactionType: data.interactionType,
       suggestionResponse: data.suggestionResponse,
+      rawPayload: data.rawPayload, // Store full webhook data
     },
+    processed: false, // Mark as unprocessed
     metadata: {
       source: 'webhook',
     },
+  }).then(log => {
+    console.log('[MessageLog] ✅ Created log:', log._id);
+    return log;
+  }).catch(err => {
+    console.error('[MessageLog] ❌ Failed to create log:', err.message);
+    throw err;
   });
+};
+
+// Get unprocessed webhook logs for batch processing
+messageLogSchema.statics.getUnprocessedLogs = function(limit = 1000) {
+  return this.find({
+    processed: false,
+    eventType: { $in: ['status_update', 'user_interaction'] }
+  })
+  .sort({ timestamp: 1 })
+  .limit(limit)
+  .lean();
+};
+
+// Mark logs as processed
+messageLogSchema.statics.markAsProcessed = function(logIds) {
+  return this.updateMany(
+    { _id: { $in: logIds } },
+    { $set: { processed: true, processedAt: new Date() } }
+  );
 };
 
 // Bulk insert for high performance

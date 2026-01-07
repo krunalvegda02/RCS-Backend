@@ -18,6 +18,9 @@ router.use(requireUser);
 router.post('/check-capability', CampaignController.checkCapability);
 router.get('/check-capability/progress', CampaignController.getCapabilityProgress);
 
+// Create campaign entries (bulk insert)
+router.post('/create-entries', CampaignController.createCampaignEntries);
+
 // Batched contact upload
 router.post('/batches/upload', CampaignController.uploadContactBatch);
 router.post('/batches/:batchId/process', CampaignController.processContactBatch);

@@ -9,6 +9,7 @@ import uploadRoutes from './upload.routes.js';
 import dashboardRoutes from './dashboard.routes.js';
 import analyticsRoutes from './analytics.routes.js';
 import walletRequestRoutes from './walletRequest.routes.js';
+import contactCheckingRoutes from './contactChecking.routes.js';
 import * as CampaignController from '../controller/campaign.controller.js';
 import { authenticateToken, requireUser, requireAdmin } from '../middlewares/auth.middleware.js';
 
@@ -37,10 +38,10 @@ router.use('/uploads', uploadRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/analytics', analyticsRoutes);
 router.use('/wallet', walletRequestRoutes);
+router.use('/contact-checking', contactCheckingRoutes);
 
 router.use('/webhooks', webhookRoutes);
 
 
-// Remove the immediate response middleware since webhook handles it internally
-// router.post('/jio/rcs/webhooks', webhookReceiver);
+
 export default router;

@@ -108,54 +108,362 @@ class JioRCSService {
   /**
    * Checks RCS capability status without caching - for real-time status checks
    */
-  async checkCapabilityStatus(phoneNumber, userId) {
-    try {
-      const user = await User.findById(userId).select('+jioConfig.clientSecret');
-      if (!user || !user.jioConfig?.isConfigured) {
-        throw new Error('Jio RCS not configured for this user');
+  // async checkCapabilityStatus(phoneNumber, userId) {
+  //   try {
+  //     const user = await User.findById(userId).select('+jioConfig.clientSecret');
+  //     if (!user || !user.jioConfig?.isConfigured) {
+  //       throw new Error('Jio RCS not configured for this user');
+  //     }
+
+  //     const formattedPhone = this.formatPhone(phoneNumber);
+  //     const accessToken = await this.getAccessToken(userId);
+
+  //     const response = await axios.get(
+  //       `${JIOAPI_BASE_URL}/v1/messaging/users/${formattedPhone}/capabilities`,
+  //       {
+  //         headers: {
+  //           Authorization: `Bearer ${accessToken}`,
+  //           'Content-Type': 'application/json',
+  //         },
+  //         timeout: 10000,
+  //       }
+  //     );
+
+  //     const statusData = {
+  //       phoneNumber: formattedPhone,
+  //       isCapable: Array.isArray(response.data?.features) && response.data.features.length > 0,
+  //       features: response.data?.features || [],
+  //       capabilityToken: response.data?.capabilityToken || null,
+  //       checkedAt: new Date(),
+  //       statusCode: response.status
+  //     };
+
+  //     return statusData;
+  //   } catch (error) {
+  //     // Only log non-404 errors (404 = not RCS capable, which is normal)
+  //     if (error.response?.status !== 404) {
+  //       console.error(`[RCS] Capability check failed for ${phoneNumber}:`, error.message);
+  //     }
+
+  //     return {
+  //       phoneNumber: this.formatPhone(phoneNumber),
+  //       isCapable: false,
+  //       features: [],
+  //       capabilityToken: null,
+  //       checkedAt: new Date(),
+  //       error: error.message,
+  //       statusCode: error.response?.status || 500
+  //     };
+  //   }
+  // }
+
+
+
+  async checkCapabilityFast(phoneNumbers, accessToken) {
+    const MAX_API_LIMIT = 10000;   // Jio limit
+    const CONCURRENCY = 5;         // safe parallel calls
+
+    /* ---------- format numbers ---------- */
+    const formatted = phoneNumbers.map(p => {
+      const n = String(p).replace(/\D/g, "");
+      return n.length === 10 ? `+91${n}` : n.startsWith("91") ? `+${n}` : `+91${n}`;
+    });
+
+    const uniqueNumbers = [...new Set(formatted)];
+
+    /* ---------- chunking ---------- */
+    const chunks = [];
+    for (let i = 0; i < uniqueNumbers.length; i += MAX_API_LIMIT) {
+      chunks.push(uniqueNumbers.slice(i, i + MAX_API_LIMIT));
+    }
+
+    /* ---------- axios (KEEP ALIVE) ---------- */
+    const axiosInstance = axios.create({
+      timeout: 60000,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      httpAgent: new http.Agent({
+        keepAlive: true,
+        maxSockets: CONCURRENCY,
+      }),
+      httpsAgent: new https.Agent({
+        keepAlive: true,
+        maxSockets: CONCURRENCY,
+      }),
+    });
+
+    /* ---------- parallel worker pool ---------- */
+    let index = 0;
+    const capableSet = new Set();
+
+    const workers = Array(CONCURRENCY).fill(null).map(async () => {
+      while (index < chunks.length) {
+        const i = index++;
+        const res = await axiosInstance.post(
+          "https://api.businessmessaging.jio.com/v1/messaging/usersBatchGet",
+          { phoneNumbers: chunks[i] }
+        );
+
+        const reachable = res.data?.reachableUsers || [];
+        for (const num of reachable) capableSet.add(num);
       }
+    });
 
-      const formattedPhone = this.formatPhone(phoneNumber);
-      const accessToken = await this.getAccessToken(userId);
+    await Promise.all(workers);
 
-      const response = await axios.get(
-        `${JIOAPI_BASE_URL}/v1/messaging/users/${formattedPhone}/capabilities`,
-        {
+    /* ---------- return ONLY capable numbers ---------- */
+    return Array.from(capableSet);
+  }
+
+
+
+  async checkCapabilityBatch(phoneNumbers, userId, onProgress = null) {
+    const maxRetries = 3;
+    let attempt = 0;
+
+    while (attempt < maxRetries) {
+      try {
+        const user = await User.findById(userId).select('+jioConfig.clientSecret');
+        if (!user || !user.jioConfig?.isConfigured) {
+          throw new Error('Jio RCS not configured for this user');
+        }
+
+        const accessToken = await this.getAccessToken(userId);
+        // Ensure proper E.164 formatting with +91 prefix
+        const formattedNumbers = phoneNumbers.map(phone => {
+          const cleanPhone = String(phone).replace(/\D/g, '');
+          if (cleanPhone.length === 10) {
+            return `+91${cleanPhone}`;
+          } else if (cleanPhone.length === 12 && cleanPhone.startsWith('91')) {
+            return `+${cleanPhone}`;
+          }
+          return phone.startsWith('+') ? phone : `+91${cleanPhone}`;
+        });
+
+        // Remove duplicates
+        const uniqueNumbers = [...new Set(formattedNumbers)];
+        console.log(`[RCS] Batch checking ${uniqueNumbers.length} unique numbers (attempt ${attempt + 1}/${maxRetries})...`);
+
+        // Dynamic chunking - only split if batch exceeds API limit
+        const chunks = [];
+        const total = uniqueNumbers.length;
+        const maxApiLimit = 10000; // Jio API limit
+
+        if (total <= maxApiLimit) {
+          // Single chunk if within API limit
+          chunks.push(uniqueNumbers);
+        } else {
+          // Split into chunks only if exceeding API limit
+          for (let i = 0; i < total; i += maxApiLimit) {
+            const chunk = uniqueNumbers.slice(i, i + maxApiLimit);
+            chunks.push(chunk);
+          }
+        }
+
+        console.log(`[RCS] Split into ${chunks.length} chunks:`, chunks.map(c => c.length));
+
+        const allResults = [];
+        let totalRcsCapable = 0;
+        const realPhoneSet = new Set(uniqueNumbers);
+
+        // Create axios instance with better connection handling (reuse for all chunks)
+        const axiosInstance = axios.create({
+          timeout: 90000, // Increased timeout
           headers: {
             Authorization: `Bearer ${accessToken}`,
             'Content-Type': 'application/json',
+            'Connection': 'close', // Force connection close after request
+            'User-Agent': 'RCS-Service/1.0'
           },
-          timeout: 10000,
+          // Better connection management
+          httpAgent: new http.Agent({
+            keepAlive: false,
+            maxSockets: 1
+          }),
+          httpsAgent: new https.Agent({
+            keepAlive: false,
+            maxSockets: 1,
+            rejectUnauthorized: true
+          })
+        });
+
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk = chunks[i];
+          console.log(`[RCS] Processing chunk ${i + 1}/${chunks.length} with ${chunk.length} numbers`);
+
+          let chunkResponse;
+          let chunkAttempt = 0;
+          const maxChunkRetries = 2;
+
+          while (chunkAttempt < maxChunkRetries) {
+            try {
+              chunkResponse = await axiosInstance.post(
+                'https://api.businessmessaging.jio.com/v1/messaging/usersBatchGet',
+                { phoneNumbers: chunk }
+              );
+              break; // Success, exit retry loop
+            } catch (chunkError) {
+              chunkAttempt++;
+              console.error(`[RCS] Chunk ${i + 1} attempt ${chunkAttempt} failed:`, chunkError.code || chunkError.message);
+
+              if (chunkError.code === 'EPIPE' || chunkError.code === 'ECONNRESET' || chunkError.code === 'ETIMEDOUT') {
+                if (chunkAttempt < maxChunkRetries) {
+                  console.log(`[RCS] Retrying chunk ${i + 1} in 2 seconds...`);
+                  await this.sleep(2000);
+                  continue;
+                }
+              }
+              throw chunkError; // Re-throw if not retryable or max retries reached
+            }
+          }
+
+          const apiResponse = chunkResponse.data;
+          console.log(apiResponse);
+
+          // Directly push to database if campaignId is available
+          if (global.currentCampaignId && global.currentUserId) {
+            try {
+              // Fetch current batch to calculate cumulative RCS capable count
+              const currentBatch = await ContactBatch.findOne({
+                campaignId: global.currentCampaignId,
+                userId: global.currentUserId
+              });
+
+              // Count all RCS capable from existing chunks + current chunk
+              const allReachableUsers = new Set();
+              if (currentBatch?.apiResponse) {
+                currentBatch.apiResponse.forEach(chunk => {
+                  if (chunk.reachableUsers) {
+                    chunk.reachableUsers.forEach(phone => allReachableUsers.add(phone));
+                  }
+                });
+              }
+
+              // Add current chunk's reachable users
+              if (apiResponse?.reachableUsers) {
+                apiResponse.reachableUsers.forEach(phone => allReachableUsers.add(phone));
+              }
+
+              await ContactBatch.updateMany(
+                { campaignId: global.currentCampaignId, userId: global.currentUserId },
+                {
+                  $push: {
+                    apiResponse: {
+                      chunkNumber: i + 1,
+                      reachableUsers: apiResponse?.reachableUsers || [],
+                      totalRandomSampleUserCount: apiResponse?.totalRandomSampleUserCount || 0,
+                      reachableRandomSampleUserCount: apiResponse?.reachableRandomSampleUserCount || 0,
+                      processedAt: new Date()
+                    }
+                  },
+                  $set: {
+                    processedContacts: allResults.length,
+                    rcsCapableCount: allReachableUsers.size,
+                    status: i === chunks.length - 1 ? 'completed' : 'processing',
+                    processingCompletedAt: i === chunks.length - 1 ? new Date() : undefined
+                  }
+                },
+              );
+              console.log(`[RCS] ✅ Pushed API response for chunk ${i + 1}, Total RCS capable: ${allReachableUsers.size}/${allResults.length}`);
+            } catch (dbError) {
+              console.error(`[RCS] Failed to push API response to database:`, dbError.message);
+            }
+          }
+
+          const reachableUsers = apiResponse?.reachableUsers || [];
+
+          // Ensure reachableUsers is an array
+          const reachableUsersArray = Array.isArray(reachableUsers) ? reachableUsers : [];
+
+          const chunkRcsCapable = reachableUsersArray.length;
+          totalRcsCapable += chunkRcsCapable;
+
+          console.log(`[RCS] ✅ Found ${chunkRcsCapable} RCS-capable out of ${chunk.filter(p => realPhoneSet.has(p)).length} real numbers`);
+
+          const chunkResults = chunk.map(phone => ({
+            phoneNumber: phone,
+            isCapable: reachableUsersArray.includes(phone),
+            features: reachableUsersArray.includes(phone) ? ['RCS_MESSAGING'] : [],
+            capabilityToken: null,
+            checkedAt: new Date()
+          }));
+
+          allResults.push(...chunkResults);
+
+          // Call progress callback if provided
+          if (onProgress) {
+            onProgress({
+              chunk: i + 1,
+              totalChunks: chunks.length,
+              processed: allResults.length,
+              total: uniqueNumbers.length,
+              rcsCapable: totalRcsCapable,
+              chunkResults: chunkResults,
+              apiResponse: {
+                chunkNumber: i + 1,
+                reachableUsers: apiResponse?.reachableUsers || [],
+                totalRandomSampleUserCount: apiResponse?.totalRandomSampleUserCount || 0,
+                reachableRandomSampleUserCount: apiResponse?.reachableRandomSampleUserCount || 0,
+                processedAt: new Date()
+              }
+            });
+          }
+
+          // Add delay between chunks to prevent overwhelming the API
+          if (i < chunks.length - 1) {
+            await this.sleep(1000); // 1 second delay between chunks
+          }
         }
-      );
 
-      const statusData = {
-        phoneNumber: formattedPhone,
-        isCapable: Array.isArray(response.data?.features) && response.data.features.length > 0,
-        features: response.data?.features || [],
-        capabilityToken: response.data?.capabilityToken || null,
-        checkedAt: new Date(),
-        statusCode: response.status
-      };
+        // Map results back to original numbers (including duplicates)
+        const results = formattedNumbers.map(phone => {
+          const batchResult = allResults.find(r => r.phoneNumber === phone);
+          return {
+            phoneNumber: phone,
+            isCapable: batchResult?.isCapable || false,
+            cached: false,
+            features: batchResult?.features || [],
+            capabilityToken: batchResult?.capabilityToken || null
+          };
+        });
 
-      return statusData;
-    } catch (error) {
-      // Only log non-404 errors (404 = not RCS capable, which is normal)
-      if (error.response?.status !== 404) {
-        console.error(`[RCS] Capability check failed for ${phoneNumber}:`, error.message);
+        return results;
+
+      } catch (error) {
+        attempt++;
+        console.error(`[RCS] Batch capability check attempt ${attempt} failed:`, {
+          code: error.code,
+          message: error.message,
+          status: error.response?.status,
+          data: error.response?.data
+        });
+
+        // Check if this is a retryable error
+        const isRetryable = (
+          error.code === 'EPIPE' ||
+          error.code === 'ECONNRESET' ||
+          error.code === 'ETIMEDOUT' ||
+          error.code === 'ENOTFOUND' ||
+          error.code === 'EAI_AGAIN' ||
+          (error.response?.status >= 500 && error.response?.status < 600) ||
+          error.response?.status === 429
+        );
+
+        if (isRetryable && attempt < maxRetries) {
+          const backoffDelay = Math.min(1000 * Math.pow(2, attempt - 1), 10000); // Exponential backoff, max 10s
+          console.log(`[RCS] Retrying in ${backoffDelay}ms... (attempt ${attempt + 1}/${maxRetries})`);
+          await this.sleep(backoffDelay);
+          continue;
+        }
+
+        // If not retryable or max retries reached, throw the error
+        throw error;
       }
-
-      return {
-        phoneNumber: this.formatPhone(phoneNumber),
-        isCapable: false,
-        features: [],
-        capabilityToken: null,
-        checkedAt: new Date(),
-        error: error.message,
-        statusCode: error.response?.status || 500
-      };
     }
   }
+
 
   /**
    * Checks if a number is RCS capable. Caches result in Redis (24h).
@@ -798,7 +1106,7 @@ class JioRCSService {
     const MAX_BATCH_SIZE = 10000;
     const MIN_BATCH_SIZE = 500;
     const total = phoneNumbers.length;
-    
+
     const chunks = [];
     let remaining = total;
     let processed = 0;
@@ -809,10 +1117,10 @@ class JioRCSService {
         chunks.push(phoneNumbers.slice(processed));
         break;
       }
-      
+
       // Check if remaining after this chunk would be too small
       const afterThisChunk = remaining - MAX_BATCH_SIZE;
-      
+
       if (afterThisChunk > 0 && afterThisChunk < MIN_BATCH_SIZE) {
         // Adjust current chunk size to make last chunk >= 500
         const adjustedSize = MAX_BATCH_SIZE - (MIN_BATCH_SIZE - afterThisChunk);
@@ -833,10 +1141,10 @@ class JioRCSService {
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       console.log(`[RCS] Processing batch ${i + 1}/${chunks.length} with ${chunk.length} contacts`);
-      
+
       const chunkResults = await this.checkCapabilityBatch(chunk, userId);
       allResults.push(...chunkResults);
-      
+
       if (onProgress) {
         onProgress({
           chunk: i + 1,
@@ -846,7 +1154,7 @@ class JioRCSService {
           rcsCapable: allResults.filter(r => r.isCapable).length
         });
       }
-      
+
       // Small delay between batches
       if (i < chunks.length - 1) {
         await this.sleep(1000);
@@ -972,21 +1280,34 @@ class JioRCSService {
   }
 
   async checkCapabilitySequential(phoneNumbers, userId) {
+    console.log(`[RCS] Sequential checking ${phoneNumbers.length} numbers`);
+    const accessToken = await this.getAccessToken(userId);
     const results = [];
 
     for (const phone of phoneNumbers) {
       try {
-        const result = await this.checkCapabilityStatus(phone, userId);
+        const formattedPhone = this.formatPhone(phone);
+        const response = await axios.get(
+          `${JIOAPI_BASE_URL}/v1/messaging/users/${formattedPhone}/capabilities`,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'Content-Type': 'application/json',
+            },
+            timeout: 10000,
+          }
+        );
+
         results.push({
-          phoneNumber: phone,
-          isCapable: result.isCapable,
+          phoneNumber: formattedPhone,
+          isCapable: Array.isArray(response.data?.features) && response.data.features.length > 0,
           cached: false,
-          features: result.features,
-          capabilityToken: result.capabilityToken
+          features: response.data?.features || [],
+          capabilityToken: response.data?.capabilityToken || null
         });
       } catch (error) {
         results.push({
-          phoneNumber: phone,
+          phoneNumber: this.formatPhone(phone),
           isCapable: false,
           cached: false,
           features: [],
@@ -1104,16 +1425,16 @@ class JioRCSService {
 
           const apiResponse = chunkResponse.data;
           console.log(apiResponse);
-          
+
           // Directly push to database if campaignId is available
           if (global.currentCampaignId && global.currentUserId) {
             try {
               // Fetch current batch to calculate cumulative RCS capable count
-              const currentBatch = await ContactBatch.findOne({ 
-                campaignId: global.currentCampaignId, 
-                userId: global.currentUserId 
+              const currentBatch = await ContactBatch.findOne({
+                campaignId: global.currentCampaignId,
+                userId: global.currentUserId
               });
-              
+
               // Count all RCS capable from existing chunks + current chunk
               const allReachableUsers = new Set();
               if (currentBatch?.apiResponse) {
@@ -1123,12 +1444,12 @@ class JioRCSService {
                   }
                 });
               }
-              
+
               // Add current chunk's reachable users
               if (apiResponse?.reachableUsers) {
                 apiResponse.reachableUsers.forEach(phone => allReachableUsers.add(phone));
               }
-              
+
               await ContactBatch.updateMany(
                 { campaignId: global.currentCampaignId, userId: global.currentUserId },
                 {
@@ -1154,12 +1475,12 @@ class JioRCSService {
               console.error(`[RCS] Failed to push API response to database:`, dbError.message);
             }
           }
-          
+
           const reachableUsers = apiResponse?.reachableUsers || [];
 
           // Ensure reachableUsers is an array
           const reachableUsersArray = Array.isArray(reachableUsers) ? reachableUsers : [];
-   
+
           const chunkRcsCapable = reachableUsersArray.length;
           totalRcsCapable += chunkRcsCapable;
 

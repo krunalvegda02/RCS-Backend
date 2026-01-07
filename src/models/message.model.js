@@ -1,76 +1,49 @@
+import mongoose from "mongoose";
 
-import mongoose from 'mongoose';
-
-const messageSchema = new mongoose.Schema(
+const campaignStateSchema = new mongoose.Schema(
   {
-    // Message Identification
+    campaignId: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: true,
+    },
+
+    templateId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Template",
+      required: true,
+    },
+
+    /* -------- MESSAGE IDENTIFIERS (PER CAMPAIGN) -------- */
     messageId: {
       type: String,
       required: true,
-      unique: true,
-      index: true,
-    },
-    campaignId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Campaign',
-      index: true,
     },
 
-    // Sender & Recipient
-    userId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      required: true,
-      index: true,
-    },
-    recipientPhoneNumber: {
-      type: String,
-      required: true,
-      match: /^[0-9]{10,15}$/,
-      index: true,
-    },
-
-    // Template Information
-    templateId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Template',
-      required: true,
-    },
-    templateType: {
-      type: String,
-      enum: ['richCard', 'carousel', 'textWithAction', 'plainText'],
-      required: true,
-    },
-
-    // Message Content
-    content: mongoose.Schema.Types.Mixed,
-    variables: mongoose.Schema.Types.Mixed,
-
-    // Jio RCS Specific
-    assistantId: String,
     rcsMessageId: String,
-    jioMessageId: String, // Store Jio's webhook messageId
-    externalMessageId: String, // Generic external ID field
+    jioMessageId: {
+      type: String,
+    },
+    externalMessageId: String,
+    assistantId: String,
 
-    // Status Tracking
+    /* -------- STATUS (PER CAMPAIGN) -------- */
     status: {
       type: String,
       enum: [
-        'draft',
-        'queued',
-        'processing',
-        'sent',
-        'delivered',
-        'failed',
-        'bounced',
-        'read',
-        'replied',
+        "draft",
+        "queued",
+        "processing",
+        "sent",
+        "delivered",
+        "failed",
+        "bounced",
+        "read",
+        "replied",
       ],
-      default: 'draft',
-      index: true,
+      default: "draft",
     },
 
-   
+    /* -------- TIMESTAMPS -------- */
     queuedAt: Date,
     sentAt: Date,
     deliveredAt: Date,
@@ -78,259 +51,74 @@ const messageSchema = new mongoose.Schema(
     failedAt: Date,
     lastWebhookAt: Date,
 
-    // Error Handling
+    /* -------- ERROR -------- */
     errorCode: String,
     errorMessage: String,
-    retryCount: {
-      type: Number,
-      default: 0,
-    },
-    nextRetryAt: Date,
-    
-    // Engagement Tracking
+
+    /* -------- ENGAGEMENT -------- */
     clickedAt: Date,
     clickedAction: String,
     clickedUri: String,
     userText: String,
     suggestionResponse: mongoose.Schema.Types.Mixed,
-    userClickCount: {
-      type: Number,
-      default: 0,
-    },
-    userReplyCount: {
-      type: Number,
-      default: 0,
-    },
+
+    userClickCount: { type: Number, default: 0 },
+    userReplyCount: { type: Number, default: 0 },
     lastInteractionAt: Date,
 
-    // Metadata
+    /* -------- COST -------- */
+    cost: Number,
+  },
+  { _id: false }
+);
+
+const contactCampaignMessageSchema = new mongoose.Schema(
+  {
+    /* ---------------- CONTACT ---------------- */
+    recipientPhoneNumber: {
+      type: String,
+      required: true,
+      unique: true,
+      index: true,
+      match: /^[0-9]{10,15}$/,
+    },
+
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+
+    /* ---------------- CAMPAIGN IDS ---------------- */
+    campaignIds: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Campaign"
+    }],
+
+    /* ---------------- CAMPAIGNS ARRAY ---------------- */
+    campaigns: [campaignStateSchema],
+
+    /* ---------------- CONTACT METADATA ---------------- */
     deviceType: String,
     ipAddress: String,
     userAgent: String,
-
-    // Cost
-    cost: Number,
-
-    // Audit
-    notes: String,
   },
   {
     timestamps: true,
-    collection: 'messages',
+    collection: "contact_campaign_messages",
   }
 );
 
-// Indexes for high-volume queries
-messageSchema.index({ userId: 1, createdAt: -1 });
-messageSchema.index({ status: 1, createdAt: -1 });
-messageSchema.index({ campaignId: 1, status: 1 });
-messageSchema.index({ recipientPhoneNumber: 1, sentAt: -1 });
-messageSchema.index({ userId: 1, status: 1, createdAt: -1 });
-// Webhook lookup indexes
-messageSchema.index({ jioMessageId: 1 });
-messageSchema.index({ externalMessageId: 1 });
-messageSchema.index({ rcsMessageId: 1 });
+// Indexes
+contactCampaignMessageSchema.index({ userId: 1, createdAt: -1 });
+contactCampaignMessageSchema.index({ "campaigns.campaignId": 1 });
+contactCampaignMessageSchema.index({ "campaigns.status": 1 });
+contactCampaignMessageSchema.index({ "campaigns.messageId": 1 });
+contactCampaignMessageSchema.index({ recipientPhoneNumber: 1, userId: 1 });
 
-// TTL Index for automatic cleanup of old messages (optional)
-messageSchema.index(
-  { createdAt: 1 },
-  { expireAfterSeconds: 7776000 } // 90 days
+export default mongoose.model(
+  "ContactCampaignMessage",
+  contactCampaignMessageSchema
 );
 
-// Virtual for quick status check
-messageSchema.virtual('isSent').get(function () {
-  return ['sent', 'delivered', 'read', 'replied'].includes(this.status);
-});
-
-messageSchema.virtual('isFailed').get(function () {
-  return ['failed', 'bounced'].includes(this.status);
-});
-
-// Methods
-messageSchema.methods.markAsSent = async function (rcsMessageId) {
-  // This method is now only called by webhook, not by sendMessage
-  this.status = 'sent';
-  this.sentAt = new Date();
-  if (rcsMessageId) {
-    this.rcsMessageId = rcsMessageId;
-  }
-  await this.save();
-};
-
-messageSchema.methods.markAsDelivered = async function () {
-  this.status = 'delivered';
-  this.deliveredAt = new Date();
-  await this.save();
-};
-
-messageSchema.methods.markAsRead = async function () {
-  this.status = 'read';
-  this.readAt = new Date();
-  await this.save();
-};
-
-messageSchema.methods.markAsFailed = async function (errorCode, errorMessage) {
-  this.status = 'failed';
-  this.failedAt = new Date();
-  this.errorCode = errorCode;
-  this.errorMessage = errorMessage;
-  await this.save();
-};
-
-messageSchema.methods.scheduleRetry = async function (delayMs = 60000) {
-  this.retryCount += 1;
-  this.nextRetryAt = new Date(Date.now() + delayMs);
-  await this.save();
-};
-
-messageSchema.methods.recordClick = async function (action, uri) {
-  this.status = 'replied';
-  this.clickedAt = new Date();
-  this.clickedAction = action;
-  this.clickedUri = uri;
-  await this.save();
-};
-
-// Statics
-messageSchema.statics.findByMessageId = function (messageId) {
-  return this.findOne({ messageId });
-};
-
-messageSchema.statics.findPendingMessages = function (limit = 1000) {
-  return this.find({
-    status: { $in: ['queued', 'processing'] },
-    $or: [
-      { nextRetryAt: { $lte: new Date() } },
-      { nextRetryAt: { $exists: false } },
-    ],
-  })
-    .limit(limit)
-    .sort({ createdAt: 1 });
-};
-
-messageSchema.statics.getDailyStats = async function (userId, date) {
-  const startOfDay = new Date(date);
-  startOfDay.setHours(0, 0, 0, 0);
-
-  const endOfDay = new Date(date);
-  endOfDay.setHours(23, 59, 59, 999);
-
-  return this.aggregate([
-    {
-      $match: {
-        userId: new mongoose.Types.ObjectId(userId),
-        createdAt: { $gte: startOfDay, $lte: endOfDay },
-      },
-    },
-    {
-      $group: {
-        _id: '$status',
-        count: { $sum: 1 },
-      },
-    },
-  ]);
-};
-
-// Post-save middleware to update campaign when message status changes
-messageSchema.post('save', async function(doc) {
-  try {
-    console.log(`[Message Hook] save triggered for ${doc.messageId}, status: ${doc.status}, campaignId: ${doc.campaignId}`);
-    if (doc.campaignId) {
-      const Campaign = mongoose.model('Campaign');
-      const campaign = await Campaign.findById(doc.campaignId);
-      if (campaign) {
-        const recipient = campaign.recipients.find(r => r.messageId === doc.messageId);
-        if (recipient) {
-          console.log(`[Message Hook] Found recipient ${recipient.phoneNumber}, current status: ${recipient.status}, new status: ${doc.status}`);
-          if (recipient.status !== doc.status) {
-            recipient.status = doc.status;
-            recipient.sentAt = doc.sentAt;
-            recipient.deliveredAt = doc.deliveredAt;
-            recipient.readAt = doc.readAt;
-            recipient.failedAt = doc.failedAt;
-            recipient.errorMessage = doc.errorMessage;
-            await campaign.save();
-            await campaign.updateStats();
-            console.log(`[Message Hook] ✅ Updated campaign recipient ${recipient.phoneNumber}: ${doc.status}`);
-          }
-        } else {
-          console.log(`[Message Hook] ⚠️ Recipient not found for messageId: ${doc.messageId}`);
-        }
-      }
-    }
-  } catch (error) {
-    console.error('[Message Hook] Error updating campaign from save:', error);
-  }
-});
-
-// Post-update middleware for findOneAndUpdate
-messageSchema.post('findOneAndUpdate', async function(doc) {
-  try {
-    console.log(`[Message Hook] findOneAndUpdate triggered for ${doc?.messageId}, status: ${doc?.status}, campaignId: ${doc?.campaignId}`);
-    if (doc && doc.campaignId) {
-      const Campaign = mongoose.model('Campaign');
-      const campaign = await Campaign.findById(doc.campaignId);
-      if (campaign) {
-        const recipient = campaign.recipients.find(r => r.messageId === doc.messageId);
-        if (recipient) {
-          console.log(`[Message Hook] Found recipient ${recipient.phoneNumber}, current status: ${recipient.status}, new status: ${doc.status}`);
-          if (recipient.status !== doc.status) {
-            recipient.status = doc.status;
-            recipient.sentAt = doc.sentAt;
-            recipient.deliveredAt = doc.deliveredAt;
-            recipient.readAt = doc.readAt;
-            recipient.failedAt = doc.failedAt;
-            recipient.errorMessage = doc.errorMessage;
-            await campaign.save();
-            await campaign.updateStats();
-            console.log(`[Message Hook] ✅ Updated campaign recipient ${recipient.phoneNumber}: ${doc.status}`);
-          }
-        } else {
-          console.log(`[Message Hook] ⚠️ Recipient not found for messageId: ${doc.messageId}`);
-        }
-      }
-    }
-  } catch (error) {
-    console.error('[Message Hook] Error updating campaign from findOneAndUpdate:', error);
-  }
-});
-
-// Post-update middleware for updateOne
-messageSchema.post('updateOne', async function(result) {
-  try {
-    const filter = this.getFilter();
-    console.log(`[Message Hook] updateOne triggered with filter:`, filter);
-    if (filter.messageId) {
-      const Message = mongoose.model('Message');
-      const doc = await Message.findOne(filter).lean();
-      if (doc && doc.campaignId) {
-        console.log(`[Message Hook] Found message ${doc.messageId}, status: ${doc.status}, campaignId: ${doc.campaignId}`);
-        const Campaign = mongoose.model('Campaign');
-        const campaign = await Campaign.findById(doc.campaignId);
-        if (campaign) {
-          const recipient = campaign.recipients.find(r => r.messageId === doc.messageId);
-          if (recipient) {
-            console.log(`[Message Hook] Found recipient ${recipient.phoneNumber}, current status: ${recipient.status}, new status: ${doc.status}`);
-            if (recipient.status !== doc.status) {
-              recipient.status = doc.status;
-              recipient.sentAt = doc.sentAt;
-              recipient.deliveredAt = doc.deliveredAt;
-              recipient.readAt = doc.readAt;
-              recipient.failedAt = doc.failedAt;
-              recipient.errorMessage = doc.errorMessage;
-              await campaign.save();
-              await campaign.updateStats();
-              console.log(`[Message Hook] ✅ Updated campaign recipient ${recipient.phoneNumber}: ${doc.status}`);
-            }
-          } else {
-            console.log(`[Message Hook] ⚠️ Recipient not found for messageId: ${doc.messageId}`);
-          }
-        }
-      }
-    }
-  } catch (error) {
-    console.error('[Message Hook] Error updating campaign from updateOne:', error);
-  }
-});
-
-export default mongoose.model('Message', messageSchema);

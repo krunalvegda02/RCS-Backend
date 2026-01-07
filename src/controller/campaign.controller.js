@@ -15,78 +15,40 @@ export const checkCapability = async (req, res) => {
       });
     }
 
-    console.log(`[Campaign] Checking capability for ${phoneNumbers.length} numbers (countOnly: ${countOnly}, streaming: ${streaming})`);
+    console.log(`\n========== CAPABILITY CHECK START ==========`);
+    console.log(`[Campaign] Checking capability for ${phoneNumbers.length} numbers`);
+    console.log(`[Campaign] Sample numbers:`, phoneNumbers.slice(0, 5));
     
-    // Check capability with progress callback that stores in global map
-    if (!global.capabilityProgress) global.capabilityProgress = new Map();
+    let results;
+    let apiUsed;
     
-    const progressKey = `${userId}_${Date.now()}`;
-    global.capabilityProgress.set(progressKey, { chunk: 0, total: phoneNumbers.length, rcsCapable: 0 });
-    
-    // Real-time batch update callback
-    const ContactBatch = campaignId ? (await import('../models/contactBatch.model.js')).default : null;
-    
-    // Mark all batches as processing at start
-    if (campaignId && ContactBatch) {
-      await ContactBatch.updateMany(
-        { campaignId, userId, status: 'pending' },
-        { $set: { status: 'processing' } }
-      );
+    // Use sequential API for < 500, batch API for >= 500
+    if (phoneNumbers.length < 500) {
+      console.log(`[Campaign] Using sequential API for ${phoneNumbers.length} numbers`);
+      results = await jioRCSService.checkCapabilitySequential(phoneNumbers, userId);
+      apiUsed = 'sequential';
+    } else {
+      console.log(`[Campaign] Using batch API for ${phoneNumbers.length} numbers`);
+      const accessToken = await jioRCSService.getAccessToken(userId);
+      const capableNumbers = await jioRCSService.checkCapabilityFast(phoneNumbers, accessToken);
       
-      // Set global variables for direct database access
-      global.currentCampaignId = campaignId;
-      global.currentUserId = userId;
-    }
-    
-    let allReachableUsers = [];
-    
-    const results = await jioRCSService.checkCapabilitySmart(phoneNumbers, userId, campaignId, null, async (progress) => {
-      global.capabilityProgress.set(progressKey, progress);
-      
-      // Accumulate reachable users from all chunks
-      if (progress.apiResponse?.reachableUsers) {
-        allReachableUsers = [...allReachableUsers, ...progress.apiResponse.reachableUsers];
-      }
-    });
-    
-    // For sequential API calls (< 500 contacts), manually save results
-    if (campaignId && ContactBatch && phoneNumbers.length < 500) {
-      const rcsCapable = results.filter(r => r.isCapable).length;
-      
-      await ContactBatch.updateMany(
-        { campaignId, userId },
-        {
-          $set: {
-            capabilityResults: results,
-            processedContacts: phoneNumbers.length,
-            rcsCapableCount: rcsCapable,
-            status: 'completed',
-            processingCompletedAt: new Date()
-          }
-        }
-      );
-      
-      console.log(`[Campaign] Sequential API: Saved ${results.length} results, ${rcsCapable} RCS capable`);
-    }
-    
-    global.capabilityProgress.delete(progressKey);
-    
-    // Clean up global variables
-    if (global.currentCampaignId) {
-      delete global.currentCampaignId;
-      delete global.currentUserId;
+      const capableSet = new Set(capableNumbers);
+      results = phoneNumbers.map(phone => {
+        const formatted = phone.startsWith('+') ? phone : `+91${phone.replace(/\D/g, '')}`;
+        return {
+          phoneNumber: formatted,
+          isCapable: capableSet.has(formatted),
+          features: capableSet.has(formatted) ? ['RCS_MESSAGING'] : [],
+          capabilityToken: null,
+          checkedAt: new Date()
+        };
+      });
+      apiUsed = 'batch';
     }
     
     const rcsCapable = results.filter(r => r.isCapable).length;
-    console.log(`[Campaign] ✅ Capability check complete: ${rcsCapable} RCS-capable out of ${phoneNumbers.length}`);
-    
-    // Final batch update to ensure all are marked as completed
-    if (campaignId && ContactBatch) {
-      await ContactBatch.updateMany(
-        { campaignId, userId },
-        { $set: { status: 'completed' } }
-      );
-    }
+    const notCapable = results.filter(r => !r.isCapable).length;
+    console.log(`[Campaign] ✅ Check complete: ${rcsCapable} RCS-capable, ${notCapable} not capable out of ${phoneNumbers.length}`);
     
     const response = {
       success: true,
@@ -94,10 +56,13 @@ export const checkCapability = async (req, res) => {
       summary: {
         total: phoneNumbers.length,
         rcsCapable: rcsCapable,
-        notCapable: results.filter(r => !r.isCapable).length,
-        apiUsed: phoneNumbers.length >= 500 ? 'batch' : 'sequential'
+        notCapable: notCapable,
+        apiUsed: apiUsed
       },
     };
+    
+    console.log(`[Campaign] API Response Summary:`, response.summary);
+    console.log(`========== CAPABILITY CHECK END ==========\n`);
     
     return res.json(response);
   } catch (error) {
@@ -108,6 +73,123 @@ export const checkCapability = async (req, res) => {
         message: error.message,
       });
     }
+  }
+};
+
+// Create campaign entries using insertMany (bulk insert)
+export const createCampaignEntries = async (req, res) => {
+  try {
+    const { campaignId, templateId, phoneNumbers } = req.body;
+    const userId = req.user._id;
+
+    if (!campaignId || !templateId) {
+      return res.status(400).json({
+        success: false,
+        message: 'campaignId and templateId are required',
+      });
+    }
+
+    if (!Array.isArray(phoneNumbers) || phoneNumbers.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone numbers array is required',
+      });
+    }
+
+    console.log(`\n========== CREATE CAMPAIGN ENTRIES START ==========`);
+    console.log(`[Campaign] Creating entries for ${phoneNumbers.length} contacts`);
+
+    // Get template to build payload
+    const template = await Template.findById(templateId).lean();
+    if (!template) {
+      return res.status(404).json({
+        success: false,
+        message: 'Template not found',
+      });
+    }
+
+    // Build and save payload to campaign
+    const samplePayload = jioRCSService.buildRCSPayload(
+      template.templateType,
+      template.content,
+      {},
+      null
+    );
+
+    await Campaign.findByIdAndUpdate(campaignId, {
+      payload: JSON.stringify(samplePayload)
+    });
+
+    const ContactCampaignMessage = (await import('../models/message.model.js')).default;
+    const { v4: uuidv4 } = await import('uuid');
+
+    // Process in chunks of 1000 for better performance
+    const CHUNK_SIZE = 1000;
+    let totalInserted = 0;
+    let totalModified = 0;
+
+    for (let i = 0; i < phoneNumbers.length; i += CHUNK_SIZE) {
+      const chunk = phoneNumbers.slice(i, i + CHUNK_SIZE);
+      
+      const bulkOps = chunk.map(phone => {
+        const cleanPhone = phone.replace(/^\+?91/, '').replace(/\D/g, '');
+        const messageId = uuidv4();
+
+        return {
+          updateOne: {
+            filter: { recipientPhoneNumber: cleanPhone, userId },
+            update: {
+              $setOnInsert: {
+                recipientPhoneNumber: cleanPhone,
+                userId
+              },
+              $addToSet: {
+                campaignIds: campaignId
+              },
+              $push: {
+                campaigns: {
+                  campaignId,
+                  templateId,
+                  messageId,
+                  status: 'draft',
+                  queuedAt: new Date()
+                }
+              }
+            },
+            upsert: true
+          }
+        };
+      });
+
+      const result = await ContactCampaignMessage.bulkWrite(bulkOps, { 
+        ordered: false,
+        writeConcern: { w: 1, j: false }
+      });
+
+      totalInserted += result.upsertedCount || 0;
+      totalModified += result.modifiedCount || 0;
+      
+      console.log(`[Campaign] Processed chunk ${Math.floor(i / CHUNK_SIZE) + 1}: ${chunk.length} contacts`);
+    }
+
+    console.log(`[Campaign] ✅ Bulk insert complete: ${totalInserted} inserted, ${totalModified} modified`);
+    console.log(`========== CREATE CAMPAIGN ENTRIES END ==========\n`);
+
+    res.json({
+      success: true,
+      message: `Campaign entries created for ${phoneNumbers.length} contacts`,
+      data: {
+        total: phoneNumbers.length,
+        inserted: totalInserted,
+        modified: totalModified
+      }
+    });
+  } catch (error) {
+    console.error('[Campaign] Create entries error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 };
 
@@ -171,9 +253,8 @@ export const createSimple = async (req, res) => {
       name,
       userId: requestUserId,
       templateId,
-      status: 'running', // Auto-start campaigns
-      startedAt: new Date(),
-      recipients: [], // Will be populated when contacts are uploaded
+      status: 'pending',
+      recipients: [],
       stats: {
         total: totalRecipients || 0,
         pending: totalRecipients || 0,
