@@ -845,25 +845,16 @@ export const getUserCampaignReports = async (req, res) => {
     // Get total count with filters
     const total = await Campaign.countDocuments(query);
 
-    // Get paginated campaigns
+    // Get paginated campaigns with lean() for faster queries
     const campaigns = await Campaign.find(query)
       .populate('templateId', 'name templateType')
       .sort({ createdAt: sortOrder })
       .limit(limit)
       .skip((page - 1) * limit)
-      .select('name description status stats estimatedCost actualCost createdAt completedAt');
+      .select('name description status stats estimatedCost actualCost createdAt completedAt')
+      .lean();
 
     console.log(`[Campaign] Found ${campaigns.length} campaigns for user ${userId}`);
-
-    // Wait for sync (cached for 10s) and collect results
-    const syncResults = await Promise.all(campaigns.map(c => c.syncFromMessages()));
-    
-    // Debug: Log sync results
-    console.log('[Campaign] Sync results:', syncResults.map((r, i) => ({
-      campaign: campaigns[i].name,
-      synced: r.synced,
-      stats: campaigns[i].stats
-    })));
 
     // Get ContactCampaignMessage model to aggregate interaction counts
     const ContactCampaignMessage = (await import('../models/message.model.js')).default;
@@ -901,16 +892,13 @@ export const getUserCampaignReports = async (req, res) => {
 
     // Transform campaigns to match frontend expectations
     const reports = campaigns.map(campaign => {
-      const campaignObj = campaign.toObject();
       const interactions = interactionMap[campaign._id.toString()] || { interactions: 0, replies: 0 };
+      const stats = campaign.stats || {};
       
-      // Ensure all stats are numbers, not undefined
-      const stats = campaignObj.stats || {};
-      
-      const report = {
-        _id: campaignObj._id,
-        CampaignName: campaignObj.name,
-        type: campaignObj.templateId?.templateType || 'RCS',
+      return {
+        _id: campaign._id,
+        CampaignName: campaign.name,
+        type: campaign.templateId?.templateType || 'RCS',
         cost: stats.total || 0,
         successCount: stats.sent || 0,
         failedCount: stats.failed || 0,
@@ -918,11 +906,9 @@ export const getUserCampaignReports = async (req, res) => {
         totalRead: stats.read || 0,
         totalReplied: stats.replied || 0,
         userClickCount: interactions.interactions || 0,
-        status: campaignObj.status,
-        createdAt: campaignObj.createdAt
+        status: campaign.status,
+        createdAt: campaign.createdAt
       };
-      
-      return report;
     });
     
     console.log('[Campaign] Sample report:', reports[0]);
