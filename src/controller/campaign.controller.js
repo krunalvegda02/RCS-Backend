@@ -18,10 +18,10 @@ export const checkCapability = async (req, res) => {
     console.log(`\n========== CAPABILITY CHECK START ==========`);
     console.log(`[Campaign] Checking capability for ${phoneNumbers.length} numbers`);
     console.log(`[Campaign] Sample numbers:`, phoneNumbers.slice(0, 5));
-    
+
     let results;
     let apiUsed;
-    
+
     // Use sequential API for < 500, batch API for >= 500
     if (phoneNumbers.length < 500) {
       console.log(`[Campaign] Using sequential API for ${phoneNumbers.length} numbers`);
@@ -31,7 +31,7 @@ export const checkCapability = async (req, res) => {
       console.log(`[Campaign] Using batch API for ${phoneNumbers.length} numbers`);
       const accessToken = await jioRCSService.getAccessToken(userId);
       const capableNumbers = await jioRCSService.checkCapabilityFast(phoneNumbers, accessToken);
-      
+
       const capableSet = new Set(capableNumbers);
       results = phoneNumbers.map(phone => {
         const formatted = phone.startsWith('+') ? phone : `+91${phone.replace(/\D/g, '')}`;
@@ -45,11 +45,11 @@ export const checkCapability = async (req, res) => {
       });
       apiUsed = 'batch';
     }
-    
+
     const rcsCapable = results.filter(r => r.isCapable).length;
     const notCapable = results.filter(r => !r.isCapable).length;
     console.log(`[Campaign] ✅ Check complete: ${rcsCapable} RCS-capable, ${notCapable} not capable out of ${phoneNumbers.length}`);
-    
+
     const response = {
       success: true,
       data: countOnly ? [] : results,
@@ -60,10 +60,10 @@ export const checkCapability = async (req, res) => {
         apiUsed: apiUsed
       },
     };
-    
+
     console.log(`[Campaign] API Response Summary:`, response.summary);
     console.log(`========== CAPABILITY CHECK END ==========\n`);
-    
+
     return res.json(response);
   } catch (error) {
     console.error('[Campaign] Capability check error:', error);
@@ -83,32 +83,20 @@ export const createCampaignEntries = async (req, res) => {
     const userId = req.user._id;
 
     if (!campaignId || !templateId) {
-      return res.status(400).json({
-        success: false,
-        message: 'campaignId and templateId are required',
-      });
+      return res.status(400).json({ success: false, message: "campaignId and templateId are required" });
     }
 
     if (!Array.isArray(phoneNumbers) || phoneNumbers.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Phone numbers array is required',
-      });
+      return res.status(400).json({ success: false, message: "Phone numbers array is required" });
     }
 
     console.log(`\n========== CREATE CAMPAIGN ENTRIES START ==========`);
-    console.log(`[Campaign] Creating entries for ${phoneNumbers.length} contacts`);
 
-    // Get template to build payload
     const template = await Template.findById(templateId).lean();
     if (!template) {
-      return res.status(404).json({
-        success: false,
-        message: 'Template not found',
-      });
+      return res.status(404).json({ success: false, message: "Template not found" });
     }
 
-    // Build and save payload to campaign
     const samplePayload = jioRCSService.buildRCSPayload(
       template.templateType,
       template.content,
@@ -117,86 +105,99 @@ export const createCampaignEntries = async (req, res) => {
     );
 
     await Campaign.findByIdAndUpdate(campaignId, {
-      payload: JSON.stringify(samplePayload)
+      payload: JSON.stringify(samplePayload),
     });
 
-    const ContactCampaignMessage = (await import('../models/message.model.js')).default;
-    const { v4: uuidv4 } = await import('uuid');
+    const ContactCampaignMessage = (await import("../models/message.model.js")).default;
+    const { v4: uuidv4 } = await import("uuid");
 
-    // Process in chunks of 1000 for better performance
+    /* ================= CONFIG ================= */
     const CHUNK_SIZE = 1000;
-    let totalInserted = 0;
-    let totalModified = 0;
+    const CONCURRENCY = 4; // ⭐ safe parallel writes
+    /* ========================================== */
 
+    // Split chunks
+    const chunks = [];
     for (let i = 0; i < phoneNumbers.length; i += CHUNK_SIZE) {
-      const chunk = phoneNumbers.slice(i, i + CHUNK_SIZE);
-      
-      const bulkOps = chunk.map(phone => {
-        const cleanPhone = phone.replace(/^\+?91/, '').replace(/\D/g, '');
-        const messageId = uuidv4();
-
-        return {
-          updateOne: {
-            filter: { recipientPhoneNumber: cleanPhone, userId },
-            update: {
-              $setOnInsert: {
-                recipientPhoneNumber: cleanPhone,
-                userId
-              },
-              $addToSet: {
-                campaignIds: campaignId
-              },
-              $push: {
-                campaigns: {
-                  campaignId,
-                  templateId,
-                  messageId,
-                  status: 'draft',
-                  queuedAt: new Date()
-                }
-              }
-            },
-            upsert: true
-          }
-        };
-      });
-
-      const result = await ContactCampaignMessage.bulkWrite(bulkOps, { 
-        ordered: false,
-        writeConcern: { w: 1, j: false }
-      });
-
-      totalInserted += result.upsertedCount || 0;
-      totalModified += result.modifiedCount || 0;
-      
-      console.log(`[Campaign] Processed chunk ${Math.floor(i / CHUNK_SIZE) + 1}: ${chunk.length} contacts`);
+      chunks.push(phoneNumbers.slice(i, i + CHUNK_SIZE));
     }
 
-    console.log(`[Campaign] ✅ Bulk insert complete: ${totalInserted} inserted, ${totalModified} modified`);
+    let totalInserted = 0;
+    let totalModified = 0;
+    let index = 0;
+
+    console.log(`[Campaign] Total chunks: ${chunks.length}`);
+
+    // Worker pool
+    const workers = Array(CONCURRENCY).fill(null).map(async () => {
+      while (index < chunks.length) {
+        const chunkIndex = index++;
+        const chunk = chunks[chunkIndex];
+
+        const bulkOps = chunk.map(phone => {
+          const cleanPhone = phone.replace(/^\+?91/, "").replace(/\D/g, "");
+          return {
+            updateOne: {
+              filter: { recipientPhoneNumber: cleanPhone, userId },
+              update: {
+                $setOnInsert: {
+                  recipientPhoneNumber: cleanPhone,
+                  userId,
+                },
+                $push: {
+                  campaigns: {
+                    campaignId,
+                    templateId,
+                    messageId: uuidv4(),
+                    status: "draft",
+                    queuedAt: new Date(),
+                  },
+                },
+              },
+              upsert: true,
+            },
+          };
+        });
+
+        const result = await ContactCampaignMessage.bulkWrite(bulkOps, {
+          ordered: false,
+          writeConcern: { w: 1, j: false },
+        });
+
+        totalInserted += result.upsertedCount || 0;
+        totalModified += result.modifiedCount || 0;
+
+        console.log(
+          `[Campaign] Chunk ${chunkIndex + 1}/${chunks.length} done (${chunk.length} contacts)`
+        );
+      }
+    });
+
+    await Promise.all(workers);
+
+    console.log(`[Campaign] ✅ Bulk insert finished`);
     console.log(`========== CREATE CAMPAIGN ENTRIES END ==========\n`);
 
     res.json({
       success: true,
-      message: `Campaign entries created for ${phoneNumbers.length} contacts`,
+      message: `Campaign entries created`,
       data: {
         total: phoneNumbers.length,
         inserted: totalInserted,
-        modified: totalModified
-      }
+        modified: totalModified,
+      },
     });
   } catch (error) {
-    console.error('[Campaign] Create entries error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    console.error("[Campaign] Create entries error:", error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
+
 
 // Get capability check progress
 export const getCapabilityProgress = async (req, res) => {
   const userId = req.user._id;
-  
+
   // Check in-memory progress first
   let progress = null;
   if (global.capabilityProgress) {
@@ -207,19 +208,19 @@ export const getCapabilityProgress = async (req, res) => {
       }
     }
   }
-  
+
   // If no in-memory progress, check database for actual stats
   if (!progress) {
     const { campaignId } = req.query;
     if (campaignId) {
       const ContactBatch = (await import('../models/contactBatch.model.js')).default;
       const batches = await ContactBatch.find({ campaignId, userId }).select('totalContacts processedContacts rcsCapableCount status');
-      
+
       if (batches.length > 0) {
         const total = batches.reduce((sum, b) => sum + b.totalContacts, 0);
         const processed = batches.reduce((sum, b) => sum + (b.processedContacts || 0), 0);
         const rcsCapable = batches.reduce((sum, b) => sum + (b.rcsCapableCount || 0), 0);
-        
+
         progress = {
           chunk: 0,
           totalChunks: 0,
@@ -230,7 +231,7 @@ export const getCapabilityProgress = async (req, res) => {
       }
     }
   }
-  
+
   res.json({ success: true, progress });
 };
 
@@ -301,13 +302,13 @@ export const create = async (req, res) => {
     if (campaignId && (!recipients || recipients.length === 0)) {
       const ContactBatch = (await import('../models/contactBatch.model.js')).default;
       const batches = await ContactBatch.find({ campaignId, userId }).lean();
-      
+
       console.log(`[Campaign] Found ${batches.length} contact batches for campaignId ${campaignId}`);
-      
+
       const rcsContacts = [];
       for (const batch of batches) {
         console.log(`[Campaign] Processing batch ${batch.batchNumber}: ${batch.totalContacts} total contacts, ${batch.rcsCapableCount} RCS capable`);
-        
+
         if (batch.apiResponse && batch.apiResponse.length > 0) {
           batch.apiResponse.forEach(chunkResponse => {
             if (chunkResponse.reachableUsers) {
@@ -326,8 +327,8 @@ export const create = async (req, res) => {
         } else if (batch.capabilityResults && batch.capabilityResults.length > 0) {
           console.log(`[Campaign] - Processing ${batch.capabilityResults.length} capability results`);
           batch.capabilityResults.forEach(result => {
-            const isCapable = result.isCapable !== undefined ? 
-              result.isCapable : 
+            const isCapable = result.isCapable !== undefined ?
+              result.isCapable :
               (result.features && result.features.length > 0);
             if (isCapable) {
               const cleanNumber = result.phoneNumber.replace(/^\+?91/, '');
@@ -341,7 +342,7 @@ export const create = async (req, res) => {
           });
         }
       }
-      
+
       finalRecipients = rcsContacts;
       console.log(`[Campaign] ✅ Total RCS contacts fetched: ${finalRecipients.length}`);
       console.log(`[Campaign] ✅ Contact list: ${finalRecipients.map(r => r.phoneNumber).join(', ')}`);
@@ -376,7 +377,7 @@ export const create = async (req, res) => {
     // Check available balance (total - blocked)
     const availableBalance = req.user.getAvailableBalance();
     const blockedBalance = req.user.wallet.blockedBalance || 0;
-    
+
     if (availableBalance < actualCost) {
       if (!res.headersSent) {
         // Get active campaigns using blocked balance
@@ -385,12 +386,12 @@ export const create = async (req, res) => {
           status: { $in: ['running', 'scheduled'] },
           blockedAmount: { $gt: 0 }
         }).select('name blockedAmount');
-        
+
         const campaignDetails = activeCampaigns.map(c => `"${c.name}" (₹${c.blockedAmount})`).join(', ');
-        
+
         return res.status(402).json({
           success: false,
-          message: blockedBalance > 0 
+          message: blockedBalance > 0
             ? `Insufficient available balance. ₹${actualCost} will be deducted upfront and refunded for failed messages. Currently ₹${blockedBalance} is being used in active campaign(s): ${campaignDetails}.`
             : `Insufficient wallet balance. ₹${actualCost} will be deducted upfront and refunded for failed messages.`,
           required: actualCost,
@@ -420,9 +421,9 @@ export const create = async (req, res) => {
     }
 
     // Dynamic batch size based on campaign volume (max 500)
-    const optimizedBatchSize = finalRecipients.length > 50000 ? 500 : 
-                              finalRecipients.length > 10000 ? 300 : 
-                              finalRecipients.length > 1000 ? 200 : 100;
+    const optimizedBatchSize = finalRecipients.length > 50000 ? 500 :
+      finalRecipients.length > 10000 ? 300 :
+        finalRecipients.length > 1000 ? 200 : 100;
 
     // Update existing campaign or create new one
     let campaign;
@@ -506,7 +507,7 @@ export const create = async (req, res) => {
       console.log(`[Campaign] Sending to ${rcsCapableRecipients.length} RCS-capable recipients:`);
       console.log(`[Campaign] Phone numbers: ${rcsCapableRecipients.map(r => r.phoneNumber).join(', ')}`);
       console.log(`[Campaign] Total recipients: ${finalRecipients.length}, RCS capable: ${rcsCapableRecipients.length}, Cost: ₹${actualCost}`);
-      
+
       // Update user stats when campaign is created and started
       await req.user.updateStats({
         messagesSent: finalRecipients.length,
@@ -514,11 +515,11 @@ export const create = async (req, res) => {
         cost: actualCost,
         actualCost: actualCost
       });
-      
+
       // Update user usage stats
       await req.user.incrementUsage('campaigns', 1);
       await req.user.incrementUsage('messages', rcsCapableRecipients.length);
-      
+
       // For large campaigns, use setImmediate to prevent blocking
       if (finalRecipients.length > 10000) {
         setImmediate(() => {
@@ -545,14 +546,14 @@ export const create = async (req, res) => {
     if (finalRecipients.length <= 10000) {
       res.status(201).json({
         success: true,
-        message: autoStart 
+        message: autoStart
           ? `Campaign created and started! Processing ${finalRecipients.length} total recipients (${rcsCapableRecipients.length} RCS capable, ₹${actualCost} charged)`
           : 'Campaign created successfully',
         data: campaign,
       });
     }
     // Large campaigns already responded above
-    
+
   } catch (error) {
     console.error('[Campaign] Creation error:', error);
     if (!res.headersSent) {
@@ -727,7 +728,7 @@ export const restart = async (req, res) => {
 
     // Restart campaign processing
     const result = await jioRCSService.restartCampaign(id);
-    
+
     res.json({
       success: true,
       message: 'Campaign processing restarted',
@@ -781,10 +782,10 @@ export const getUserCampaignReports = async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const { search, status, type, campaign, startDate, endDate, sort = 'newest' } = req.query;
-    
+
     // Build query - always filter out archived campaigns
     let query = { userId, isArchived: false };
-    
+
     // Status filter
     if (status && status !== 'all') {
       if (status === 'processing') {
@@ -793,12 +794,12 @@ export const getUserCampaignReports = async (req, res) => {
         query.status = status;
       }
     }
-    
+
     // Campaign name filter
     if (campaign && campaign !== 'all') {
       query.name = campaign;
     }
-    
+
     // Date range filter
     if (startDate && endDate) {
       query.createdAt = {
@@ -806,7 +807,7 @@ export const getUserCampaignReports = async (req, res) => {
         $lte: new Date(endDate)
       };
     }
-    
+
     // Type filter - need to get template IDs first
     if (type && type !== 'all') {
       const matchingTemplates = await Template.find({ templateType: type }).select('_id');
@@ -829,20 +830,20 @@ export const getUserCampaignReports = async (req, res) => {
         });
       }
     }
-    
+
     // Search filter in MongoDB query
     if (search && search.trim()) {
       query.$or = [
         { name: { $regex: search.trim(), $options: 'i' } }
       ];
     }
-    
+
     // Sort order
     const sortOrder = sort === 'oldest' ? 1 : -1;
-    
+
     // Get total count with filters
     const total = await Campaign.countDocuments(query);
-    
+
     // Get paginated campaigns
     const campaigns = await Campaign.find(query)
       .populate('templateId', 'name templateType')
@@ -850,26 +851,28 @@ export const getUserCampaignReports = async (req, res) => {
       .limit(limit)
       .skip((page - 1) * limit)
       .select('name description status stats estimatedCost actualCost createdAt completedAt');
-    
+
     // Wait for sync (cached for 10s)
     await Promise.all(campaigns.map(c => c.syncFromMessages()));
-    
-    // Get Message model to aggregate interaction counts
-    const Message = (await import('../models/message.model.js')).default;
-    
+
+    // Get ContactCampaignMessage model to aggregate interaction counts
+    const ContactCampaignMessage = (await import('../models/message.model.js')).default;
+
     // Get interaction counts for current page campaigns only
     const campaignIds = campaigns.map(c => c._id);
-    const interactionStats = await Message.aggregate([
-      { $match: { campaignId: { $in: campaignIds } } },
+    const interactionStats = await ContactCampaignMessage.aggregate([
+      { $match: { userId, 'campaigns.campaignId': { $in: campaignIds } } },
+      { $unwind: '$campaigns' },
+      { $match: { 'campaigns.campaignId': { $in: campaignIds } } },
       {
         $group: {
-          _id: '$campaignId',
-          totalInteractions: { $sum: '$userClickCount' },
-          totalReplies: { $sum: '$userReplyCount' }
+          _id: '$campaigns.campaignId',
+          totalInteractions: { $sum: '$campaigns.userClickCount' },
+          totalReplies: { $sum: '$campaigns.userReplyCount' }
         }
       }
     ]);
-    
+
     // Create a map for quick lookup
     const interactionMap = {};
     interactionStats.forEach(stat => {
@@ -878,7 +881,7 @@ export const getUserCampaignReports = async (req, res) => {
         replies: stat.totalReplies || 0
       };
     });
-    
+
     // Transform campaigns to match frontend expectations
     const reports = campaigns.map(campaign => {
       const campaignObj = campaign.toObject();
@@ -903,7 +906,7 @@ export const getUserCampaignReports = async (req, res) => {
         estimatedCost: campaignObj.estimatedCost || 0
       };
     });
-    
+
     // Calculate aggregate stats for all campaigns (not just current page) - exclude archived
     const allCampaigns = await Campaign.find({ userId, isArchived: false }).select('stats').lean();
     const aggregateStats = allCampaigns.reduce((acc, campaign) => {
@@ -911,7 +914,7 @@ export const getUserCampaignReports = async (req, res) => {
       acc.totalFailed += campaign.stats?.failed || 0;
       return acc;
     }, { totalDelivered: 0, totalFailed: 0 });
-    
+
     res.json({
       success: true,
       data: reports,
@@ -947,7 +950,7 @@ export const getAllForAdmin = async (req, res) => {
 
     let query = {};
     if (status) query.status = status;
-    
+
     // Handle type filter by first finding matching templates
     let templateIds = [];
     if (type) {
@@ -1067,49 +1070,66 @@ export const getCampaignMessages = async (req, res) => {
       });
     }
 
-    // Use Message model for detailed message data
-    const Message = (await import('../models/message.model.js')).default;
-    
-    let query = { campaignId: id };
-    if (search) {
-      query.recipientPhoneNumber = { $regex: search, $options: 'i' };
-    }
-    if (status && status !== 'all') {
-      query.status = status;
-    }
-    
-    const messages = await Message.find(query)
-      .select('recipientPhoneNumber status templateType sentAt deliveredAt readAt clickedAt clickedAction userText suggestionResponse userClickCount userReplyCount errorMessage errorCode createdAt')
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .skip((page - 1) * limit)
-      .lean();
-    
-    const total = await Message.countDocuments(query);
+    const ContactCampaignMessage = (await import('../models/message.model.js')).default;
 
-    // Transform messages to match frontend expectations
-    const transformedMessages = messages.map(msg => ({
-      _id: msg._id,
-      phoneNumber: msg.recipientPhoneNumber,
-      status: msg.status,
-      templateType: msg.templateType,
-      sentAt: msg.sentAt,
-      deliveredAt: msg.deliveredAt,
-      readAt: msg.readAt,
-      clickedAt: msg.clickedAt,
-      clickedAction: msg.clickedAction,
-      userText: msg.userText,
-      suggestionResponse: msg.suggestionResponse,
-      interactions: msg.userClickCount || 0,
-      replies: msg.userReplyCount || 0,
-      errorMessage: msg.errorMessage,
-      errorCode: msg.errorCode,
-      createdAt: msg.createdAt
-    }));
+    // Build aggregation pipeline
+    const matchStage = {
+      userId: campaign.userId,
+      'campaigns.campaignId': campaign._id
+    };
+
+    if (search) {
+      matchStage.recipientPhoneNumber = { $regex: search, $options: 'i' };
+    }
+
+    // Unwind campaigns array and filter by campaignId and status
+    const pipeline = [
+      { $match: matchStage },
+      { $unwind: '$campaigns' },
+      { $match: { 'campaigns.campaignId': campaign._id } }
+    ];
+
+    if (status && status !== 'all') {
+      pipeline.push({ $match: { 'campaigns.status': status } });
+    }
+
+    // Get total count
+    const countPipeline = [...pipeline, { $count: 'total' }];
+    const countResult = await ContactCampaignMessage.aggregate(countPipeline);
+    const total = countResult[0]?.total || 0;
+
+    // Get paginated results
+    pipeline.push(
+      { $sort: { createdAt: -1 } },
+      { $skip: (page - 1) * limit },
+      { $limit: limit },
+      {
+        $project: {
+          _id: '$campaigns._id',
+          phoneNumber: '$recipientPhoneNumber',
+          status: '$campaigns.status',
+          templateType: { $literal: 'RCS' },
+          sentAt: '$campaigns.sentAt',
+          deliveredAt: '$campaigns.deliveredAt',
+          readAt: '$campaigns.readAt',
+          clickedAt: '$campaigns.clickedAt',
+          clickedAction: '$campaigns.clickedAction',
+          userText: '$campaigns.userText',
+          suggestionResponse: '$campaigns.suggestionResponse',
+          interactions: '$campaigns.userClickCount',
+          replies: '$campaigns.userReplyCount',
+          errorMessage: '$campaigns.errorMessage',
+          errorCode: '$campaigns.errorCode',
+          createdAt: '$createdAt'
+        }
+      }
+    );
+
+    const messages = await ContactCampaignMessage.aggregate(pipeline);
 
     res.json({
       success: true,
-      data: transformedMessages,
+      data: messages,
       pagination: {
         page,
         limit,
@@ -1139,36 +1159,39 @@ export const getAllCampaignMessagesForExport = async (req, res) => {
       });
     }
 
-    const Message = (await import('../models/message.model.js')).default;
-    
-    const messages = await Message.find({ campaignId })
-      .select('recipientPhoneNumber status templateType sentAt deliveredAt readAt clickedAt clickedAction userText suggestionResponse userClickCount userReplyCount errorMessage errorCode createdAt')
-      .sort({ createdAt: -1 })
-      .lean();
+    const ContactCampaignMessage = (await import('../models/message.model.js')).default;
 
-    const transformedMessages = messages.map(msg => ({
-      _id: msg._id,
-      phoneNumber: msg.recipientPhoneNumber,
-      status: msg.status,
-      templateType: msg.templateType,
-      sentAt: msg.sentAt,
-      deliveredAt: msg.deliveredAt,
-      readAt: msg.readAt,
-      clickedAt: msg.clickedAt,
-      clickedAction: msg.clickedAction,
-      userText: msg.userText,
-      suggestionResponse: msg.suggestionResponse,
-      interactions: msg.userClickCount || 0,
-      replies: msg.userReplyCount || 0,
-      errorMessage: msg.errorMessage,
-      errorCode: msg.errorCode,
-      createdAt: msg.createdAt
-    }));
+    const messages = await ContactCampaignMessage.aggregate([
+      { $match: { userId: campaign.userId, 'campaigns.campaignId': campaign._id } },
+      { $unwind: '$campaigns' },
+      { $match: { 'campaigns.campaignId': campaign._id } },
+      { $sort: { createdAt: -1 } },
+      {
+        $project: {
+          _id: '$campaigns._id',
+          phoneNumber: '$recipientPhoneNumber',
+          status: '$campaigns.status',
+          templateType: { $literal: 'RCS' },
+          sentAt: '$campaigns.sentAt',
+          deliveredAt: '$campaigns.deliveredAt',
+          readAt: '$campaigns.readAt',
+          clickedAt: '$campaigns.clickedAt',
+          clickedAction: '$campaigns.clickedAction',
+          userText: '$campaigns.userText',
+          suggestionResponse: '$campaigns.suggestionResponse',
+          interactions: '$campaigns.userClickCount',
+          replies: '$campaigns.userReplyCount',
+          errorMessage: '$campaigns.errorMessage',
+          errorCode: '$campaigns.errorCode',
+          createdAt: '$createdAt'
+        }
+      }
+    ]);
 
     res.json({
       success: true,
-      data: transformedMessages,
-      total: transformedMessages.length
+      data: messages,
+      total: messages.length
     });
   } catch (error) {
     console.error('[Campaign] Export campaign messages error:', error);
@@ -1191,7 +1214,7 @@ export const getAllCampaignsForExport = async (req, res) => {
 
     let query = {};
     if (status) query.status = status;
-    
+
     // Handle type filter by first finding matching templates
     if (type) {
       const Template = (await import('../models/template.model.js')).default;
@@ -1225,7 +1248,7 @@ export const getAllCampaignsForExport = async (req, res) => {
     // Filter by search
     if (search) {
       const searchLower = String(search).toLowerCase();
-      campaigns = campaigns.filter(c => 
+      campaigns = campaigns.filter(c =>
         c.name?.toLowerCase().includes(searchLower) ||
         c.userId?.name?.toLowerCase().includes(searchLower) ||
         c.userId?.email?.toLowerCase().includes(searchLower) ||
@@ -1309,9 +1332,9 @@ export const processContactBatch = async (req, res) => {
     await batch.startProcessing();
 
     const results = await jioRCSService.checkCapabilityBatchWithSave(
-      batch.phoneNumbers, 
-      userId, 
-      batch.campaignId, 
+      batch.phoneNumbers,
+      userId,
+      batch.campaignId,
       batch.batchNumber
     );
 
@@ -1345,7 +1368,7 @@ export const getContactBatchesWithData = async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
 
     const ContactBatch = (await import('../models/contactBatch.model.js')).default;
-    
+
     const batches = await ContactBatch.find({ campaignId, userId })
       .sort({ batchNumber: 1 })
       .limit(limit)
@@ -1382,7 +1405,7 @@ export const getContactBatches = async (req, res) => {
     const status = req.query.status;
 
     const ContactBatch = (await import('../models/contactBatch.model.js')).default;
-    
+
     let query = { campaignId, userId };
     if (status) query.status = status;
 
@@ -1450,13 +1473,13 @@ export const getAllContactsFromBatches = async (req, res) => {
     const limit = parseInt(req.query.limit) || 50;
 
     const ContactBatch = (await import('../models/contactBatch.model.js')).default;
-    
+
     const batches = await ContactBatch.find({ campaignId, userId })
       .sort({ batchNumber: 1 })
       .lean();
 
     const allContacts = [];
-    
+
     for (const batch of batches) {
       if (batch.apiResponse && batch.apiResponse.length > 0 && batch.phoneNumbers && batch.phoneNumbers.length > 0) {
         // Collect all reachableUsers from API response
@@ -1468,7 +1491,7 @@ export const getAllContactsFromBatches = async (req, res) => {
             });
           }
         });
-        
+
         // Add ALL contacts with proper capability status
         batch.phoneNumbers.forEach(phoneNumber => {
           const cleanPhone = phoneNumber.replace(/^\+?91/, '');
@@ -1483,10 +1506,10 @@ export const getAllContactsFromBatches = async (req, res) => {
         // Fallback to capability results if available
         batch.capabilityResults.forEach(result => {
           // Determine isCapable from features array if isCapable field is missing
-          const isCapable = result.isCapable !== undefined ? 
-            result.isCapable : 
+          const isCapable = result.isCapable !== undefined ?
+            result.isCapable :
             (result.features && result.features.length > 0);
-            
+
           allContacts.push({
             phoneNumber: result.phoneNumber.replace(/^\+?91/, ''),
             isRcsCapable: isCapable,
@@ -1547,9 +1570,9 @@ export const fixMissingCapabilityResults = async (req, res) => {
     const userId = req.user._id;
 
     console.log(`[Campaign] Fixing missing capability results for user ${userId}`);
-    
+
     const result = await jioRCSService.fixMissingCapabilityResults(campaignId, userId);
-    
+
     res.json({
       success: true,
       message: `Fixed ${result.fixed} out of ${result.total} batches`,
@@ -1574,16 +1597,16 @@ export const getReachableUsers = async (req, res) => {
     const batchNumber = req.query.batchNumber;
 
     const ContactBatch = (await import('../models/contactBatch.model.js')).default;
-    
+
     let query = { campaignId, userId };
     if (batchNumber) query.batchNumber = batchNumber;
-    
+
     const batches = await ContactBatch.find(query)
       .sort({ batchNumber: 1 })
       .lean();
 
     const reachableUsers = [];
-    
+
     for (const batch of batches) {
       if (batch.apiResponse && batch.apiResponse.length > 0) {
         // Collect all reachableUsers from all chunks (batch API)
@@ -1602,10 +1625,10 @@ export const getReachableUsers = async (req, res) => {
         // Collect RCS capable users from capabilityResults (sequential API)
         batch.capabilityResults.forEach(result => {
           // Determine isCapable from features array if isCapable field is missing
-          const isCapable = result.isCapable !== undefined ? 
-            result.isCapable : 
+          const isCapable = result.isCapable !== undefined ?
+            result.isCapable :
             (result.features && result.features.length > 0);
-            
+
           if (isCapable) {
             reachableUsers.push({
               phoneNumber: result.phoneNumber.replace(/^\+?91/, ''),
@@ -1645,23 +1668,23 @@ export const deleteContactFromBatch = async (req, res) => {
     const userId = req.user._id;
 
     const ContactBatch = (await import('../models/contactBatch.model.js')).default;
-    
+
     const batches = await ContactBatch.find({ campaignId, userId });
-    
+
     let deleted = false;
     let wasRcsCapable = false;
-    
+
     for (const batch of batches) {
       const cleanPhone = phoneNumber.replace(/^\+?91/, '');
       const formattedPhone = `+91${cleanPhone}`;
-      
+
       // Check if contact exists in phoneNumbers
-      const phoneIndex = batch.phoneNumbers.findIndex(p => 
+      const phoneIndex = batch.phoneNumbers.findIndex(p =>
         p.replace(/^\+?91/, '') === cleanPhone
       );
-      
+
       if (phoneIndex === -1) continue;
-      
+
       // Check if it was RCS capable (in apiResponse)
       if (batch.apiResponse && batch.apiResponse.length > 0) {
         for (const chunk of batch.apiResponse) {
@@ -1672,23 +1695,23 @@ export const deleteContactFromBatch = async (req, res) => {
           }
         }
       }
-      
+
       // Remove from phoneNumbers
       batch.phoneNumbers.splice(phoneIndex, 1);
-      
+
       // Remove from capabilityResults if exists
       if (batch.capabilityResults && batch.capabilityResults.length > 0) {
-        batch.capabilityResults = batch.capabilityResults.filter(r => 
+        batch.capabilityResults = batch.capabilityResults.filter(r =>
           r.phoneNumber.replace(/^\+?91/, '') !== cleanPhone
         );
       }
-      
+
       // Update counts
       batch.totalContacts = batch.phoneNumbers.length;
       if (wasRcsCapable && batch.rcsCapableCount > 0) {
         batch.rcsCapableCount -= 1;
       }
-      
+
       await batch.save();
       deleted = true;
       break;

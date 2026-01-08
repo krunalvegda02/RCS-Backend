@@ -160,7 +160,7 @@ campaignSchema.methods.updateStats = async function () {
   await this.save();
 };
 
-// Sync campaign recipients status from Message collection for accurate data
+// Sync campaign recipients status from ContactCampaignMessage collection for accurate data
 campaignSchema.methods.syncFromMessages = async function (force = false) {
   try {
     // Skip if recently synced (within last 10 seconds) unless forced
@@ -171,50 +171,68 @@ campaignSchema.methods.syncFromMessages = async function (force = false) {
       }
     }
 
-    const Message = mongoose.model('Message');
-    const messages = await Message.find({ campaignId: this._id }).lean();
+    const ContactCampaignMessage = mongoose.model('ContactCampaignMessage');
+    
+    // Aggregate campaign states for this campaign
+    const campaignStats = await ContactCampaignMessage.aggregate([
+      { $match: { userId: this.userId, 'campaigns.campaignId': this._id } },
+      { $unwind: '$campaigns' },
+      { $match: { 'campaigns.campaignId': this._id } },
+      {
+        $group: {
+          _id: '$campaigns.status',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
 
-    if (messages.length === 0) {
+    if (campaignStats.length === 0) {
       return { synced: false, reason: 'No messages found' };
     }
 
-    // Create a map of messageId to message status
-    const messageStatusMap = new Map();
-    messages.forEach(msg => {
-      messageStatusMap.set(msg.messageId, {
-        status: msg.status,
-        sentAt: msg.sentAt,
-        deliveredAt: msg.deliveredAt,
-        readAt: msg.readAt,
-        failedAt: msg.failedAt,
-        errorMessage: msg.errorMessage
-      });
+    // Build status counts
+    const statusCounts = {
+      draft: 0,
+      queued: 0,
+      processing: 0,
+      sent: 0,
+      delivered: 0,
+      read: 0,
+      replied: 0,
+      failed: 0,
+      bounced: 0
+    };
+
+    campaignStats.forEach(stat => {
+      if (statusCounts.hasOwnProperty(stat._id)) {
+        statusCounts[stat._id] = stat.count;
+      }
     });
 
-    // Update recipients with message status
-    let updated = 0;
-    if (this.recipients && Array.isArray(this.recipients)) {
-      this.recipients.forEach(recipient => {
-        if (recipient.messageId && messageStatusMap.has(recipient.messageId)) {
-          const msgData = messageStatusMap.get(recipient.messageId);
-          recipient.status = msgData.status;
-          recipient.sentAt = msgData.sentAt;
-          recipient.deliveredAt = msgData.deliveredAt;
-          recipient.readAt = msgData.readAt;
-          recipient.failedAt = msgData.failedAt;
-          recipient.errorMessage = msgData.errorMessage;
-          updated++;
-        }
-      });
-    }
+    // Calculate cumulative stats
+    const stats = {
+      total: this.stats?.total || 0,
+      pending: statusCounts.draft + statusCounts.queued,
+      processing: statusCounts.processing,
+      sent: statusCounts.sent + statusCounts.delivered + statusCounts.read + statusCounts.replied,
+      delivered: statusCounts.delivered + statusCounts.read + statusCounts.replied,
+      read: statusCounts.read + statusCounts.replied,
+      replied: statusCounts.replied,
+      failed: statusCounts.failed,
+      bounced: statusCounts.bounced,
+      rcsCapable: this.stats?.rcsCapable || 0
+    };
 
+    stats.successRate = stats.total > 0 ? (stats.delivered / stats.total) * 100 : 0;
+    stats.failureRate = stats.total > 0 ? ((stats.failed + stats.bounced) / stats.total) * 100 : 0;
+    stats.lastUpdatedAt = new Date();
+
+    this.stats = stats;
     await this.save();
-    await this.updateStats();
 
     return {
       synced: true,
-      totalRecipients: this.recipients.length,
-      updated: updated
+      stats: stats
     };
   } catch (error) {
     console.error('[Campaign] Error syncing from Messages:', error);
