@@ -849,7 +849,12 @@ export const getUserCampaignReports = async (req, res) => {
         $group: {
           _id: '$campaigns.campaignId',
           totalInteractions: { $sum: '$campaigns.userClickCount' },
-          totalReplies: { $sum: '$campaigns.userReplyCount' }
+          totalReplies: { $sum: '$campaigns.userReplyCount' },
+          totalSent: { $sum: { $cond: [{ $in: ['$campaigns.status', ['sent', 'delivered', 'read', 'replied']] }, 1, 0] } },
+          totalDelivered: { $sum: { $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0] } },
+          totalRead: { $sum: { $cond: [{ $in: ['$campaigns.status', ['read', 'replied']] }, 1, 0] } },
+          totalReplied: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'replied'] }, 1, 0] } },
+          totalFailed: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'failed'] }, 1, 0] } }
         }
       }
     ]);
@@ -861,26 +866,39 @@ export const getUserCampaignReports = async (req, res) => {
     interactionStats.forEach(stat => {
       interactionMap[stat._id.toString()] = {
         interactions: stat.totalInteractions || 0,
-        replies: stat.totalReplies || 0
+        replies: stat.totalReplies || 0,
+        sent: stat.totalSent || 0,
+        delivered: stat.totalDelivered || 0,
+        read: stat.totalRead || 0,
+        replied: stat.totalReplied || 0,
+        failed: stat.totalFailed || 0
       };
     });
 
     // Transform campaigns to match frontend expectations
     const reports = campaigns.map(campaign => {
-      const interactions = interactionMap[campaign._id.toString()] || { interactions: 0, replies: 0 };
-      const stats = campaign.stats || {};
+      const stats = interactionMap[campaign._id.toString()] || { 
+        interactions: 0, 
+        replies: 0,
+        sent: 0,
+        delivered: 0,
+        read: 0,
+        replied: 0,
+        failed: 0
+      };
+      const campaignStats = campaign.stats || {};
 
       return {
         _id: campaign._id,
         CampaignName: campaign.name,
         type: campaign.templateId?.templateType || 'RCS',
-        cost: stats.total || 0,
-        successCount: stats.sent || 0,
-        failedCount: stats.failed || 0,
-        totalDelivered: stats.delivered || 0,
-        totalRead: stats.read || 0,
-        totalReplied: stats.replied || 0,
-        userClickCount: interactions.interactions || 0,
+        cost: campaignStats.total || 0,
+        successCount: stats.sent || campaignStats.sent || 0,
+        failedCount: stats.failed || campaignStats.failed || 0,
+        totalDelivered: stats.delivered || campaignStats.delivered || 0,
+        totalRead: stats.read || campaignStats.read || 0,
+        totalReplied: stats.replied || campaignStats.replied || 0,
+        userClickCount: stats.interactions || 0,
         status: campaign.status,
         createdAt: campaign.createdAt
       };
