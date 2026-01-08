@@ -130,6 +130,7 @@ export const createCampaignEntries = async (req, res) => {
                       queuedAt: new Date(),
                     },
                   },
+                  $addToSet: { campaignIds: campaignId },
                 },
                 upsert: true,
               },
@@ -216,7 +217,6 @@ export const createSimple = async (req, res) => {
     const { name, templateId, userId, status = 'draft', totalRecipients, estimatedCost } = req.body;
     const requestUserId = req.user._id;
 
-    // Validate template exists
     const template = await Template.findById(templateId);
     if (!template) {
       return res.status(404).json({
@@ -230,6 +230,7 @@ export const createSimple = async (req, res) => {
       userId: requestUserId,
       templateId,
       status: 'processing',
+      payload: JSON.stringify(template.generatePayload()),
       recipients: [],
       stats: {
         total: totalRecipients || 0,
