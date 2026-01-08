@@ -1,6 +1,7 @@
 import Campaign from '../models/campaign.model.js';
 import Template from '../models/template.model.js';
 import jioRCSService from '../services/JioRCS.service.js';
+import mongoose from 'mongoose';
 
 // Check RCS capability for batch of numbers
 export const checkCapability = async (req, res) => {
@@ -852,16 +853,30 @@ export const getUserCampaignReports = async (req, res) => {
       .skip((page - 1) * limit)
       .select('name description status stats estimatedCost actualCost createdAt completedAt');
 
-    // Wait for sync (cached for 10s)
-    await Promise.all(campaigns.map(c => c.syncFromMessages()));
+    console.log(`[Campaign] Found ${campaigns.length} campaigns for user ${userId}`);
+
+    // Wait for sync (cached for 10s) and collect results
+    const syncResults = await Promise.all(campaigns.map(c => c.syncFromMessages()));
+    
+    // Debug: Log sync results
+    console.log('[Campaign] Sync results:', syncResults.map((r, i) => ({
+      campaign: campaigns[i].name,
+      synced: r.synced,
+      stats: campaigns[i].stats
+    })));
 
     // Get ContactCampaignMessage model to aggregate interaction counts
     const ContactCampaignMessage = (await import('../models/message.model.js')).default;
 
     // Get interaction counts for current page campaigns only
     const campaignIds = campaigns.map(c => c._id);
+    console.log('[Campaign] Aggregating interactions for campaign IDs:', campaignIds.map(id => id.toString()));
+    
+    // Convert userId to ObjectId for proper matching
+    const userObjectId = typeof userId === 'string' ? new mongoose.Types.ObjectId(userId) : userId;
+    
     const interactionStats = await ContactCampaignMessage.aggregate([
-      { $match: { userId, 'campaigns.campaignId': { $in: campaignIds } } },
+      { $match: { userId: userObjectId, 'campaigns.campaignId': { $in: campaignIds } } },
       { $unwind: '$campaigns' },
       { $match: { 'campaigns.campaignId': { $in: campaignIds } } },
       {
@@ -872,6 +887,8 @@ export const getUserCampaignReports = async (req, res) => {
         }
       }
     ]);
+    
+    console.log('[Campaign] Interaction stats:', interactionStats);
 
     // Create a map for quick lookup
     const interactionMap = {};
@@ -886,26 +903,29 @@ export const getUserCampaignReports = async (req, res) => {
     const reports = campaigns.map(campaign => {
       const campaignObj = campaign.toObject();
       const interactions = interactionMap[campaign._id.toString()] || { interactions: 0, replies: 0 };
-      return {
+      
+      // Ensure all stats are numbers, not undefined
+      const stats = campaignObj.stats || {};
+      
+      const report = {
         _id: campaignObj._id,
         CampaignName: campaignObj.name,
-        type: campaignObj.templateId?.templateType,
-        cost: campaignObj.stats?.total || 0,
-        successCount: campaignObj.stats?.sent || 0,
-        failedCount: campaignObj.stats?.failed || 0,
-        bouncedCount: campaignObj.stats?.bounced || 0,
-        totalDelivered: campaignObj.stats?.delivered || 0,
-        totalRead: campaignObj.stats?.read || 0,
-        totalReplied: campaignObj.stats?.replied || 0,
-        userClickCount: interactions.interactions,
-        createdAt: campaignObj.createdAt,
-        completedAt: campaignObj.completedAt,
+        type: campaignObj.templateId?.templateType || 'RCS',
+        cost: stats.total || 0,
+        successCount: stats.sent || 0,
+        failedCount: stats.failed || 0,
+        totalDelivered: stats.delivered || 0,
+        totalRead: stats.read || 0,
+        totalReplied: stats.replied || 0,
+        userClickCount: interactions.interactions || 0,
         status: campaignObj.status,
-        recipients: undefined,
-        actualCost: campaignObj.actualCost || 0,
-        estimatedCost: campaignObj.estimatedCost || 0
+        createdAt: campaignObj.createdAt
       };
+      
+      return report;
     });
+    
+    console.log('[Campaign] Sample report:', reports[0]);
 
     // Calculate aggregate stats for all campaigns (not just current page) - exclude archived
     const allCampaigns = await Campaign.find({ userId, isArchived: false }).select('stats').lean();
@@ -927,6 +947,8 @@ export const getUserCampaignReports = async (req, res) => {
         totalFailed: aggregateStats.totalFailed
       }
     });
+    
+    console.log('[Campaign] Response sent with', reports.length, 'campaigns');
   } catch (error) {
     res.status(500).json({
       success: false,

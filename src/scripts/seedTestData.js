@@ -337,6 +337,14 @@ const seedTestData = async () => {
     }
     console.log(`✅ Created 15 messages for Campaign 2`);
 
+    // Force sync campaigns from messages to update stats
+    console.log('\n🔄 Syncing campaign stats from messages...');
+    await campaign1.syncFromMessages(true);
+    await campaign2.syncFromMessages(true);
+    console.log('✅ Campaign stats synced');
+    console.log('Campaign 1 stats after sync:', campaign1.stats);
+    console.log('Campaign 2 stats after sync:', campaign2.stats);
+
     // Verify data
     console.log('\n🔍 Verifying data...');
     const campaignCount = await Campaign.countDocuments({ userId: user._id, isArchived: false });

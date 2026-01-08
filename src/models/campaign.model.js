@@ -49,6 +49,18 @@ const campaignSchema = new mongoose.Schema(
         type: Number,
         default: 0,
       },
+      delivered: {
+        type: Number,
+        default: 0,
+      },
+      read: {
+        type: Number,
+        default: 0,
+      },
+      replied: {
+        type: Number,
+        default: 0,
+      },
       failed: {
         type: Number,
         default: 0,
@@ -163,15 +175,8 @@ campaignSchema.methods.updateStats = async function () {
 // Sync campaign recipients status from ContactCampaignMessage collection for accurate data
 campaignSchema.methods.syncFromMessages = async function (force = false) {
   try {
-    // Skip if recently synced (within last 10 seconds) unless forced
-    if (!force && this.stats?.lastUpdatedAt) {
-      const timeSinceLastSync = Date.now() - new Date(this.stats.lastUpdatedAt).getTime();
-      if (timeSinceLastSync < 10 * 1000) {
-        return { synced: false, reason: 'Recently synced', cached: true };
-      }
-    }
-
-    const ContactCampaignMessage = mongoose.model('ContactCampaignMessage');
+    // Import model dynamically to avoid circular dependency
+    const ContactCampaignMessage = (await import('./message.model.js')).default;
     
     // Aggregate campaign states for this campaign
     const campaignStats = await ContactCampaignMessage.aggregate([
