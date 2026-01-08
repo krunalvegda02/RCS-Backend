@@ -2,7 +2,7 @@ import Campaign from '../models/campaign.model.js';
 import Template from '../models/template.model.js';
 import jioRCSService from '../services/JioRCS.service.js';
 import mongoose from 'mongoose';
-import { campaignEntriesQueue } from '../queues/campaignEntries.queue.js';
+import pLimit from "p-limit";
 
 // Check RCS capability for batch of numbers
 export const checkCapability = async (req, res) => {
@@ -79,123 +79,6 @@ export const checkCapability = async (req, res) => {
 };
 
 // Create campaign entries using insertMany (bulk insert)
-// export const createCampaignEntries = async (req, res) => {
-//   try {
-//     const { campaignId, templateId, phoneNumbers } = req.body;
-//     const userId = req.user._id;
-
-//     if (!campaignId || !templateId) {
-//       return res.status(400).json({ success: false, message: "campaignId and templateId are required" });
-//     }
-
-//     if (!Array.isArray(phoneNumbers) || phoneNumbers.length === 0) {
-//       return res.status(400).json({ success: false, message: "Phone numbers array is required" });
-//     }
-
-//     console.log(`\n========== CREATE CAMPAIGN ENTRIES START ==========`);
-
-//     const template = await Template.findById(templateId).lean();
-//     if (!template) {
-//       return res.status(404).json({ success: false, message: "Template not found" });
-//     }
-
-//     const samplePayload = jioRCSService.buildRCSPayload(
-//       template.templateType,
-//       template.content,
-//       {},
-//       null
-//     );
-
-//     await Campaign.findByIdAndUpdate(campaignId, {
-//       payload: JSON.stringify(samplePayload),
-//     });
-
-//     const ContactCampaignMessage = (await import("../models/message.model.js")).default;
-//     const { v4: uuidv4 } = await import("uuid");
-
-//     /* ================= CONFIG ================= */
-//     const CHUNK_SIZE = 8000;
-//     const CONCURRENCY = 8;
-//     /* ========================================== */
-
-//     // Split chunks
-//     const chunks = [];
-//     for (let i = 0; i < phoneNumbers.length; i += CHUNK_SIZE) {
-//       chunks.push(phoneNumbers.slice(i, i + CHUNK_SIZE));
-//     }
-
-//     let totalInserted = 0;
-//     let totalModified = 0;
-//     let index = 0;
-
-//     console.log(`[Campaign] Total chunks: ${chunks.length}`);
-
-//     // Worker pool
-//     const workers = Array(CONCURRENCY).fill(null).map(async () => {
-//       while (index < chunks.length) {
-//         const chunkIndex = index++;
-//         const chunk = chunks[chunkIndex];
-
-//         const bulkOps = chunk.map(phone => {
-//           const cleanPhone = phone.replace(/^\+?91/, "").replace(/\D/g, "");
-//           return {
-//             updateOne: {
-//               filter: { recipientPhoneNumber: cleanPhone, userId },
-//               update: {
-//                 $setOnInsert: {
-//                   recipientPhoneNumber: cleanPhone,
-//                   userId,
-//                 },
-//                 $push: {
-//                   campaigns: {
-//                     campaignId,
-//                     templateId,
-//                     messageId: uuidv4(),
-//                     status: "draft",
-//                     queuedAt: new Date(),
-//                   },
-//                 },
-//               },
-//               upsert: true,
-//             },
-//           };
-//         });
-
-//         const result = await ContactCampaignMessage.bulkWrite(bulkOps, {
-//           ordered: false,
-//           writeConcern: { w: 1, j: false },
-//           maxTimeMS: 60000,
-//         });
-
-//         totalInserted += result.upsertedCount || 0;
-//         totalModified += result.modifiedCount || 0;
-
-//         console.log(
-//           `[Campaign] Chunk ${chunkIndex + 1}/${chunks.length} done (${chunk.length} contacts)`
-//         );
-//       }
-//     });
-
-//     await Promise.all(workers);
-
-//     console.log(`[Campaign] ✅ Bulk insert finished`);
-//     console.log(`========== CREATE CAMPAIGN ENTRIES END ==========\n`);
-
-//     res.json({
-//       success: true,
-//       message: `Campaign entries created`,
-//       data: {
-//         total: phoneNumbers.length,
-//         inserted: totalInserted,
-//         modified: totalModified,
-//       },
-//     });
-//   } catch (error) {
-//     console.error("[Campaign] Create entries error:", error);
-//     res.status(500).json({ success: false, message: error.message });
-//   }
-// };
-
 export const createCampaignEntries = async (req, res) => {
   try {
     const { campaignId, templateId, phoneNumbers } = req.body;
@@ -209,27 +92,81 @@ export const createCampaignEntries = async (req, res) => {
       return res.status(400).json({ success: false, message: "Phone numbers array is required" });
     }
 
-    const template = await Template.findById(templateId).lean();
-    if (!template) {
-      return res.status(404).json({ success: false, message: "Template not found" });
+      console.log(`[Campaign] Creating entries for ${phoneNumbers.length} contacts`);
+    console.time("CampaignInsert");
+
+    const ContactCampaignMessage = (await import("../models/message.model.js")).default;
+    const { v4: uuidv4 } = await import("uuid");
+
+    const CHUNK_SIZE = 2000;
+    const CONCURRENCY = 10;
+    const chunks = [];
+    for (let i = 0; i < phoneNumbers.length; i += CHUNK_SIZE) {
+      chunks.push(phoneNumbers.slice(i, i + CHUNK_SIZE));
     }
 
-    await Campaign.findByIdAndUpdate(campaignId, { status: 'processing' });
+    console.log(`[Campaign] Processing ${chunks.length} chunks`);
 
-    await campaignEntriesQueue.add('create-entries', {
-      campaignId, templateId, userId, phoneNumbers
-    });
+    const limit = pLimit(CONCURRENCY);
+    let totalInserted = 0;
+    let totalModified = 0;
+
+    await Promise.all(
+      chunks.map((chunk, idx) =>
+        limit(async () => {
+          const bulkOps = chunk.map(phone => {
+            const cleanPhone = phone.replace(/^\+?91/, "").replace(/\D/g, "");
+            return {
+              updateOne: {
+                filter: { recipientPhoneNumber: cleanPhone, userId },
+                update: {
+                  $setOnInsert: { recipientPhoneNumber: cleanPhone, userId },
+                  $push: {
+                    campaigns: {
+                      campaignId,
+                      templateId,
+                      messageId: uuidv4(),
+                      status: "draft",
+                      queuedAt: new Date(),
+                    },
+                  },
+                },
+                upsert: true,
+              },
+            };
+          });
+
+          const result = await ContactCampaignMessage.bulkWrite(bulkOps, {
+            ordered: false,
+            writeConcern: { w: 1, j: false },
+          });
+
+          totalInserted += result.upsertedCount || 0;
+          totalModified += result.modifiedCount || 0;
+          console.log(`[Campaign] Chunk ${idx + 1}/${chunks.length} completed`);
+        })
+      )
+    );
+
+    await Campaign.findByIdAndUpdate(campaignId, { status: "pending" });
+
+    console.timeEnd("CampaignInsert");
+    console.log(`[Campaign] ✅ Entries created: ${totalInserted} inserted, ${totalModified} modified`);
 
     res.json({
       success: true,
-      message: 'Campaign entries are being created in background',
-      data: { total: phoneNumbers.length, status: 'processing' }
+      message: "Campaign entries created",
+      data: { total: phoneNumbers.length, inserted: totalInserted, modified: totalModified },
     });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: err.message });
+  } catch (error) {
+    console.error("[Campaign] Create entries error:", error);
+    await Campaign.findByIdAndUpdate(req.body.campaignId, { status: "failed" }).catch(console.error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
+
+
+
 
 
 // Get capability check progress
@@ -292,7 +229,7 @@ export const createSimple = async (req, res) => {
       name,
       userId: requestUserId,
       templateId,
-      status: 'pending',
+      status: 'processing',
       recipients: [],
       stats: {
         total: totalRecipients || 0,
@@ -487,7 +424,7 @@ export const create = async (req, res) => {
           },
           status: autoStart ? 'running' : 'draft',
           startedAt: autoStart ? new Date() : null,
-        
+
           estimatedCost: actualCost,
           actualCost: 0,
           blockedAmount: 0,
@@ -520,7 +457,7 @@ export const create = async (req, res) => {
         },
         status: autoStart ? 'running' : 'draft',
         startedAt: autoStart ? new Date() : null,
-      
+
         estimatedCost: actualCost,
         actualCost: 0,
         blockedAmount: 0,
@@ -822,7 +759,7 @@ export const getUserCampaignReports = async (req, res) => {
     const { search, status, type, campaign, startDate, endDate, sort = 'newest' } = req.query;
 
     // Build query - always filter out archived campaigns
-    let query = { userId};
+    let query = { userId };
 
     // Status filter
     if (status && status !== 'all') {
@@ -899,10 +836,10 @@ export const getUserCampaignReports = async (req, res) => {
     // Get interaction counts for current page campaigns only
     const campaignIds = campaigns.map(c => c._id);
     console.log('[Campaign] Aggregating interactions for campaign IDs:', campaignIds.map(id => id.toString()));
-    
+
     // Convert userId to ObjectId for proper matching
     const userObjectId = typeof userId === 'string' ? new mongoose.Types.ObjectId(userId) : userId;
-    
+
     const interactionStats = await ContactCampaignMessage.aggregate([
       { $match: { userId: userObjectId, 'campaigns.campaignId': { $in: campaignIds } } },
       { $unwind: '$campaigns' },
@@ -915,7 +852,7 @@ export const getUserCampaignReports = async (req, res) => {
         }
       }
     ]);
-    
+
     console.log('[Campaign] Interaction stats:', interactionStats);
 
     // Create a map for quick lookup
@@ -931,7 +868,7 @@ export const getUserCampaignReports = async (req, res) => {
     const reports = campaigns.map(campaign => {
       const interactions = interactionMap[campaign._id.toString()] || { interactions: 0, replies: 0 };
       const stats = campaign.stats || {};
-      
+
       return {
         _id: campaign._id,
         CampaignName: campaign.name,
@@ -947,7 +884,7 @@ export const getUserCampaignReports = async (req, res) => {
         createdAt: campaign.createdAt
       };
     });
-    
+
     console.log('[Campaign] Sample report:', reports[0]);
 
     // Calculate aggregate stats for all campaigns (not just current page) - exclude archived
@@ -970,7 +907,7 @@ export const getUserCampaignReports = async (req, res) => {
         totalFailed: aggregateStats.totalFailed
       }
     });
-    
+
     console.log('[Campaign] Response sent with', reports.length, 'campaigns');
   } catch (error) {
     res.status(500).json({

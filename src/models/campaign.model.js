@@ -26,7 +26,7 @@ const campaignSchema = new mongoose.Schema(
     // Campaign Status
     status: {
       type: String,
-      enum: ['pending', 'completed'],
+      enum: ['processing','pending', 'completed'],
       default: 'pending',
       index: true,
     },
