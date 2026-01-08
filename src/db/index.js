@@ -7,11 +7,21 @@ const connectDB = async () => {
       `${process.env.MONGODB_URI}`,
       {
         serverSelectionTimeoutMS: 30000,
-        socketTimeoutMS: 45000,
-        maxPoolSize: 10,
-        minPoolSize: 5
+        socketTimeoutMS: 60000,
+        connectTimeoutMS: 30000,
+        maxPoolSize: 50,
+        minPoolSize: 10,
+        maxIdleTimeMS: 30000,
+        retryWrites: true,
+        retryReads: true,
+        compressors: ['zlib'],
+        zlibCompressionLevel: 6
       }
     );
+    
+    mongoose.set('debug', false);
+    mongoose.set('strictQuery', false);
+    
     app.on("error", () => {
       console.log("Express Error:", error);
     });
@@ -20,7 +30,6 @@ const connectDB = async () => {
     console.log('Backend Host:', mongoose.connection.host);
 
     console.log(`\n MOngoDB connected !! DB HOST: ${connectionInstance.connection.host}`);
-    // console.log("ConnectionInstance :", connectionInstance.connection);
 
   } catch (error) {
     console.log("Database connectivity error:", error);

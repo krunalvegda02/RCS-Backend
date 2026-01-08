@@ -33,11 +33,7 @@ const campaignSchema = new mongoose.Schema(
 
     completedAt: Date,
 
-    isArchived: {
-      type: Boolean,
-      default: true,
-      index: true,
-    },
+    
 
     // Statistics (cached for performance)
     stats: {

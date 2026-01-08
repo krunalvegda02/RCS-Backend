@@ -124,7 +124,6 @@ import { dirname, join } from "path";
 import app from "./app.js";
 import connectDB from "./db/index.js";
 import JioRCSService from "./services/JioRCS.service.js";
-import { scheduleArchivedCampaignCleanup } from "./schedulers/campaign.scheduler.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -169,11 +168,7 @@ if (cluster.isPrimary) {
 
       const server = createServer(app);
 
-      // 🔥 Run schedulers ONLY ON ONE WORKER
-      if (cluster.worker.id === 1) {
-        scheduleArchivedCampaignCleanup();
-        console.log("⏱️ Scheduler started (worker 1)");
-      }
+ 
 
       server.listen(PORT, () => {
         console.log(`✅ Worker ${process.pid} listening on port ${PORT}`);

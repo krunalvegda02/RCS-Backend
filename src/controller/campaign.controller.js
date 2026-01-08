@@ -2,6 +2,7 @@ import Campaign from '../models/campaign.model.js';
 import Template from '../models/template.model.js';
 import jioRCSService from '../services/JioRCS.service.js';
 import mongoose from 'mongoose';
+import { campaignEntriesQueue } from '../queues/campaignEntries.queue.js';
 
 // Check RCS capability for batch of numbers
 export const checkCapability = async (req, res) => {
@@ -78,6 +79,123 @@ export const checkCapability = async (req, res) => {
 };
 
 // Create campaign entries using insertMany (bulk insert)
+// export const createCampaignEntries = async (req, res) => {
+//   try {
+//     const { campaignId, templateId, phoneNumbers } = req.body;
+//     const userId = req.user._id;
+
+//     if (!campaignId || !templateId) {
+//       return res.status(400).json({ success: false, message: "campaignId and templateId are required" });
+//     }
+
+//     if (!Array.isArray(phoneNumbers) || phoneNumbers.length === 0) {
+//       return res.status(400).json({ success: false, message: "Phone numbers array is required" });
+//     }
+
+//     console.log(`\n========== CREATE CAMPAIGN ENTRIES START ==========`);
+
+//     const template = await Template.findById(templateId).lean();
+//     if (!template) {
+//       return res.status(404).json({ success: false, message: "Template not found" });
+//     }
+
+//     const samplePayload = jioRCSService.buildRCSPayload(
+//       template.templateType,
+//       template.content,
+//       {},
+//       null
+//     );
+
+//     await Campaign.findByIdAndUpdate(campaignId, {
+//       payload: JSON.stringify(samplePayload),
+//     });
+
+//     const ContactCampaignMessage = (await import("../models/message.model.js")).default;
+//     const { v4: uuidv4 } = await import("uuid");
+
+//     /* ================= CONFIG ================= */
+//     const CHUNK_SIZE = 8000;
+//     const CONCURRENCY = 8;
+//     /* ========================================== */
+
+//     // Split chunks
+//     const chunks = [];
+//     for (let i = 0; i < phoneNumbers.length; i += CHUNK_SIZE) {
+//       chunks.push(phoneNumbers.slice(i, i + CHUNK_SIZE));
+//     }
+
+//     let totalInserted = 0;
+//     let totalModified = 0;
+//     let index = 0;
+
+//     console.log(`[Campaign] Total chunks: ${chunks.length}`);
+
+//     // Worker pool
+//     const workers = Array(CONCURRENCY).fill(null).map(async () => {
+//       while (index < chunks.length) {
+//         const chunkIndex = index++;
+//         const chunk = chunks[chunkIndex];
+
+//         const bulkOps = chunk.map(phone => {
+//           const cleanPhone = phone.replace(/^\+?91/, "").replace(/\D/g, "");
+//           return {
+//             updateOne: {
+//               filter: { recipientPhoneNumber: cleanPhone, userId },
+//               update: {
+//                 $setOnInsert: {
+//                   recipientPhoneNumber: cleanPhone,
+//                   userId,
+//                 },
+//                 $push: {
+//                   campaigns: {
+//                     campaignId,
+//                     templateId,
+//                     messageId: uuidv4(),
+//                     status: "draft",
+//                     queuedAt: new Date(),
+//                   },
+//                 },
+//               },
+//               upsert: true,
+//             },
+//           };
+//         });
+
+//         const result = await ContactCampaignMessage.bulkWrite(bulkOps, {
+//           ordered: false,
+//           writeConcern: { w: 1, j: false },
+//           maxTimeMS: 60000,
+//         });
+
+//         totalInserted += result.upsertedCount || 0;
+//         totalModified += result.modifiedCount || 0;
+
+//         console.log(
+//           `[Campaign] Chunk ${chunkIndex + 1}/${chunks.length} done (${chunk.length} contacts)`
+//         );
+//       }
+//     });
+
+//     await Promise.all(workers);
+
+//     console.log(`[Campaign] ✅ Bulk insert finished`);
+//     console.log(`========== CREATE CAMPAIGN ENTRIES END ==========\n`);
+
+//     res.json({
+//       success: true,
+//       message: `Campaign entries created`,
+//       data: {
+//         total: phoneNumbers.length,
+//         inserted: totalInserted,
+//         modified: totalModified,
+//       },
+//     });
+//   } catch (error) {
+//     console.error("[Campaign] Create entries error:", error);
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// };
+
 export const createCampaignEntries = async (req, res) => {
   try {
     const { campaignId, templateId, phoneNumbers } = req.body;
@@ -91,106 +209,25 @@ export const createCampaignEntries = async (req, res) => {
       return res.status(400).json({ success: false, message: "Phone numbers array is required" });
     }
 
-    console.log(`\n========== CREATE CAMPAIGN ENTRIES START ==========`);
-
     const template = await Template.findById(templateId).lean();
     if (!template) {
       return res.status(404).json({ success: false, message: "Template not found" });
     }
 
-    const samplePayload = jioRCSService.buildRCSPayload(
-      template.templateType,
-      template.content,
-      {},
-      null
-    );
+    await Campaign.findByIdAndUpdate(campaignId, { status: 'processing' });
 
-    await Campaign.findByIdAndUpdate(campaignId, {
-      payload: JSON.stringify(samplePayload),
+    await campaignEntriesQueue.add('create-entries', {
+      campaignId, templateId, userId, phoneNumbers
     });
-
-    const ContactCampaignMessage = (await import("../models/message.model.js")).default;
-    const { v4: uuidv4 } = await import("uuid");
-
-    /* ================= CONFIG ================= */
-    const CHUNK_SIZE = 1000;
-    const CONCURRENCY = 4; // ⭐ safe parallel writes
-    /* ========================================== */
-
-    // Split chunks
-    const chunks = [];
-    for (let i = 0; i < phoneNumbers.length; i += CHUNK_SIZE) {
-      chunks.push(phoneNumbers.slice(i, i + CHUNK_SIZE));
-    }
-
-    let totalInserted = 0;
-    let totalModified = 0;
-    let index = 0;
-
-    console.log(`[Campaign] Total chunks: ${chunks.length}`);
-
-    // Worker pool
-    const workers = Array(CONCURRENCY).fill(null).map(async () => {
-      while (index < chunks.length) {
-        const chunkIndex = index++;
-        const chunk = chunks[chunkIndex];
-
-        const bulkOps = chunk.map(phone => {
-          const cleanPhone = phone.replace(/^\+?91/, "").replace(/\D/g, "");
-          return {
-            updateOne: {
-              filter: { recipientPhoneNumber: cleanPhone, userId },
-              update: {
-                $setOnInsert: {
-                  recipientPhoneNumber: cleanPhone,
-                  userId,
-                },
-                $push: {
-                  campaigns: {
-                    campaignId,
-                    templateId,
-                    messageId: uuidv4(),
-                    status: "draft",
-                    queuedAt: new Date(),
-                  },
-                },
-              },
-              upsert: true,
-            },
-          };
-        });
-
-        const result = await ContactCampaignMessage.bulkWrite(bulkOps, {
-          ordered: false,
-          writeConcern: { w: 1, j: false },
-        });
-
-        totalInserted += result.upsertedCount || 0;
-        totalModified += result.modifiedCount || 0;
-
-        console.log(
-          `[Campaign] Chunk ${chunkIndex + 1}/${chunks.length} done (${chunk.length} contacts)`
-        );
-      }
-    });
-
-    await Promise.all(workers);
-
-    console.log(`[Campaign] ✅ Bulk insert finished`);
-    console.log(`========== CREATE CAMPAIGN ENTRIES END ==========\n`);
 
     res.json({
       success: true,
-      message: `Campaign entries created`,
-      data: {
-        total: phoneNumbers.length,
-        inserted: totalInserted,
-        modified: totalModified,
-      },
+      message: 'Campaign entries are being created in background',
+      data: { total: phoneNumbers.length, status: 'processing' }
     });
-  } catch (error) {
-    console.error("[Campaign] Create entries error:", error);
-    res.status(500).json({ success: false, message: error.message });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: err.message });
   }
 };
 
@@ -287,14 +324,14 @@ export const createSimple = async (req, res) => {
 // Create campaign and start sending
 export const create = async (req, res) => {
   try {
-    const { name, description, templateId, recipients, campaignId, batchSize, autoStart = true, isArchived } = req.body;
+    const { name, description, templateId, recipients, campaignId, batchSize, autoStart = true } = req.body;
     const userId = req.user._id;
 
     console.log(`[Campaign] Bulk send request received:`);
     console.log(`[Campaign] - name: ${name}`);
     console.log(`[Campaign] - templateId: ${templateId}`);
     console.log(`[Campaign] - campaignId: ${campaignId}`);
-    console.log(`[Campaign] - isArchived: ${isArchived}`);
+
     console.log(`[Campaign] - autoStart: ${autoStart}`);
     console.log(`[Campaign] - recipients: ${recipients ? recipients.length : 'fetching from batches'}`);
 
@@ -450,7 +487,7 @@ export const create = async (req, res) => {
           },
           status: autoStart ? 'running' : 'draft',
           startedAt: autoStart ? new Date() : null,
-          isArchived: isArchived !== undefined ? isArchived : false,
+        
           estimatedCost: actualCost,
           actualCost: 0,
           blockedAmount: 0,
@@ -483,7 +520,7 @@ export const create = async (req, res) => {
         },
         status: autoStart ? 'running' : 'draft',
         startedAt: autoStart ? new Date() : null,
-        isArchived: false,
+      
         estimatedCost: actualCost,
         actualCost: 0,
         blockedAmount: 0,
@@ -785,7 +822,7 @@ export const getUserCampaignReports = async (req, res) => {
     const { search, status, type, campaign, startDate, endDate, sort = 'newest' } = req.query;
 
     // Build query - always filter out archived campaigns
-    let query = { userId, isArchived: false };
+    let query = { userId};
 
     // Status filter
     if (status && status !== 'all') {
@@ -914,7 +951,7 @@ export const getUserCampaignReports = async (req, res) => {
     console.log('[Campaign] Sample report:', reports[0]);
 
     // Calculate aggregate stats for all campaigns (not just current page) - exclude archived
-    const allCampaigns = await Campaign.find({ userId, isArchived: false }).select('stats').lean();
+    const allCampaigns = await Campaign.find({ userId }).select('stats').lean();
     const aggregateStats = allCampaigns.reduce((acc, campaign) => {
       acc.totalDelivered += campaign.stats?.delivered || 0;
       acc.totalFailed += campaign.stats?.failed || 0;
@@ -947,11 +984,10 @@ export const getUserCampaignReports = async (req, res) => {
 // Admin: Get all campaigns from all users
 export const getAllForAdmin = async (req, res) => {
   try {
-    let { status, type, user, search, sort = 'newest' } = req.query;
+    let { status, type, user, search, sort = 'newest', startDate, endDate } = req.query;
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
 
-    // Fix: If search is an array, take the first element
     if (Array.isArray(search)) {
       search = search[0];
     }
@@ -959,7 +995,14 @@ export const getAllForAdmin = async (req, res) => {
     let query = {};
     if (status) query.status = status;
 
-    // Handle type filter by first finding matching templates
+    // Date range filter
+    if (startDate && endDate) {
+      query.createdAt = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate)
+      };
+    }
+
     let templateIds = [];
     if (type) {
       const Template = (await import('../models/template.model.js')).default;
@@ -968,7 +1011,6 @@ export const getAllForAdmin = async (req, res) => {
       if (templateIds.length > 0) {
         query.templateId = { $in: templateIds };
       } else {
-        // No templates found with this type, return empty result
         return res.json({
           success: true,
           data: [],
@@ -1213,9 +1255,8 @@ export const getAllCampaignMessagesForExport = async (req, res) => {
 // Admin: Get ALL campaigns for export (no pagination)
 export const getAllCampaignsForExport = async (req, res) => {
   try {
-    let { status, type, user, search, sort = 'newest' } = req.query;
+    let { status, type, user, search, sort = 'newest', startDate, endDate } = req.query;
 
-    // Fix: If search is an array, take the first element
     if (Array.isArray(search)) {
       search = search[0];
     }
@@ -1223,7 +1264,14 @@ export const getAllCampaignsForExport = async (req, res) => {
     let query = {};
     if (status) query.status = status;
 
-    // Handle type filter by first finding matching templates
+    // Date range filter
+    if (startDate && endDate) {
+      query.createdAt = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate)
+      };
+    }
+
     if (type) {
       const Template = (await import('../models/template.model.js')).default;
       const matchingTemplates = await Template.find({ templateType: type }).select('_id');
@@ -1231,7 +1279,6 @@ export const getAllCampaignsForExport = async (req, res) => {
       if (templateIds.length > 0) {
         query.templateId = { $in: templateIds };
       } else {
-        // No templates found with this type, return empty result
         return res.json({
           success: true,
           data: [],

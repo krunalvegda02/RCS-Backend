@@ -1,20 +1,17 @@
 import express from 'express';
 import { getUserDashboardStats, getUserRecentCampaigns, addWalletRequest, getAdminDashboard, getAdminSummary, getMonthlyAnalytics, getWeeklyAnalytics } from '../controller/dashboard.controller.js';
 import { authenticateToken, requireAdmin } from '../middlewares/auth.middleware.js';
+import { cacheMiddleware } from '../middlewares/cache.middleware.js';
 
 const router = express.Router();
 
-// Admin dashboard route
-router.get('/admin', authenticateToken, requireAdmin, getAdminDashboard);
+router.get('/admin', authenticateToken, requireAdmin, cacheMiddleware, getAdminDashboard);
+router.get('/admin/summary', authenticateToken, requireAdmin, cacheMiddleware, getAdminSummary);
+router.get('/admin/monthly/:userId', authenticateToken, requireAdmin, cacheMiddleware, getMonthlyAnalytics);
+router.get('/admin/weekly/:userId', authenticateToken, requireAdmin, cacheMiddleware, getWeeklyAnalytics);
 
-// Admin reports routes
-router.get('/admin/summary', authenticateToken, requireAdmin, getAdminSummary);
-router.get('/admin/monthly/:userId', authenticateToken, requireAdmin, getMonthlyAnalytics);
-router.get('/admin/weekly/:userId', authenticateToken, requireAdmin, getWeeklyAnalytics);
-
-// User dashboard routes
-router.get('/stats/:userId', authenticateToken, getUserDashboardStats);
-router.get('/recent-campaigns/:userId', authenticateToken, getUserRecentCampaigns);
+router.get('/stats/:userId', authenticateToken, cacheMiddleware, getUserDashboardStats);
+router.get('/recent-campaigns/:userId', authenticateToken, cacheMiddleware, getUserRecentCampaigns);
 router.post('/wallet-request', authenticateToken, addWalletRequest);
 
 export default router;

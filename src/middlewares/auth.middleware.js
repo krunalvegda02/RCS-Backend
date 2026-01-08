@@ -1,11 +1,24 @@
 import jwt from 'jsonwebtoken';
 import User from '../models/user.model.js';
 
+// User cache with 30 second TTL
+const userCache = new Map();
+const CACHE_TTL = 30000;
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of userCache.entries()) {
+    if (now - value.timestamp > CACHE_TTL) {
+      userCache.delete(key);
+    }
+  }
+}, 60000);
+
 // Authenticate JWT token
 export const authenticateToken = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
-    const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+    const token = authHeader && authHeader.split(' ')[1];
 
     if (!token) {
       return res.status(401).json({
@@ -14,7 +27,6 @@ export const authenticateToken = async (req, res, next) => {
       });
     }
 
-    // Verify token
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
@@ -31,18 +43,25 @@ export const authenticateToken = async (req, res, next) => {
       });
     }
 
-    // Get user from database
-    const user = await User.findById(decoded.userId);
-
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid token - user not found',
-      });
+    // Check cache first
+    const cacheKey = decoded.userId;
+    const cached = userCache.get(cacheKey);
+    
+    let user;
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      user = cached.user;
+    } else {
+      user = await User.findById(decoded.userId).lean();
+      if (!user) {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid token - user not found',
+        });
+      }
+      userCache.set(cacheKey, { user, timestamp: Date.now() });
     }
 
     if (!user.isActive) {
-      // Clear any existing tokens
       return res.status(403).json({
         success: false,
         message: 'Account is deactivated',
@@ -50,7 +69,6 @@ export const authenticateToken = async (req, res, next) => {
       });
     }
 
-    // Add user to request object
     req.user = user;
     next();
   } catch (error) {

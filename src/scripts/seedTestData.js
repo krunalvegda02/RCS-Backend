@@ -58,7 +58,6 @@ const seedTestData = async () => {
       userId: user._id,
       templateId: template._id,
       status: 'completed',
-      isArchived: false,
       stats: {
         total: 15,
         sent: 15,
@@ -82,7 +81,6 @@ const seedTestData = async () => {
       userId: user._id,
       templateId: template._id,
       status: 'pending',
-      isArchived: false,
       stats: {
         total: 15,
         sent: 10,
@@ -347,7 +345,7 @@ const seedTestData = async () => {
 
     // Verify data
     console.log('\n🔍 Verifying data...');
-    const campaignCount = await Campaign.countDocuments({ userId: user._id, isArchived: false });
+    const campaignCount = await Campaign.countDocuments({ userId: user._id });
     const messageCount = await ContactCampaignMessage.countDocuments({ userId: user._id });
     const webhookLogCount = await MessageLog.countDocuments({ userId: user._id });
     
