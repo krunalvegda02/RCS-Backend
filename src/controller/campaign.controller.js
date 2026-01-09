@@ -118,7 +118,7 @@ export const createCampaignEntries = async (req, res) => {
       await masterCampaign.save();
 
       // Always create exactly 30 sub-campaigns
-      const SUB_CAMPAIGN_COUNT = 5;
+      const SUB_CAMPAIGN_COUNT = 30;
       const contactsPerSubCampaign = Math.ceil(phoneNumbers.length / SUB_CAMPAIGN_COUNT);
       const chunks = [];
       
