@@ -20,6 +20,8 @@ const router = express.Router();
 router.post('/checkAvablityNumber', authenticateToken, requireUser, CampaignController.checkCapability);
 
 // Campaign reports routes (moved from campaignReport.routes.js)
+router.get('/campaign-reports/user/:userId/export', authenticateToken, CampaignController.getAllCampaignsForExport);
+router.get('/campaign-reports/campaign/:campaignId/messages/export', authenticateToken, CampaignController.getAllCampaignMessagesForExport);
 router.get('/campaign-reports/user/:userId', authenticateToken, CampaignController.getUserCampaignReports);
 router.get('/campaign-reports/campaign/:id/messages', authenticateToken, CampaignController.getCampaignMessages);
 

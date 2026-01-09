@@ -80,18 +80,23 @@ class MessageLogProcessor {
         // Get timestamp based on event type
         let webhookTimestamp;
         if (entity?.sendTime) {
-          webhookTimestamp = entity.sendTime; // For SEND_MESSAGE_FAILURE, MESSAGE_SENT
+          webhookTimestamp = entity.sendTime;
         } else if (entity?.deliveryTime) {
-          webhookTimestamp = entity.deliveryTime; // For MESSAGE_DELIVERED
+          webhookTimestamp = entity.deliveryTime;
         } else if (entity?.readTime) {
-          webhookTimestamp = entity.readTime; // For MESSAGE_READ
+          webhookTimestamp = entity.readTime;
         } else if (entity?.receiveTime) {
-          webhookTimestamp = entity.receiveTime; // For USER_MESSAGE
+          webhookTimestamp = entity.receiveTime;
         } else {
-          webhookTimestamp = log.timestamp; // Fallback to log creation time
+          webhookTimestamp = log.timestamp;
         }
         
+        // Convert to UTC Date - webhook sends ISO string with timezone (e.g., +05:30)
+        // JavaScript Date constructor automatically converts to UTC
         const timestamp = new Date(webhookTimestamp);
+        
+        // Debug log to verify conversion
+        console.log(`[LogProcessor] Webhook time: ${webhookTimestamp} -> UTC: ${timestamp.toISOString()}`);
 
         let newStatus = null;
         let updateFields = {};
@@ -101,12 +106,12 @@ class MessageLogProcessor {
           case 'MESSAGE_SENT':
           case 'SEND_MESSAGE_SUCCESS':
             newStatus = 'sent';
-            updateFields['campaigns.$.sentAt'] = new Date(timestamp);
+            updateFields['campaigns.$.sentAt'] = timestamp;
             break;
 
           case 'MESSAGE_DELIVERED':
             newStatus = 'delivered';
-            updateFields['campaigns.$.deliveredAt'] = new Date(timestamp);
+            updateFields['campaigns.$.deliveredAt'] = timestamp;
             // Track wallet deduction
             if (!walletOps.has(userId)) walletOps.set(userId, { delivered: 0, refund: 0 });
             walletOps.get(userId).delivered += 1;
@@ -114,14 +119,14 @@ class MessageLogProcessor {
 
           case 'MESSAGE_READ':
             newStatus = 'read';
-            updateFields['campaigns.$.readAt'] = new Date(timestamp);
+            updateFields['campaigns.$.readAt'] = timestamp;
             break;
 
           case 'SEND_MESSAGE_FAILURE':
           case 'MESSAGE_EXPIRED':
           case 'MESSAGE_REVOKED':
             newStatus = 'failed';
-            updateFields['campaigns.$.failedAt'] = new Date(timestamp);
+            updateFields['campaigns.$.failedAt'] = timestamp;
             updateFields['campaigns.$.errorCode'] = webhookData.rawPayload?.entity?.error?.code || 'UNKNOWN';
             updateFields['campaigns.$.errorMessage'] = webhookData.rawPayload?.entity?.error?.message || 'Failed';
             // Track wallet refund
@@ -131,10 +136,10 @@ class MessageLogProcessor {
 
           case 'USER_MESSAGE':
             newStatus = 'replied';
-            updateFields['campaigns.$.lastInteractionAt'] = new Date(timestamp);
+            updateFields['campaigns.$.lastInteractionAt'] = timestamp;
             if (webhookData.suggestionResponse) {
               updateFields['campaigns.$.suggestionResponse'] = webhookData.suggestionResponse;
-              updateFields['campaigns.$.clickedAt'] = new Date(timestamp);
+              updateFields['campaigns.$.clickedAt'] = timestamp;
               updateFields['campaigns.$.clickedAction'] = webhookData.suggestionResponse.plainText;
             }
             if (webhookData.rawPayload?.entity?.text) {
@@ -153,7 +158,7 @@ class MessageLogProcessor {
               update: {
                 $set: {
                   'campaigns.$.status': newStatus,
-                  'campaigns.$.lastWebhookAt': new Date(timestamp),
+                  'campaigns.$.lastWebhookAt': timestamp,
                   ...updateFields
                 },
                 ...(webhookData.suggestionResponse && {

@@ -907,12 +907,22 @@ export const getUserCampaignReports = async (req, res) => {
     console.log('[Campaign] Sample report:', reports[0]);
 
     // Calculate aggregate stats for all campaigns (not just current page) - exclude archived
-    const allCampaigns = await Campaign.find({ userId }).select('stats').lean();
-    const aggregateStats = allCampaigns.reduce((acc, campaign) => {
-      acc.totalDelivered += campaign.stats?.delivered || 0;
-      acc.totalFailed += campaign.stats?.failed || 0;
-      return acc;
-    }, { totalDelivered: 0, totalFailed: 0 });
+    const userObjectIdForStats = typeof userId === 'string' ? new mongoose.Types.ObjectId(userId) : userId;
+    
+    const sentStats = await ContactCampaignMessage.aggregate([
+      { $match: { userId: userObjectIdForStats } },
+      { $unwind: '$campaigns' },
+      {
+        $group: {
+          _id: null,
+          totalSent: { $sum: { $cond: [{ $in: ['$campaigns.status', ['sent', 'delivered', 'read', 'replied']] }, 1, 0] } },
+          totalDelivered: { $sum: { $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0] } },
+          totalFailed: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'failed'] }, 1, 0] } }
+        }
+      }
+    ]);
+    
+    const aggregateStats = sentStats[0] || { totalSent: 0, totalDelivered: 0, totalFailed: 0 };
 
     res.json({
       success: true,
@@ -922,6 +932,7 @@ export const getUserCampaignReports = async (req, res) => {
         limit: parseInt(limit),
         total,
         pages: Math.ceil(total / limit),
+        totalSent: aggregateStats.totalSent,
         totalDelivered: aggregateStats.totalDelivered,
         totalFailed: aggregateStats.totalFailed
       }
@@ -1156,8 +1167,16 @@ export const getCampaignMessages = async (req, res) => {
 export const getAllCampaignMessagesForExport = async (req, res) => {
   try {
     const { campaignId } = req.params;
+    const userId = req.user._id;
+    const isAdmin = req.user.role === 'admin';
 
-    const campaign = await Campaign.findById(campaignId);
+    let campaign;
+    if (isAdmin) {
+      campaign = await Campaign.findById(campaignId);
+    } else {
+      campaign = await Campaign.findOne({ _id: campaignId, userId });
+    }
+
     if (!campaign) {
       return res.status(404).json({
         success: false,
@@ -1212,12 +1231,21 @@ export const getAllCampaignMessagesForExport = async (req, res) => {
 export const getAllCampaignsForExport = async (req, res) => {
   try {
     let { status, type, user, search, sort = 'newest', startDate, endDate } = req.query;
+    const requestUserId = req.user._id;
+    const isAdmin = req.user.role === 'admin';
+    const { userId } = req.params;
 
     if (Array.isArray(search)) {
       search = search[0];
     }
 
     let query = {};
+    
+    // If not admin or userId is provided, filter by userId
+    if (!isAdmin || userId) {
+      query.userId = userId || requestUserId;
+    }
+    
     if (status) query.status = status;
 
     // Date range filter
@@ -1251,8 +1279,8 @@ export const getAllCampaignsForExport = async (req, res) => {
       .sort({ createdAt: sortOrder })
       .lean();
 
-    // Filter by user name if provided
-    if (user) {
+    // Filter by user name if provided (admin only)
+    if (isAdmin && user) {
       campaigns = campaigns.filter(c => c.userId?.name === user);
     }
 
@@ -1274,6 +1302,7 @@ export const getAllCampaignsForExport = async (req, res) => {
       cost: campaign.stats?.total || 0,
       successCount: campaign.stats?.sent || 0,
       failedCount: campaign.stats?.failed || 0,
+      totalDelivered: campaign.stats?.delivered || 0,
       status: campaign.status,
       createdAt: campaign.createdAt,
       userId: campaign.userId
