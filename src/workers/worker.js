@@ -6,7 +6,7 @@ import '../models/messageLog.model.js';
 import '../models/template.model.js';
 import { processWebhookData, processUserInteraction } from '../controller/webhook.controller.js';
 import BackgroundWorkerService from '../services/BackgroundWorkerService.js';
-import MessageLogProcessor from '../services/MessageLogProcessor.js';
+// import MessageLogProcessor from '../services/MessageLogProcessor.js';
 import connectDB from '../db/index.js';
 
 // Set worker mode
@@ -81,8 +81,8 @@ async function startWorker() {
 
     // Start message log processor (optimized for 200K+ messages)
     // Processes 2000 logs every 10 seconds = 720K logs/hour capacity
-    MessageLogProcessor.start(10000);
-    // console.log('🚀 Message Log Processor started (10s interval, 2000 batch size)');
+    // MessageLogProcessor.start(10000);
+    // console.log('🚀 Message Log Processo``r started (10s interval, 2000 batch size)');
 
     // Send ready signal to PM2
     if (process.send) {
