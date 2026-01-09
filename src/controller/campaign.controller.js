@@ -1203,16 +1203,22 @@ export const getAllCampaignMessagesForExport = async (req, res) => {
   try {
     const { campaignId } = req.params;
     const userId = req.user._id;
-    const isAdmin = req.user.role === 'admin';
+    const isAdmin = req.user.role === 'admin' || req.user.role === 'ADMIN';
 
+    console.log('[Campaign] Export messages request:', { campaignId, userId, isAdmin, userRole: req.user.role });
+
+    // Admin can access any campaign, regular users only their own
     let campaign;
     if (isAdmin) {
-      campaign = await Campaign.findById(campaignId);
+      campaign = await Campaign.findById(campaignId).select('_id userId').lean();
+      console.log('[Campaign] Admin looking for campaign:', campaignId, 'Found:', !!campaign);
     } else {
-      campaign = await Campaign.findOne({ _id: campaignId, userId });
+      campaign = await Campaign.findOne({ _id: campaignId, userId }).select('_id userId').lean();
+      console.log('[Campaign] User looking for campaign:', campaignId, 'userId:', userId, 'Found:', !!campaign);
     }
 
     if (!campaign) {
+      console.log('[Campaign] Campaign not found');
       return res.status(404).json({
         success: false,
         message: 'Campaign not found',
@@ -1221,32 +1227,37 @@ export const getAllCampaignMessagesForExport = async (req, res) => {
 
     const ContactCampaignMessage = (await import('../models/message.model.js')).default;
 
+    // Optimized aggregation with index hints and limited projection
     const messages = await ContactCampaignMessage.aggregate([
-      { $match: { userId: campaign.userId, 'campaigns.campaignId': campaign._id } },
+      { 
+        $match: { 
+          userId: campaign.userId, 
+          'campaigns.campaignId': campaign._id 
+        } 
+      },
       { $unwind: '$campaigns' },
       { $match: { 'campaigns.campaignId': campaign._id } },
-      { $sort: { createdAt: -1 } },
       {
         $project: {
-          _id: '$campaigns._id',
+          _id: 0,
           phoneNumber: '$recipientPhoneNumber',
           status: '$campaigns.status',
           templateType: { $literal: 'RCS' },
           sentAt: '$campaigns.sentAt',
           deliveredAt: '$campaigns.deliveredAt',
           readAt: '$campaigns.readAt',
-          clickedAt: '$campaigns.clickedAt',
           clickedAction: '$campaigns.clickedAction',
           userText: '$campaigns.userText',
           suggestionResponse: '$campaigns.suggestionResponse',
           interactions: '$campaigns.userClickCount',
           replies: '$campaigns.userReplyCount',
           errorMessage: '$campaigns.errorMessage',
-          errorCode: '$campaigns.errorCode',
-          createdAt: '$createdAt'
+          errorCode: '$campaigns.errorCode'
         }
       }
-    ]);
+    ]).allowDiskUse(true);
+
+    console.log('[Campaign] Found', messages.length, 'messages');
 
     res.json({
       success: true,
@@ -1267,7 +1278,7 @@ export const getAllCampaignsForExport = async (req, res) => {
   try {
     let { status, type, user, search, sort = 'newest', startDate, endDate } = req.query;
     const requestUserId = req.user._id;
-    const isAdmin = req.user.role === 'admin';
+    const isAdmin = req.user.role === 'admin' || req.user.role === 'ADMIN';
     const { userId } = req.params;
 
     if (Array.isArray(search)) {
@@ -1277,9 +1288,12 @@ export const getAllCampaignsForExport = async (req, res) => {
     let query = {};
     
     // If not admin or userId is provided, filter by userId
-    if (!isAdmin || userId) {
-      query.userId = userId || requestUserId;
+    if (!isAdmin) {
+      query.userId = requestUserId;
+    } else if (userId && userId !== 'all') {
+      query.userId = userId;
     }
+    // If admin and no userId or userId is 'all', don't filter by userId (get all campaigns)
     
     if (status) query.status = status;
 
