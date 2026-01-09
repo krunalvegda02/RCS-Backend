@@ -82,7 +82,19 @@ export const checkCapability = async (req, res) => {
 export const createCampaignEntries = async (req, res) => {
   try {
     const { campaignId, templateId, phoneNumbers } = req.body;
-    const userId = req.user._id;
+    const userId = req.user?._id;
+
+    console.log('[Campaign] createCampaignEntries request:', { 
+      campaignId, 
+      templateId, 
+      phoneNumbersCount: phoneNumbers?.length,
+      userId,
+      hasUser: !!req.user 
+    });
+
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "User not authenticated" });
+    }
 
     if (!campaignId || !templateId) {
       return res.status(400).json({ success: false, message: "campaignId and templateId are required" });
