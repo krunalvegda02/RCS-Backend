@@ -81,7 +81,7 @@ export const checkCapability = async (req, res) => {
 // Create campaign entries using insertMany (bulk insert)
 export const createCampaignEntries = async (req, res) => {
   try {
-    const { campaignId, templateId, phoneNumbers } = req.body;
+    const { campaignId, templateId, phoneNumbers, createSubCampaigns = false, subCampaignSize = 200 } = req.body;
     const userId = req.user?._id;
 
     console.log('[Campaign] createCampaignEntries request:', { 
@@ -89,7 +89,9 @@ export const createCampaignEntries = async (req, res) => {
       templateId, 
       phoneNumbersCount: phoneNumbers?.length,
       userId,
-      hasUser: !!req.user 
+      hasUser: !!req.user,
+      createSubCampaigns,
+      subCampaignSize
     });
 
     if (!userId) {
@@ -104,7 +106,114 @@ export const createCampaignEntries = async (req, res) => {
       return res.status(400).json({ success: false, message: "Phone numbers array is required" });
     }
 
-      console.log(`[Campaign] Creating entries for ${phoneNumbers.length} contacts`);
+    // If large campaign and createSubCampaigns is true, create sub-campaigns
+    if (createSubCampaigns && phoneNumbers.length > subCampaignSize) {
+      console.log(`[Campaign] Creating sub-campaigns for ${phoneNumbers.length} contacts`);
+      
+      const template = await Template.findById(templateId);
+      const masterCampaign = await Campaign.findById(campaignId);
+      
+      // Update master campaign
+      masterCampaign.isMaster = true;
+      await masterCampaign.save();
+
+      // Always create exactly 30 sub-campaigns
+      const SUB_CAMPAIGN_COUNT = 5;
+      const contactsPerSubCampaign = Math.ceil(phoneNumbers.length / SUB_CAMPAIGN_COUNT);
+      const chunks = [];
+      
+      for (let i = 0; i < SUB_CAMPAIGN_COUNT; i++) {
+        const start = i * contactsPerSubCampaign;
+        const end = Math.min(start + contactsPerSubCampaign, phoneNumbers.length);
+        if (start < phoneNumbers.length) {
+          chunks.push(phoneNumbers.slice(start, end));
+        }
+      }
+
+      console.log(`[Campaign] Creating ${chunks.length} sub-campaigns with ~${contactsPerSubCampaign} contacts each`);
+
+      // Create sub-campaigns
+      const subCampaigns = await Promise.all(
+        chunks.map(async (chunk, index) => {
+          return Campaign.create({
+            name: `bot${index + 1}`,
+            userId,
+            templateId,
+            isMaster: false,
+            masterCampaignId: campaignId,
+            subCampaignIndex: index,
+            status: 'pending',
+            payload: JSON.stringify(template.generatePayload()),
+            stats: {
+              total: chunk.length,
+              pending: chunk.length,
+              sent: 0,
+              delivered: 0,
+              failed: 0
+            }
+          });
+        })
+      );
+
+      // Create entries for each sub-campaign
+      const ContactCampaignMessage = (await import("../models/message.model.js")).default;
+      const { v4: uuidv4 } = await import("uuid");
+
+      let totalInserted = 0;
+      let totalModified = 0;
+
+      await Promise.all(
+        subCampaigns.map(async (subCampaign, index) => {
+          const chunk = chunks[index];
+          const bulkOps = chunk.map(phone => {
+            const cleanPhone = phone.replace(/^\+?91/, "").replace(/\D/g, "");
+            return {
+              updateOne: {
+                filter: { recipientPhoneNumber: cleanPhone, userId },
+                update: {
+                  $setOnInsert: { recipientPhoneNumber: cleanPhone, userId },
+                  $push: {
+                    campaigns: {
+                      campaignId: subCampaign._id,
+                      templateId,
+                      messageId: uuidv4(),
+                      status: "draft",
+                      queuedAt: new Date(),
+                    },
+                  },
+                  $addToSet: { campaignIds: subCampaign._id },
+                },
+                upsert: true,
+              },
+            };
+          });
+
+          const result = await ContactCampaignMessage.bulkWrite(bulkOps, {
+            ordered: false,
+            writeConcern: { w: 1, j: false },
+          });
+
+          totalInserted += result.upsertedCount || 0;
+          totalModified += result.modifiedCount || 0;
+        })
+      );
+
+      console.log(`[Campaign] ✅ Created ${subCampaigns.length} sub-campaigns with ${totalInserted} entries`);
+
+      return res.json({
+        success: true,
+        message: "Sub-campaigns created",
+        data: { 
+          subCampaignsCount: subCampaigns.length,
+          total: phoneNumbers.length, 
+          inserted: totalInserted, 
+          modified: totalModified 
+        },
+      });
+    }
+
+    // Standard single campaign flow
+    console.log(`[Campaign] Creating entries for ${phoneNumbers.length} contacts`);
     console.time("CampaignInsert");
 
     const ContactCampaignMessage = (await import("../models/message.model.js")).default;
@@ -561,7 +670,8 @@ export const getAll = async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
 
-    let query = { userId };
+    // Only show master campaigns or standalone campaigns (not sub-campaigns)
+    let query = { userId, $or: [{ isMaster: true }, { isMaster: { $exists: false } }, { masterCampaignId: { $exists: false } }] };
     if (status) query.status = status;
 
     const campaigns = await Campaign.find(query)
@@ -570,8 +680,8 @@ export const getAll = async (req, res) => {
       .limit(limit)
       .skip((page - 1) * limit);
 
-    // Wait for sync (cached for 10s)
-    await Promise.all(campaigns.map(c => c.syncFromMessages()));
+    // Sync stats for master campaigns
+    await Promise.all(campaigns.map(c => c.isMaster ? c.syncMasterStats() : Promise.resolve()));
 
     const total = await Campaign.countDocuments(query);
 
@@ -611,8 +721,10 @@ export const getById = async (req, res) => {
       });
     }
 
-    // Sync campaign recipients from messages for accurate status
-    await campaign.syncFromMessages();
+    // Sync stats - if master, sync from sub-campaigns
+    if (campaign.isMaster) {
+      await campaign.syncMasterStats();
+    }
 
     res.json({
       success: true,
@@ -749,7 +861,10 @@ export const getStats = async (req, res) => {
       });
     }
 
-    await campaign.updateStats();
+    // Sync stats - if master, sync from sub-campaigns
+    if (campaign.isMaster) {
+      await campaign.syncMasterStats();
+    }
 
     res.json({
       success: true,
@@ -771,8 +886,8 @@ export const getUserCampaignReports = async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const { search, status, type, campaign, startDate, endDate, sort = 'newest' } = req.query;
 
-    // Build query - always filter out archived campaigns
-    let query = { userId };
+    // Build query - only show master campaigns or standalone campaigns (hide sub-campaigns)
+    let query = { userId, $or: [{ isMaster: true }, { isMaster: { $exists: false } }, { masterCampaignId: { $exists: false } }] };
 
     // Status filter
     if (status && status !== 'all') {
@@ -838,28 +953,53 @@ export const getUserCampaignReports = async (req, res) => {
       .sort({ createdAt: sortOrder })
       .limit(limit)
       .skip((page - 1) * limit)
-      .select('name description status stats estimatedCost actualCost createdAt completedAt')
-      .lean();
+      .select('name description status stats estimatedCost actualCost createdAt completedAt isMaster masterCampaignId');
 
-    console.log(`[Campaign] Found ${campaigns.length} campaigns for user ${userId}`);
+    // Sync master campaign stats BEFORE converting to lean
+    await Promise.all(campaigns.map(c => c.isMaster ? c.syncMasterStats() : Promise.resolve()));
+    
+    // Convert to plain objects after syncing
+    const campaignsLean = campaigns.map(c => c.toObject ? c.toObject() : c);
+
+    console.log(`[Campaign] Found ${campaignsLean.length} campaigns for user ${userId}`);
 
     // Get ContactCampaignMessage model to aggregate interaction counts
     const ContactCampaignMessage = (await import('../models/message.model.js')).default;
 
     // Get interaction counts for current page campaigns only
-    const campaignIds = campaigns.map(c => c._id);
+    const campaignIds = campaignsLean.map(c => c._id);
     console.log('[Campaign] Aggregating interactions for campaign IDs:', campaignIds.map(id => id.toString()));
+
+    // For master campaigns, also get their sub-campaign IDs
+    const allCampaignIds = [...campaignIds];
+    for (const campaign of campaignsLean) {
+      if (campaign.isMaster) {
+        const subCampaigns = await Campaign.find({ masterCampaignId: campaign._id }).select('_id').lean();
+        allCampaignIds.push(...subCampaigns.map(s => s._id));
+      }
+    }
 
     // Convert userId to ObjectId for proper matching
     const userObjectId = typeof userId === 'string' ? new mongoose.Types.ObjectId(userId) : userId;
 
+    // Debug: Check if there are any messages for this user
+    const totalMessages = await ContactCampaignMessage.countDocuments({ userId: userObjectId });
+    console.log(`[Campaign] Total messages for user: ${totalMessages}`);
+    
+    // Debug: Check sample message
+    const sampleMessage = await ContactCampaignMessage.findOne({ userId: userObjectId }).lean();
+    if (sampleMessage) {
+      console.log(`[Campaign] Sample message campaignIds:`, sampleMessage.campaigns?.map(c => c.campaignId.toString()));
+    }
+
     const interactionStats = await ContactCampaignMessage.aggregate([
-      { $match: { userId: userObjectId, 'campaigns.campaignId': { $in: campaignIds } } },
+      { $match: { userId: userObjectId, 'campaigns.campaignId': { $in: allCampaignIds } } },
       { $unwind: '$campaigns' },
-      { $match: { 'campaigns.campaignId': { $in: campaignIds } } },
+      { $match: { 'campaigns.campaignId': { $in: allCampaignIds } } },
       {
         $group: {
           _id: '$campaigns.campaignId',
+          totalRecipients: { $sum: 1 },
           totalInteractions: { $sum: '$campaigns.userClickCount' },
           totalReplies: { $sum: '$campaigns.userReplyCount' },
           totalSent: { $sum: { $cond: [{ $in: ['$campaigns.status', ['sent', 'delivered', 'read', 'replied']] }, 1, 0] } },
@@ -873,10 +1013,14 @@ export const getUserCampaignReports = async (req, res) => {
 
     console.log('[Campaign] Interaction stats:', interactionStats);
 
-    // Create a map for quick lookup
+    // Create a map for quick lookup and aggregate sub-campaign stats to master
     const interactionMap = {};
+    const subCampaignMap = {}; // Map sub-campaign stats to master
+    
+    // First pass: collect all stats
     interactionStats.forEach(stat => {
       interactionMap[stat._id.toString()] = {
+        totalRecipients: stat.totalRecipients || 0,
         interactions: stat.totalInteractions || 0,
         replies: stat.totalReplies || 0,
         sent: stat.totalSent || 0,
@@ -886,10 +1030,44 @@ export const getUserCampaignReports = async (req, res) => {
         failed: stat.totalFailed || 0
       };
     });
+    
+    // Second pass: aggregate sub-campaign stats to master campaigns
+    for (const campaign of campaignsLean) {
+      if (campaign.isMaster) {
+        const subCampaigns = await Campaign.find({ masterCampaignId: campaign._id }).select('_id').lean();
+        const masterStats = {
+          totalRecipients: 0,
+          interactions: 0,
+          replies: 0,
+          sent: 0,
+          delivered: 0,
+          read: 0,
+          replied: 0,
+          failed: 0
+        };
+        
+        subCampaigns.forEach(sub => {
+          const subStats = interactionMap[sub._id.toString()];
+          if (subStats) {
+            masterStats.totalRecipients += subStats.totalRecipients;
+            masterStats.interactions += subStats.interactions;
+            masterStats.replies += subStats.replies;
+            masterStats.sent += subStats.sent;
+            masterStats.delivered += subStats.delivered;
+            masterStats.read += subStats.read;
+            masterStats.replied += subStats.replied;
+            masterStats.failed += subStats.failed;
+          }
+        });
+        
+        interactionMap[campaign._id.toString()] = masterStats;
+      }
+    }
 
     // Transform campaigns to match frontend expectations
-    const reports = campaigns.map(campaign => {
+    const reports = campaignsLean.map(campaign => {
       const stats = interactionMap[campaign._id.toString()] || { 
+        totalRecipients: 0,
         interactions: 0, 
         replies: 0,
         sent: 0,
@@ -898,25 +1076,30 @@ export const getUserCampaignReports = async (req, res) => {
         replied: 0,
         failed: 0
       };
-      const campaignStats = campaign.stats || {};
+
+      // Use message count if available, otherwise fall back to campaign.stats.total
+      const totalRecipients = stats.totalRecipients > 0 ? stats.totalRecipients : (campaign.stats?.total || 0);
+
+      console.log(`[Campaign] ${campaign.name}: isMaster=${campaign.isMaster}, stats.total=${campaign.stats?.total}, messageCount=${stats.totalRecipients}, final=${totalRecipients}`);
 
       return {
         _id: campaign._id,
         CampaignName: campaign.name,
         type: campaign.templateId?.templateType || 'RCS',
-        cost: campaignStats.total || 0,
-        successCount: stats.sent || campaignStats.sent || 0,
-        failedCount: stats.failed || campaignStats.failed || 0,
-        totalDelivered: stats.delivered || campaignStats.delivered || 0,
-        totalRead: stats.read || campaignStats.read || 0,
-        totalReplied: stats.replied || campaignStats.replied || 0,
-        userClickCount: stats.interactions || 0,
+        cost: totalRecipients,
+        successCount: stats.sent,
+        failedCount: stats.failed,
+        totalDelivered: stats.delivered,
+        totalRead: stats.read,
+        totalReplied: stats.replied,
+        userClickCount: stats.interactions,
         status: campaign.status,
-        createdAt: campaign.createdAt
+        createdAt: campaign.createdAt,
+        isMaster: campaign.isMaster || false
       };
     });
 
-    console.log('[Campaign] Sample report:', reports[0]);
+    console.log('[Campaign] Sample report with recipients:', reports[0]);
 
     // Calculate aggregate stats for all campaigns (not just current page) - exclude archived
     const userObjectIdForStats = typeof userId === 'string' ? new mongoose.Types.ObjectId(userId) : userId;
@@ -971,7 +1154,8 @@ export const getAllForAdmin = async (req, res) => {
       search = search[0];
     }
 
-    let query = {};
+    // Only show master campaigns or standalone campaigns (hide sub-campaigns)
+    let query = { $or: [{ isMaster: true }, { isMaster: { $exists: false } }, { masterCampaignId: { $exists: false } }] };
     if (status) query.status = status;
 
     // Date range filter
@@ -1035,6 +1219,11 @@ export const getAllForAdmin = async (req, res) => {
     const total = allCampaigns.length;
     const startIndex = (page - 1) * limit;
     const paginatedCampaigns = allCampaigns.slice(startIndex, startIndex + limit);
+
+    // Sync master campaign stats before returning
+    await Promise.all(
+      paginatedCampaigns.map(c => c.isMaster ? c.syncMasterStats() : Promise.resolve())
+    );
 
     // Get campaign IDs for aggregation
     const campaignIds = paginatedCampaigns.map(c => c._id);
@@ -1136,10 +1325,17 @@ export const getCampaignMessages = async (req, res) => {
 
     const ContactCampaignMessage = (await import('../models/message.model.js')).default;
 
+    // If master campaign, get messages from all sub-campaigns
+    let campaignIds = [campaign._id];
+    if (campaign.isMaster) {
+      const subCampaigns = await Campaign.find({ masterCampaignId: campaign._id }).select('_id').lean();
+      campaignIds = [...campaignIds, ...subCampaigns.map(s => s._id)];
+    }
+
     // Build aggregation pipeline
     const matchStage = {
       userId: campaign.userId,
-      'campaigns.campaignId': campaign._id
+      'campaigns.campaignId': { $in: campaignIds }
     };
 
     if (search) {
@@ -1150,7 +1346,7 @@ export const getCampaignMessages = async (req, res) => {
     const pipeline = [
       { $match: matchStage },
       { $unwind: '$campaigns' },
-      { $match: { 'campaigns.campaignId': campaign._id } }
+      { $match: { 'campaigns.campaignId': { $in: campaignIds } } }
     ];
 
     if (status && status !== 'all') {
@@ -1222,10 +1418,10 @@ export const getAllCampaignMessagesForExport = async (req, res) => {
     // Admin can access any campaign, regular users only their own
     let campaign;
     if (isAdmin) {
-      campaign = await Campaign.findById(campaignId).select('_id userId').lean();
+      campaign = await Campaign.findById(campaignId).select('_id userId isMaster masterCampaignId').lean();
       console.log('[Campaign] Admin looking for campaign:', campaignId, 'Found:', !!campaign);
     } else {
-      campaign = await Campaign.findOne({ _id: campaignId, userId }).select('_id userId').lean();
+      campaign = await Campaign.findOne({ _id: campaignId, userId }).select('_id userId isMaster masterCampaignId').lean();
       console.log('[Campaign] User looking for campaign:', campaignId, 'userId:', userId, 'Found:', !!campaign);
     }
 
@@ -1239,16 +1435,23 @@ export const getAllCampaignMessagesForExport = async (req, res) => {
 
     const ContactCampaignMessage = (await import('../models/message.model.js')).default;
 
+    // If master campaign, get messages from all sub-campaigns
+    let campaignIds = [campaign._id];
+    if (campaign.isMaster) {
+      const subCampaigns = await Campaign.find({ masterCampaignId: campaign._id }).select('_id').lean();
+      campaignIds = [...campaignIds, ...subCampaigns.map(s => s._id)];
+    }
+
     // Optimized aggregation with index hints and limited projection
     const messages = await ContactCampaignMessage.aggregate([
       { 
         $match: { 
           userId: campaign.userId, 
-          'campaigns.campaignId': campaign._id 
+          'campaigns.campaignId': { $in: campaignIds } 
         } 
       },
       { $unwind: '$campaigns' },
-      { $match: { 'campaigns.campaignId': campaign._id } },
+      { $match: { 'campaigns.campaignId': { $in: campaignIds } } },
       {
         $project: {
           _id: 0,
@@ -1297,7 +1500,8 @@ export const getAllCampaignsForExport = async (req, res) => {
       search = search[0];
     }
 
-    let query = {};
+    // Only show master campaigns or standalone campaigns (hide sub-campaigns)
+    let query = { $or: [{ isMaster: true }, { isMaster: { $exists: false } }, { masterCampaignId: { $exists: false } }] };
     
     // If not admin or userId is provided, filter by userId
     if (!isAdmin) {

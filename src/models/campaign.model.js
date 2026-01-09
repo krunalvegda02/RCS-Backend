@@ -21,19 +21,28 @@ const campaignSchema = new mongoose.Schema(
       required: true,
     },
 
-
+    // Master/Sub Campaign Structure
+    isMaster: {
+      type: Boolean,
+      default: false,
+      index: true
+    },
+    masterCampaignId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Campaign',
+      index: true
+    },
+    subCampaignIndex: Number,
 
     // Campaign Status
     status: {
       type: String,
-      enum: ['processing','pending', 'completed'],
+      enum: ['processing','pending', 'completed', 'failed'],
       default: 'pending',
       index: true,
     },
 
     completedAt: Date,
-
-    
 
     // Statistics (cached for performance)
     stats: {
@@ -74,11 +83,11 @@ const campaignSchema = new mongoose.Schema(
     // Budget/Rate Limit
     estimatedCost: {
       type: Number,
-      default: 0, // Based on RCS capable recipients only
+      default: 0,
     },
     actualCost: {
       type: Number,
-      default: 0, // Actual amount charged
+      default: 0,
     },
   },
   {
@@ -91,91 +100,15 @@ const campaignSchema = new mongoose.Schema(
 campaignSchema.index({ userId: 1, status: 1 });
 campaignSchema.index({ templateId: 1 });
 campaignSchema.index({ createdAt: -1 });
-campaignSchema.index({ 'recipients.status': 1 });
+campaignSchema.index({ masterCampaignId: 1, isMaster: 1 });
 
-// Methods
-campaignSchema.methods.updateStats = async function () {
-  // Count recipients by their current status
-  const statusCounts = {
-    pending: 0,
-    queued: 0,
-    processing: 0,
-    sent: 0,
-    delivered: 0,
-    read: 0,
-    replied: 0,
-    failed: 0,
-    bounced: 0
-  };
-
-  this.recipients.forEach(r => {
-    if (statusCounts.hasOwnProperty(r.status)) {
-      statusCounts[r.status]++;
-    }
-  });
-
-  // Get RCS capable count from recipients or ContactBatch data
-  let rcsCapableCount = this.recipients.filter(r => r.isRcsCapable === true).length;
-  let totalCount = this.recipients.length;
-
-  // If no recipients but we might have ContactBatch data, check there
-  if (this.recipients.length === 0) {
-    try {
-      const ContactBatch = mongoose.model('ContactBatch');
-      const batchSummary = await ContactBatch.aggregate([
-        { $match: { campaignId: this._id } },
-        {
-          $group: {
-            _id: null,
-            totalContacts: { $sum: '$totalContacts' },
-            totalRcsCapable: { $sum: '$rcsCapableCount' }
-          }
-        }
-      ]);
-
-      if (batchSummary.length > 0) {
-        totalCount = batchSummary[0].totalContacts || 0;
-        rcsCapableCount = batchSummary[0].totalRcsCapable || 0;
-      }
-    } catch (error) {
-      console.log('[Campaign] Could not access ContactBatch data for stats:', error.message);
-    }
-  }
-
-  // Calculate cumulative stats (read includes delivered and sent, etc.)
-  const stats = {
-    total: totalCount,
-    pending: statusCounts.pending,
-    processing: statusCounts.processing + statusCounts.queued, // Include queued in processing
-    // Sent = all messages that reached sent status or beyond
-    sent: statusCounts.sent + statusCounts.delivered + statusCounts.read + statusCounts.replied,
-    // Delivered = all messages that reached delivered status or beyond
-    delivered: statusCounts.delivered + statusCounts.read + statusCounts.replied,
-    // Read = all messages that reached read status or beyond
-    read: statusCounts.read + statusCounts.replied,
-    // Replied = only messages with replied status
-    replied: statusCounts.replied,
-    failed: statusCounts.failed,
-    bounced: statusCounts.bounced,
-    rcsCapable: rcsCapableCount,
-  };
-
-  stats.successRate = stats.total > 0 ? (stats.delivered / stats.total) * 100 : 0;
-  stats.failureRate = stats.total > 0 ? ((stats.failed + stats.bounced) / stats.total) * 100 : 0;
-  stats.lastUpdatedAt = new Date();
-
-  this.stats = stats;
-  await this.save();
-};
-
-// Sync campaign recipients status from ContactCampaignMessage collection for accurate data
-campaignSchema.methods.syncFromMessages = async function (force = false) {
-  try {
-    // Import model dynamically to avoid circular dependency
-    const ContactCampaignMessage = (await import('./message.model.js')).default;
-    
-    // Aggregate campaign states for this campaign
-    const campaignStats = await ContactCampaignMessage.aggregate([
+// Sync stats from ContactCampaignMessage
+campaignSchema.methods.syncStats = async function () {
+  const ContactCampaignMessage = (await import('./message.model.js')).default;
+  
+  // If this is a sub-campaign, sync from messages
+  if (!this.isMaster) {
+    const stats = await ContactCampaignMessage.aggregate([
       { $match: { userId: this.userId, 'campaigns.campaignId': this._id } },
       { $unwind: '$campaigns' },
       { $match: { 'campaigns.campaignId': this._id } },
@@ -187,185 +120,73 @@ campaignSchema.methods.syncFromMessages = async function (force = false) {
       }
     ]);
 
-    if (campaignStats.length === 0) {
-      return { synced: false, reason: 'No messages found' };
-    }
-
-    // Build status counts
-    const statusCounts = {
-      draft: 0,
-      queued: 0,
-      processing: 0,
-      sent: 0,
-      delivered: 0,
-      read: 0,
-      replied: 0,
-      failed: 0,
-      bounced: 0
-    };
-
-    campaignStats.forEach(stat => {
-      if (statusCounts.hasOwnProperty(stat._id)) {
-        statusCounts[stat._id] = stat.count;
-      }
+    const statusCounts = { sent: 0, delivered: 0, failed: 0, pending: 0 };
+    stats.forEach(s => {
+      if (['sent', 'delivered', 'read', 'replied'].includes(s._id)) statusCounts.sent += s.count;
+      if (['delivered', 'read', 'replied'].includes(s._id)) statusCounts.delivered += s.count;
+      if (s._id === 'failed') statusCounts.failed += s.count;
+      if (['draft', 'queued'].includes(s._id)) statusCounts.pending += s.count;
     });
 
-    // Calculate cumulative stats
-    const stats = {
-      total: this.stats?.total || 0,
-      pending: statusCounts.draft + statusCounts.queued,
-      processing: statusCounts.processing,
-      sent: statusCounts.sent + statusCounts.delivered + statusCounts.read + statusCounts.replied,
-      delivered: statusCounts.delivered + statusCounts.read + statusCounts.replied,
-      read: statusCounts.read + statusCounts.replied,
-      replied: statusCounts.replied,
-      failed: statusCounts.failed,
-      bounced: statusCounts.bounced,
-      rcsCapable: this.stats?.rcsCapable || 0
-    };
-
-    stats.successRate = stats.total > 0 ? (stats.delivered / stats.total) * 100 : 0;
-    stats.failureRate = stats.total > 0 ? ((stats.failed + stats.bounced) / stats.total) * 100 : 0;
-    stats.lastUpdatedAt = new Date();
-
-    this.stats = stats;
+    this.stats = { ...this.stats, ...statusCounts };
     await this.save();
-
-    return {
-      synced: true,
-      stats: stats
-    };
-  } catch (error) {
-    console.error('[Campaign] Error syncing from Messages:', error);
-    return { synced: false, reason: error.message };
+    
+    // Update master campaign if exists
+    if (this.masterCampaignId) {
+      const Campaign = mongoose.model('Campaign');
+      const master = await Campaign.findById(this.masterCampaignId);
+      if (master) await master.syncMasterStats();
+    }
+    
+    return this.stats;
   }
+  
+  // If master, aggregate from sub-campaigns
+  return this.syncMasterStats();
 };
 
-// Sync ContactBatch data to main campaign recipients
-campaignSchema.methods.syncFromContactBatches = async function () {
-  try {
-    const ContactBatch = mongoose.model('ContactBatch');
-    const batches = await ContactBatch.find({ campaignId: this._id });
-
-    if (batches.length === 0) {
-      return { synced: false, reason: 'No contact batches found' };
-    }
-
-    // Build recipients array from batches
-    const recipients = [];
-    let totalRcsCapable = 0;
-
-    for (const batch of batches) {
-      if (batch.capabilityResults && batch.capabilityResults.length > 0) {
-        for (const result of batch.capabilityResults) {
-          recipients.push({
-            phoneNumber: result.phoneNumber.replace(/^\+?91/, ''),
-            variables: {},
-            status: 'pending',
-            isRcsCapable: result.isRcsCapable
-          });
-
-          if (result.isRcsCapable === true) {
-            totalRcsCapable++;
-          }
-        }
-      } else {
-        for (const phone of batch.phoneNumbers) {
-          recipients.push({
-            phoneNumber: phone,
-            variables: {},
-            status: 'pending',
-            isRcsCapable: null
-          });
-        }
-      }
-    }
-
-    // Update campaign with recipients from batches
-    this.recipients = recipients;
-    this.stats.total = recipients.length;
-    this.stats.pending = recipients.length;
-    this.stats.rcsCapable = totalRcsCapable;
-
-    await this.save();
-
-    return {
-      synced: true,
-      totalRecipients: recipients.length,
-      rcsCapable: totalRcsCapable
-    };
-  } catch (error) {
-    console.error('[Campaign] Error syncing from ContactBatches:', error);
-    return { synced: false, reason: error.message };
-  }
-};
-
-// Get accurate RCS capable count from all sources
-campaignSchema.methods.getAccurateRcsCount = async function () {
-  // First try from recipients
-  let rcsCapableCount = this.recipients.filter(r => r.isRcsCapable === true).length;
-  let totalCount = this.recipients.length;
-
-  // If no recipients, check ContactBatch data
-  if (this.recipients.length === 0) {
-    try {
-      const ContactBatch = mongoose.model('ContactBatch');
-      const batchSummary = await ContactBatch.aggregate([
-        { $match: { campaignId: this._id } },
-        {
-          $group: {
-            _id: null,
-            totalContacts: { $sum: '$totalContacts' },
-            totalRcsCapable: { $sum: '$rcsCapableCount' }
-          }
-        }
-      ]);
-
-      if (batchSummary.length > 0) {
-        totalCount = batchSummary[0].totalContacts || 0;
-        rcsCapableCount = batchSummary[0].totalRcsCapable || 0;
-      }
-    } catch (error) {
-      console.log('[Campaign] Could not access ContactBatch data:', error.message);
-    }
-  }
-
-  return {
-    total: totalCount,
-    rcsCapable: rcsCapableCount,
-    source: this.recipients.length > 0 ? 'recipients' : 'contactBatches'
+// Sync master campaign stats from all sub-campaigns
+campaignSchema.methods.syncMasterStats = async function () {
+  if (!this.isMaster) return this.stats;
+  
+  const Campaign = mongoose.model('Campaign');
+  const subCampaigns = await Campaign.find({ masterCampaignId: this._id, isMaster: false }).lean();
+  
+  const aggregated = {
+    total: 0,
+    sent: 0,
+    delivered: 0,
+    failed: 0,
+    pending: 0,
+    read: 0,
+    replied: 0
   };
-};
-
-campaignSchema.methods.getPendingRecipients = function (limit = 100) {
-  return this.recipients.filter(r => r.status === 'pending').slice(0, limit);
-};
-
-campaignSchema.methods.markRecipientAsSent = async function (phoneNumber, messageId) {
-  const recipient = this.recipients.find(r => r.phoneNumber === phoneNumber);
-  if (recipient) {
-    recipient.status = 'sent';
-    recipient.messageId = messageId;
-    recipient.sentAt = new Date();
-    await this.save();
+  
+  subCampaigns.forEach(sub => {
+    aggregated.total += sub.stats?.total || 0;
+    aggregated.sent += sub.stats?.sent || 0;
+    aggregated.delivered += sub.stats?.delivered || 0;
+    aggregated.failed += sub.stats?.failed || 0;
+    aggregated.pending += sub.stats?.pending || 0;
+    aggregated.read += sub.stats?.read || 0;
+    aggregated.replied += sub.stats?.replied || 0;
+  });
+  
+  this.stats = aggregated;
+  
+  // Update status based on sub-campaigns
+  const allCompleted = subCampaigns.every(s => s.status === 'completed');
+  const anyFailed = subCampaigns.some(s => s.status === 'failed');
+  
+  if (allCompleted) {
+    this.status = 'completed';
+    this.completedAt = new Date();
+  } else if (anyFailed && subCampaigns.every(s => ['completed', 'failed'].includes(s.status))) {
+    this.status = 'completed'; // Partial completion
   }
-};
-
-campaignSchema.methods.markRecipientAsFailed = async function (phoneNumber, reason) {
-  const recipient = this.recipients.find(r => r.phoneNumber === phoneNumber);
-  if (recipient) {
-    recipient.status = 'failed';
-    recipient.failureReason = reason;
-    await this.save();
-  }
-};
-
-campaignSchema.methods.markRecipientAsProcessing = async function (phoneNumber) {
-  const recipient = this.recipients.find(r => r.phoneNumber === phoneNumber);
-  if (recipient) {
-    recipient.status = 'processing';
-    await this.save();
-  }
+  
+  await this.save();
+  return this.stats;
 };
 
 export default mongoose.model('Campaign', campaignSchema);
