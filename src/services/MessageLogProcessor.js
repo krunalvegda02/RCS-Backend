@@ -54,6 +54,22 @@ class MessageLogProcessor {
   async processBatch(logs) {
     const bulkOps = [];
     const walletOps = new Map();
+    const logIds = logs.map(l => l._id);
+
+    // Mark logs as being processed immediately (atomic operation)
+    const markResult = await MessageLog.updateMany(
+      { _id: { $in: logIds }, processed: false },
+      { $set: { processed: true, processedAt: new Date() } }
+    );
+
+    // If no logs were actually marked (another worker got them), skip processing
+    if (markResult.modifiedCount === 0) {
+      console.log(`[LogProcessor] ⚠️  Batch already processed by another worker, skipping...`);
+      return;
+    }
+
+    console.log(`[LogProcessor] Locked ${markResult.modifiedCount} logs for processing`);
+
     const processedIds = [];
 
     for (const log of logs) {
@@ -152,6 +168,7 @@ class MessageLogProcessor {
         }
 
         processedIds.push(log._id);
+        processedIds.push(log._id);
       }
 
       // Execute bulk updates
@@ -188,8 +205,7 @@ class MessageLogProcessor {
         }
       }
 
-      // Mark logs as processed
-      await MessageLog.markAsProcessed(processedIds);
+      // Mark logs as processed (already done at start of batch)
       console.log(`[LogProcessor] ✅ Marked ${processedIds.length} logs as processed`);
   }
 }
