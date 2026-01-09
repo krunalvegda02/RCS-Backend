@@ -915,7 +915,7 @@ export const getUserCampaignReports = async (req, res) => {
       {
         $group: {
           _id: null,
-          totalSent: { $sum: { $cond: [{ $in: ['$campaigns.status', ['sent', 'delivered', 'read', 'replied']] }, 1, 0] } },
+          totalSent: { $sum: { $cond: [{ $in: ['$campaigns.status', ['sent', 'delivered', 'read', 'replied', 'failed']] }, 1, 0] } },
           totalDelivered: { $sum: { $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0] } },
           totalFailed: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'failed'] }, 1, 0] } }
         }
@@ -1024,27 +1024,62 @@ export const getAllForAdmin = async (req, res) => {
     const startIndex = (page - 1) * limit;
     const paginatedCampaigns = allCampaigns.slice(startIndex, startIndex + limit);
 
-    // Wait for sync (cached for 10s)
-    await Promise.all(paginatedCampaigns.map(c => c.syncFromMessages()));
+    // Get campaign IDs for aggregation
+    const campaignIds = paginatedCampaigns.map(c => c._id);
 
-    // Get universal stats
-    const allCampaignsForStats = await Campaign.find({}).select('stats');
-    const universalStats = allCampaignsForStats.reduce((acc, campaign) => {
-      acc.totalCampaigns += 1;
-      acc.totalDelivered += campaign.stats?.sent || 0;
-      acc.totalFailed += campaign.stats?.failed || 0;
-      return acc;
-    }, { totalCampaigns: 0, totalDelivered: 0, totalFailed: 0 });
+    // Get ContactCampaignMessage model and aggregate stats
+    const ContactCampaignMessage = (await import('../models/message.model.js')).default;
+    
+    // Aggregate stats for paginated campaigns
+    const campaignStatsAgg = await ContactCampaignMessage.aggregate([
+      { $match: { 'campaigns.campaignId': { $in: campaignIds } } },
+      { $unwind: '$campaigns' },
+      { $match: { 'campaigns.campaignId': { $in: campaignIds } } },
+      {
+        $group: {
+          _id: '$campaigns.campaignId',
+          totalDelivered: { $sum: { $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0] } },
+          totalFailed: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'failed'] }, 1, 0] } }
+        }
+      }
+    ]);
+
+    // Create stats map
+    const statsMap = {};
+    campaignStatsAgg.forEach(stat => {
+      statsMap[stat._id.toString()] = {
+        totalDelivered: stat.totalDelivered || 0,
+        totalFailed: stat.totalFailed || 0
+      };
+    });
+
+    // Get universal stats by aggregating from ContactCampaignMessage
+    const universalStatsResult = await ContactCampaignMessage.aggregate([
+      { $unwind: '$campaigns' },
+      {
+        $group: {
+          _id: null,
+          totalSent: { $sum: { $cond: [{ $in: ['$campaigns.status', ['sent', 'delivered', 'read', 'replied', 'failed']] }, 1, 0] } },
+          totalDelivered: { $sum: { $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0] } },
+          totalFailed: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'failed'] }, 1, 0] } }
+        }
+      }
+    ]);
+    
+    const universalStats = universalStatsResult[0] || { totalSent: 0, totalDelivered: 0, totalFailed: 0 };
+    universalStats.totalCampaigns = total;
 
     const transformedCampaigns = paginatedCampaigns.map(campaign => {
       const campaignObj = campaign.toObject ? campaign.toObject() : campaign;
+      const stats = statsMap[campaignObj._id.toString()] || { totalDelivered: 0, totalFailed: 0 };
       return {
         _id: campaignObj._id,
         CampaignName: campaignObj.name,
         type: campaignObj.templateId?.templateType,
         cost: campaignObj.stats?.total || 0,
         successCount: campaignObj.stats?.sent || 0,
-        failedCount: campaignObj.stats?.failed || 0,
+        failedCount: stats.totalFailed,
+        totalDelivered: stats.totalDelivered,
         status: campaignObj.status,
         createdAt: campaignObj.createdAt,
         userId: campaignObj.userId
