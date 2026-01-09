@@ -7,7 +7,7 @@ import statsService from '../services/CampaignStatsService.js';
 
 // Process Jio webhook status updates - LIGHTWEIGHT VERSION
 export async function processWebhookData(data, timestamp) {
-  console.log('[Webhook] ========== START PROCESSING ==========');
+  // console.log('[Webhook] ========== START PROCESSING ==========');
   console.log('[Webhook] Full webhook data:', JSON.stringify(data, null, 2));
   
   try {
@@ -18,7 +18,7 @@ export async function processWebhookData(data, timestamp) {
 
     if (!messageId) {
       console.warn('[Webhook] ❌ No messageId found in webhook data');
-      console.log('[Webhook] ========== END (NO MESSAGE ID) ==========');
+      // console.log('[Webhook] ========== END (NO MESSAGE ID) ==========');
       return;
     }
 
@@ -27,8 +27,7 @@ export async function processWebhookData(data, timestamp) {
     const campaignId = await getCampaignIdFromMessage(messageId);
     const userId = await getUserIdFromMessage(messageId);
 
-    console.log(`[Webhook] Query results: userId=${userId}, campaignId=${campaignId}`);
-
+  
     if (!userId) {
       console.warn(`[Webhook] ❌ No userId found for messageId: ${messageId}`);
       console.warn(`[Webhook] This usually means the message failed to send and was never saved to database`);
@@ -63,7 +62,7 @@ export async function processWebhookData(data, timestamp) {
     }
 
     // Just create log entry - processor will handle the rest
-    console.log('[Webhook] Creating MessageLog entry...');
+    // console.log('[Webhook] Creating MessageLog entry...');
     const logData = {
       messageId,
       campaignId,
@@ -73,11 +72,11 @@ export async function processWebhookData(data, timestamp) {
       isUserInteraction: false,
       rawPayload: data
     };
-    console.log('[Webhook] Log data:', JSON.stringify(logData, null, 2));
+    // console.log('[Webhook] Log data:', JSON.stringify(logData, null, 2));
     
     try {
       const createdLog = await MessageLog.logWebhookEvent(logData);
-      console.log(`[Webhook] ✅ MessageLog created with ID: ${createdLog._id}`);
+      // console.log(`[Webhook] ✅ MessageLog created with ID: ${createdLog._id}`);
       
       // Verify it was actually saved
       const verify = await MessageLog.findById(createdLog._id);
@@ -152,7 +151,7 @@ async function getCampaignIdFromMessage(messageId) {
     ).lean();
     
     const campaignId = message?.campaigns?.[0]?.campaignId;
-    console.log(`[Webhook] Found campaignId: ${campaignId} for messageId: ${messageId}`);
+    // console.log(`[Webhook] Found campaignId: ${campaignId} for messageId: ${messageId}`);
     return campaignId;
   } catch (error) {
     console.error(`[Webhook] Error getting campaignId for ${messageId}:`, error.message);
@@ -168,7 +167,7 @@ async function getUserIdFromMessage(messageId) {
     ).lean();
     
     const userId = message?.userId;
-    console.log(`[Webhook] Found userId: ${userId} for messageId: ${messageId}`);
+    // console.log(`[Webhook] Found userId: ${userId} for messageId: ${messageId}`);
     return userId;
   } catch (error) {
     console.error(`[Webhook] Error getting userId for ${messageId}:`, error.message);

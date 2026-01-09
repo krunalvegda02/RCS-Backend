@@ -6,40 +6,76 @@ import Campaign from '../models/campaign.model.js';
 class MessageLogProcessor {
   constructor() {
     this.isProcessing = false;
-    this.batchSize = 2000; // Optimized for high load (200K messages)
+    this.batchSize = 5000; // Increased for 200K+ logs
   }
 
   async start(intervalMs = 5000) {
     console.log(`[LogProcessor] Starting with ${intervalMs}ms interval`);
     
+    // Process immediately on start
+    await this.processAllPending();
+    
     setInterval(async () => {
       if (!this.isProcessing) {
-        await this.processBatch();
+        await this.processAllPending();
       }
     }, intervalMs);
   }
 
-  async processBatch() {
+  async processAllPending() {
     this.isProcessing = true;
     
     try {
-      const logs = await MessageLog.getUnprocessedLogs(this.batchSize);
-      
-      if (logs.length === 0) {
-        this.isProcessing = false;
-        return;
+      let totalProcessed = 0;
+      let hasMore = true;
+
+      while (hasMore) {
+        const logs = await MessageLog.getUnprocessedLogs(this.batchSize);
+        
+        if (logs.length === 0) {
+          hasMore = false;
+          if (totalProcessed > 0) {
+            console.log(`[LogProcessor] ✅ Completed processing ${totalProcessed} logs`);
+          }
+          break;
+        }
+
+        console.log(`[LogProcessor] Processing batch of ${logs.length} logs...`);
+        await this.processBatch(logs);
+        totalProcessed += logs.length;
       }
+    } catch (error) {
+      console.error('[LogProcessor] Error in processAllPending:', error.message);
+    } finally {
+      this.isProcessing = false;
+    }
+  }
 
-      console.log(`[LogProcessor] Processing ${logs.length} webhook logs`);
+  async processBatch(logs) {
+    const bulkOps = [];
+    const walletOps = new Map();
+    const processedIds = [];
 
-      const bulkOps = [];
-      const walletOps = new Map();
-      const processedIds = [];
-
-      for (const log of logs) {
+    for (const log of logs) {
         const { messageId, webhookData, campaignId, userId } = log;
         const eventType = webhookData?.eventType;
-        const timestamp = log.timestamp;
+        const entity = webhookData?.rawPayload?.entity;
+        
+        // Get timestamp based on event type
+        let webhookTimestamp;
+        if (entity?.sendTime) {
+          webhookTimestamp = entity.sendTime; // For SEND_MESSAGE_FAILURE, MESSAGE_SENT
+        } else if (entity?.deliveryTime) {
+          webhookTimestamp = entity.deliveryTime; // For MESSAGE_DELIVERED
+        } else if (entity?.readTime) {
+          webhookTimestamp = entity.readTime; // For MESSAGE_READ
+        } else if (entity?.receiveTime) {
+          webhookTimestamp = entity.receiveTime; // For USER_MESSAGE
+        } else {
+          webhookTimestamp = log.timestamp; // Fallback to log creation time
+        }
+        
+        const timestamp = new Date(webhookTimestamp);
 
         let newStatus = null;
         let updateFields = {};
@@ -120,35 +156,41 @@ class MessageLogProcessor {
 
       // Execute bulk updates
       if (bulkOps.length > 0) {
-        await ContactCampaignMessage.bulkWrite(bulkOps, { ordered: false });
-        console.log(`[LogProcessor] Updated ${bulkOps.length} messages`);
+        try {
+          const result = await ContactCampaignMessage.bulkWrite(bulkOps, { ordered: false });
+          console.log(`[LogProcessor] ✅ Messages: ${result.modifiedCount} updated, ${result.matchedCount} matched`);
+        } catch (bulkError) {
+          console.error(`[LogProcessor] Bulk write error:`, bulkError.message);
+        }
+      } else {
+        console.log(`[LogProcessor] ⚠️  No message updates (0 bulk operations)`);
       }
 
       // Process wallet operations in bulk
-      for (const [userId, ops] of walletOps.entries()) {
-        try {
-          const user = await User.findById(userId);
-          if (user) {
-            user.wallet.blockedBalance = Math.max(0, (user.wallet.blockedBalance || 0) - ops.delivered - ops.refund);
-            user.wallet.balance += ops.refund;
-            user.wallet.lastUpdated = new Date();
-            await user.save();
-            console.log(`[LogProcessor] Wallet updated for user ${userId}: -${ops.delivered} delivered, +${ops.refund} refunded`);
+      if (walletOps.size > 0) {
+        console.log(`[LogProcessor] Processing wallet updates for ${walletOps.size} users...`);
+        for (const [userId, ops] of walletOps.entries()) {
+          try {
+            await User.updateOne(
+              { _id: userId },
+              {
+                $inc: {
+                  'wallet.blockedBalance': -(ops.delivered + ops.refund),
+                  'wallet.balance': ops.refund
+                },
+                $set: { 'wallet.lastUpdated': new Date() }
+              }
+            );
+            console.log(`[LogProcessor] ✅ Wallet updated: User ${userId} | Delivered: ${ops.delivered}, Refund: ${ops.refund}`);
+          } catch (error) {
+            console.error(`[LogProcessor] Wallet error for ${userId}:`, error.message);
           }
-        } catch (error) {
-          console.error(`[LogProcessor] Wallet error for ${userId}:`, error.message);
         }
       }
 
       // Mark logs as processed
       await MessageLog.markAsProcessed(processedIds);
-      console.log(`[LogProcessor] Marked ${processedIds.length} logs as processed`);
-
-    } catch (error) {
-      console.error('[LogProcessor] Batch processing error:', error);
-    } finally {
-      this.isProcessing = false;
-    }
+      console.log(`[LogProcessor] ✅ Marked ${processedIds.length} logs as processed`);
   }
 }
 
