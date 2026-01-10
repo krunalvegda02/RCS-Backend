@@ -2,216 +2,52 @@ import MessageLog from '../models/messageLog.model.js';
 import ContactCampaignMessage from '../models/message.model.js';
 import User from '../models/user.model.js';
 import Campaign from '../models/campaign.model.js';
+import { sendStatsToKafka } from './kafka.service.js';
 
 class MessageLogProcessor {
   constructor() {
     this.isProcessing = false;
-    this.batchSize = 5000; // Increased for 200K+ logs
+    this.batchSize = 5000;
   }
 
   async start(intervalMs = 5000) {
-    console.log(`[LogProcessor] Starting with ${intervalMs}ms interval`);
+    console.log(`[LogProcessor] Starting Kafka-based processor with ${intervalMs}ms interval`);
     
-    // Process immediately on start
-    await this.processAllPending();
+    await this.sendUnprocessedToKafka();
     
     setInterval(async () => {
       if (!this.isProcessing) {
-        await this.processAllPending();
+        await this.sendUnprocessedToKafka();
       }
     }, intervalMs);
   }
 
-  async processAllPending() {
+  async sendUnprocessedToKafka() {
     this.isProcessing = true;
     
     try {
-      let totalProcessed = 0;
-      let hasMore = true;
-
-      while (hasMore) {
-        const logs = await MessageLog.getUnprocessedLogs(this.batchSize);
-        
-        if (logs.length === 0) {
-          hasMore = false;
-          if (totalProcessed > 0) {
-            console.log(`[LogProcessor] ✅ Completed processing ${totalProcessed} logs`);
-          }
-          break;
-        }
-
-        console.log(`[LogProcessor] Processing batch of ${logs.length} logs...`);
-        await this.processBatch(logs);
-        totalProcessed += logs.length;
+      const logs = await MessageLog.find({ processed: false })
+        .select('_id')
+        .limit(this.batchSize)
+        .lean();
+      
+      if (logs.length === 0) {
+        this.isProcessing = false;
+        return;
       }
+      
+      console.log(`[LogProcessor] Sending ${logs.length} unprocessed logs to Kafka...`);
+      
+      for (const log of logs) {
+        sendStatsToKafka({ logId: log._id.toString() });
+      }
+      
+      console.log(`[LogProcessor] ✅ Sent ${logs.length} logs to Kafka for processing`);
     } catch (error) {
-      console.error('[LogProcessor] Error in processAllPending:', error.message);
+      console.error('[LogProcessor] Error:', error.message);
     } finally {
       this.isProcessing = false;
     }
-  }
-
-  async processBatch(logs) {
-    const bulkOps = [];
-    const walletOps = new Map();
-    const logIds = logs.map(l => l._id);
-
-    // Mark logs as being processed immediately (atomic operation)
-    const markResult = await MessageLog.updateMany(
-      { _id: { $in: logIds }, processed: false },
-      { $set: { processed: true, processedAt: new Date() } }
-    );
-
-    // If no logs were actually marked (another worker got them), skip processing
-    if (markResult.modifiedCount === 0) {
-      console.log(`[LogProcessor] ⚠️  Batch already processed by another worker, skipping...`);
-      return;
-    }
-
-    console.log(`[LogProcessor] Locked ${markResult.modifiedCount} logs for processing`);
-
-    const processedIds = [];
-
-    for (const log of logs) {
-        const { messageId, webhookData, campaignId, userId } = log;
-        const eventType = webhookData?.eventType;
-        const entity = webhookData?.rawPayload?.entity;
-        
-        // Get timestamp based on event type
-        let webhookTimestamp;
-        if (entity?.sendTime) {
-          webhookTimestamp = entity.sendTime;
-        } else if (entity?.deliveryTime) {
-          webhookTimestamp = entity.deliveryTime;
-        } else if (entity?.readTime) {
-          webhookTimestamp = entity.readTime;
-        } else if (entity?.receiveTime) {
-          webhookTimestamp = entity.receiveTime;
-        } else {
-          webhookTimestamp = log.timestamp;
-        }
-        
-        // Convert to UTC Date - webhook sends ISO string with timezone (e.g., +05:30)
-        // JavaScript Date constructor automatically converts to UTC
-        const timestamp = new Date(webhookTimestamp);
-        
-        // Debug log to verify conversion
-        console.log(`[LogProcessor] Webhook time: ${webhookTimestamp} -> UTC: ${timestamp.toISOString()}`);
-
-        let newStatus = null;
-        let updateFields = {};
-
-        // Map webhook event to status
-        switch (eventType) {
-          case 'MESSAGE_SENT':
-          case 'SEND_MESSAGE_SUCCESS':
-            newStatus = 'sent';
-            updateFields['campaigns.$.sentAt'] = timestamp;
-            break;
-
-          case 'MESSAGE_DELIVERED':
-            newStatus = 'delivered';
-            updateFields['campaigns.$.deliveredAt'] = timestamp;
-            // Track wallet deduction
-            if (!walletOps.has(userId)) walletOps.set(userId, { delivered: 0, refund: 0 });
-            walletOps.get(userId).delivered += 1;
-            break;
-
-          case 'MESSAGE_READ':
-            newStatus = 'read';
-            updateFields['campaigns.$.readAt'] = timestamp;
-            break;
-
-          case 'SEND_MESSAGE_FAILURE':
-          case 'MESSAGE_EXPIRED':
-          case 'MESSAGE_REVOKED':
-            newStatus = 'failed';
-            updateFields['campaigns.$.failedAt'] = timestamp;
-            updateFields['campaigns.$.errorCode'] = webhookData.rawPayload?.entity?.error?.code || 'UNKNOWN';
-            updateFields['campaigns.$.errorMessage'] = webhookData.rawPayload?.entity?.error?.message || 'Failed';
-            // Track wallet refund
-            if (!walletOps.has(userId)) walletOps.set(userId, { delivered: 0, refund: 0 });
-            walletOps.get(userId).refund += 1;
-            break;
-
-          case 'USER_MESSAGE':
-            newStatus = 'replied';
-            updateFields['campaigns.$.lastInteractionAt'] = timestamp;
-            if (webhookData.suggestionResponse) {
-              updateFields['campaigns.$.suggestionResponse'] = webhookData.suggestionResponse;
-              updateFields['campaigns.$.clickedAt'] = timestamp;
-              updateFields['campaigns.$.clickedAction'] = webhookData.suggestionResponse.plainText;
-            }
-            if (webhookData.rawPayload?.entity?.text) {
-              updateFields['campaigns.$.userText'] = webhookData.rawPayload.entity.text;
-            }
-            break;
-        }
-
-        if (newStatus) {
-          bulkOps.push({
-            updateOne: {
-              filter: {
-                'campaigns.messageId': messageId,
-                'campaigns.campaignId': campaignId
-              },
-              update: {
-                $set: {
-                  'campaigns.$.status': newStatus,
-                  'campaigns.$.lastWebhookAt': timestamp,
-                  ...updateFields
-                },
-                ...(webhookData.suggestionResponse && {
-                  $inc: { 'campaigns.$.userClickCount': 1 }
-                }),
-                ...(webhookData.rawPayload?.entity?.text && {
-                  $inc: { 'campaigns.$.userReplyCount': 1 }
-                })
-              }
-            }
-          });
-        }
-
-        processedIds.push(log._id);
-        processedIds.push(log._id);
-      }
-
-      // Execute bulk updates
-      if (bulkOps.length > 0) {
-        try {
-          const result = await ContactCampaignMessage.bulkWrite(bulkOps, { ordered: false });
-          console.log(`[LogProcessor] ✅ Messages: ${result.modifiedCount} updated, ${result.matchedCount} matched`);
-        } catch (bulkError) {
-          console.error(`[LogProcessor] Bulk write error:`, bulkError.message);
-        }
-      } else {
-        console.log(`[LogProcessor] ⚠️  No message updates (0 bulk operations)`);
-      }
-
-      // Process wallet operations in bulk
-      if (walletOps.size > 0) {
-        console.log(`[LogProcessor] Processing wallet updates for ${walletOps.size} users...`);
-        for (const [userId, ops] of walletOps.entries()) {
-          try {
-            await User.updateOne(
-              { _id: userId },
-              {
-                $inc: {
-                  'wallet.blockedBalance': -(ops.delivered + ops.refund),
-                  'wallet.balance': ops.refund
-                },
-                $set: { 'wallet.lastUpdated': new Date() }
-              }
-            );
-            console.log(`[LogProcessor] ✅ Wallet updated: User ${userId} | Delivered: ${ops.delivered}, Refund: ${ops.refund}`);
-          } catch (error) {
-            console.error(`[LogProcessor] Wallet error for ${userId}:`, error.message);
-          }
-        }
-      }
-
-      // Mark logs as processed (already done at start of batch)
-      console.log(`[LogProcessor] ✅ Marked ${processedIds.length} logs as processed`);
   }
 }
 

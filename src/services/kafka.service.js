@@ -18,6 +18,15 @@ const producer = kafka.producer({
   }
 });
 
+const statsProducer = kafka.producer({
+  allowAutoTopicCreation: true,
+  maxInFlightRequests: 5,
+  retry: {
+    retries: 2,
+    initialRetryTime: 100
+  }
+});
+
 const consumer = kafka.consumer({
   groupId: 'webhook-processors',
   sessionTimeout: 30000,
@@ -25,7 +34,9 @@ const consumer = kafka.consumer({
 });
 
 let producerConnected = false;
+let statsProducerConnected = false;
 let connectingPromise = null;
+let statsConnectingPromise = null;
 
 export async function connectProducer() {
   if (producerConnected) return;
@@ -54,13 +65,39 @@ export async function sendWebhookToKafka(webhookData) {
       }]
     }).catch(err => {
       console.error('[Kafka] Send error:', err.message);
-      // Don't throw - Kafka will retry internally
     });
     
     return { success: true };
   } catch (error) {
     console.error('[Kafka] Producer error:', error.message);
-    return { success: false }; // Don't throw
+    return { success: false };
+  }
+}
+
+export async function sendStatsToKafka(logData) {
+  try {
+    if (!statsProducerConnected) {
+      if (!statsConnectingPromise) {
+        statsConnectingPromise = statsProducer.connect().then(() => {
+          statsProducerConnected = true;
+          statsConnectingPromise = null;
+          console.log('✅ Kafka Stats Producer connected');
+        });
+      }
+      await statsConnectingPromise;
+    }
+    
+    statsProducer.send({
+      topic: 'message-log-processing',
+      messages: [{
+        key: logData.logId,
+        value: JSON.stringify(logData)
+      }]
+    }).catch(err => {
+      console.error('[Kafka] Stats send error:', err.message);
+    });
+  } catch (error) {
+    console.error('[Kafka] Stats producer error:', error.message);
   }
 }
 
@@ -73,6 +110,7 @@ export async function connectConsumer() {
 
 export async function disconnectKafka() {
   await producer.disconnect();
+  await statsProducer.disconnect();
   await consumer.disconnect();
   console.log('🛑 Kafka disconnected');
 }
