@@ -115,4 +115,28 @@ export async function disconnectKafka() {
   console.log('🛑 Kafka disconnected');
 }
 
+export async function sendMessageToKafka(messageData) {
+  try {
+    if (!producerConnected) {
+      await connectProducer();
+    }
+    
+    producer.send({
+      topic: 'rcs-messages',
+      messages: [{
+        key: messageData.messageId,
+        value: JSON.stringify({
+          ...messageData,
+          retryCount: 0,
+          timestamp: Date.now()
+        })
+      }]
+    }).catch(err => {
+      console.error('[Kafka] Message send error:', err.message);
+    });
+  } catch (error) {
+    console.error('[Kafka] Producer error:', error.message);
+  }
+}
+
 export { kafka, producer, consumer };

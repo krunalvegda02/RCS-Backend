@@ -118,6 +118,40 @@ module.exports = {
       wait_ready: true,
       listen_timeout: 10000,
       restart_delay: 5000
+    },
+    {
+      name: 'message-sender',
+      script: 'src/workers/messageSender.js',
+      instances: 10,
+      exec_mode: 'fork',
+      env: {
+        NODE_ENV: 'production',
+        WORKER_MODE: 'true',
+        REDIS_HOST: '127.0.0.1',
+        REDIS_PORT: 6379,
+        MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
+        KAFKA_BROKER: 'localhost:9092'
+      },
+      wait_ready: true,
+      listen_timeout: 10000,
+      restart_delay: 5000
+    },
+    {
+      name: 'retry-processor',
+      script: 'src/workers/retryProcessor.js',
+      instances: 5,
+      exec_mode: 'fork',
+      env: {
+        NODE_ENV: 'production',
+        WORKER_MODE: 'true',
+        REDIS_HOST: '127.0.0.1',
+        REDIS_PORT: 6379,
+        MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
+        KAFKA_BROKER: 'localhost:9092'
+      },
+      wait_ready: true,
+      listen_timeout: 10000,
+      restart_delay: 5000
     }
   ]
 };
