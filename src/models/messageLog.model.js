@@ -119,11 +119,16 @@ const messageLogSchema = new mongoose.Schema(
 
 // Optimized indexes for high volume
 messageLogSchema.index({ userId: 1, timestamp: -1 });
-messageLogSchema.index({ messageId: 1, eventType: 1 });
 messageLogSchema.index({ campaignId: 1, status: 1 });
 messageLogSchema.index({ status: 1, timestamp: -1 });
 messageLogSchema.index({ eventType: 1, timestamp: -1 });
-messageLogSchema.index({ processed: 1, timestamp: 1 }); // For batch processing
+messageLogSchema.index({ processed: 1, timestamp: 1 });
+
+// CRITICAL: Unique index to prevent duplicates from Kafka retries/rebalancing
+messageLogSchema.index(
+  { messageId: 1, eventType: 1 },
+  { unique: true }
+);
 
 // TTL Index - auto-delete after 90 days
 messageLogSchema.index(
@@ -131,8 +136,10 @@ messageLogSchema.index(
   { expireAfterSeconds: 7776000 } // 90 days
 );
 
-// Static methods for efficient logging
+// ❌ DEPRECATED: Individual DB writes, not scalable for high throughput
+// Use MessageLog.insertMany() in kafkaConsumer.js instead
 messageLogSchema.statics.logCapabilityCheck = function(data) {
+  console.warn('[DEPRECATED] logCapabilityCheck: Use insertMany() for bulk operations');
   return this.create({
     messageId: data.messageId,
     userId: data.userId,
@@ -156,7 +163,10 @@ messageLogSchema.statics.logCapabilityCheck = function(data) {
   });
 };
 
+// ❌ DEPRECATED: Individual DB writes, not scalable for high throughput
+// Use MessageLog.insertMany() in kafkaConsumer.js instead
 messageLogSchema.statics.logMessageSend = function(data) {
+  console.warn('[DEPRECATED] logMessageSend: Use insertMany() for bulk operations');
   return this.create({
     messageId: data.messageId,
     campaignId: data.campaignId,
@@ -185,15 +195,10 @@ messageLogSchema.statics.logMessageSend = function(data) {
   });
 };
 
+// ❌ DEPRECATED: Individual DB writes, not scalable for high throughput
+// Use MessageLog.insertMany() in kafkaConsumer.js instead
 messageLogSchema.statics.logWebhookEvent = function(data) {
-  console.log('[MessageLog] Creating webhook log:', {
-    messageId: data.messageId,
-    campaignId: data.campaignId,
-    userId: data.userId,
-    eventType: data.eventType,
-    isUserInteraction: data.isUserInteraction
-  });
-  
+  console.warn('[DEPRECATED] logWebhookEvent: Use insertMany() for bulk operations');
   return this.create({
     messageId: data.messageId,
     campaignId: data.campaignId,
@@ -205,18 +210,12 @@ messageLogSchema.statics.logWebhookEvent = function(data) {
       phoneNumber: data.phoneNumber,
       interactionType: data.interactionType,
       suggestionResponse: data.suggestionResponse,
-      rawPayload: data.rawPayload, // Store full webhook data
+      rawPayload: data.rawPayload
     },
-    processed: false, // Mark as unprocessed
+    processed: false,
     metadata: {
-      source: 'webhook',
-    },
-  }).then(log => {
-    console.log('[MessageLog] ✅ Created log:', log._id);
-    return log;
-  }).catch(err => {
-    console.error('[MessageLog] ❌ Failed to create log:', err.message);
-    throw err;
+      source: 'webhook'
+    }
   });
 };
 

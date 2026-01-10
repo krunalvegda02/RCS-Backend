@@ -61,48 +61,23 @@ app.use((err, req, res, next) => {
 //Routes Import
 import router from "./routes/index.js";
 import realtimeRoutes from "./routes/realtime.routes.js";
-import Bull from 'bull';
 import { authenticateToken } from "./middlewares/auth.middleware.js";
-
-// ONLY queue creation - NO processing in API
-const webhookQueue = new Bull('webhook-processing', {
-  redis: {
-    host: process.env.REDIS_HOST || 'localhost',
-    port: process.env.REDIS_PORT || 6379
-  }
-});
+import { sendWebhookToKafka } from "./services/kafka.service.js";
 
 app.use("/api/v1", router);
 app.use("/api/realtime", authenticateToken, realtimeRoutes);
 
-app.post('/api/v1/jio/rcs/webhooks', async (req, res) => {  
-  const requestId = Math.random().toString(36).substr(2, 9);
-  // const requestId = "1234";
+// Jio RCS Webhook Endpoint (fire-and-forget to Kafka)
+app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
+  // Respond immediately
+  res.status(200).json({ success: true });
   
-  // Log incoming webhook
-  console.log(`🔔 [${requestId}] Webhook received:`, JSON.stringify(req.body, null, 2));
-  
-  try {
-    const entityType = req.body?.entityType;
-    const priority = entityType === "USER_MESSAGE" ? 5 : 10;
-    
-    await webhookQueue.add('webhook-data', {
-      data: req.body,
-      timestamp: Date.now(),
-      requestId
-    }, { priority });
-    
-    // Single response only
-    res.status(200).json({
-      success: true,
-      requestId
-    });
-    
-    console.log(`✅ [${requestId}] Queued: ${entityType}`);
-  } catch (error) {
-    console.error(`❌ [${requestId}] Queue error:`, error.message);
-    res.status(200).json({ success: true }); // Never fail webhooks
-  }
+  // Send to Kafka async (don't await)
+  sendWebhookToKafka({
+    data: req.body,
+    timestamp: Date.now(),
+    messageId: req.body?.entity?.messageId || req.body?.messageId
+  });
 });
 
 

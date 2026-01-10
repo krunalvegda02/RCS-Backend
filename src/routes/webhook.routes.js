@@ -1,8 +1,9 @@
 import express from 'express';
+import { handleWebhookWithKafka } from '../controller/webhookKafka.controller.js';
 
 const router = express.Router();
 
-// All webhook processing is now handled directly in app.js
-// This file is kept for potential future webhook endpoints
+// Kafka webhook endpoint (for 3000+ msg/sec)
+router.post('/kafka', handleWebhookWithKafka);
 
 export default router;

@@ -2,7 +2,6 @@
 import axios from 'axios';
 import Bull from 'bull';
 import { createClient } from 'redis';
-import mongoose from 'mongoose';
 import http from 'http';
 import https from 'https';
 
@@ -1594,9 +1593,6 @@ class JioRCSService {
         if (waiting.length > 0 || active.length > 0) {
           console.log(`[Queue Stats] Waiting: ${waiting.length}, Active: ${active.length}, Completed: ${completed.length}, Failed: ${failed.length}`);
         }
-
-        // Check for stuck campaigns every 30 seconds
-        await this.checkStuckCampaigns();
       } catch (error) {
         console.error('[Queue] Error getting stats:', error.message);
       }
@@ -1628,64 +1624,6 @@ class JioRCSService {
       }
     } catch (error) {
       console.error(`[RCS] Error checking campaign completion:`, error.message);
-    }
-  }
-
-  // Check for stuck campaigns and complete them
-  async checkStuckCampaigns() {
-    try {
-      const runningCampaigns = await Campaign.find({ status: 'running' });
-
-      for (const campaign of runningCampaigns) {
-        // Get actual message statuses
-        const messages = await Message.find({ campaignId: campaign._id });
-        const messageMap = new Map();
-        messages.forEach(msg => {
-          const phone = this.normalizePhoneForComparison(msg.recipientPhoneNumber);
-          messageMap.set(phone, msg);
-        });
-
-        // Sync recipient statuses with message statuses
-        let needsUpdate = false;
-        for (const recipient of campaign.recipients) {
-          const phone = this.normalizePhoneForComparison(recipient.phoneNumber);
-          const message = messageMap.get(phone);
-
-          if (message && recipient.status === 'queued' && message.status !== 'queued') {
-            recipient.status = message.status;
-            if (message.sentAt) recipient.sentAt = message.sentAt;
-            if (message.deliveredAt) recipient.deliveredAt = message.deliveredAt;
-            if (message.readAt) recipient.readAt = message.readAt;
-            needsUpdate = true;
-          }
-        }
-
-        // Save synced statuses first
-        if (needsUpdate) {
-          await campaign.save();
-          console.log(`[RCS] 🔄 Synced campaign ${campaign._id} recipient statuses`);
-        }
-
-        // Check if should complete
-        const stillPending = campaign.recipients.filter(r =>
-          r.status === 'pending' || r.status === 'processing' || r.status === 'queued'
-        );
-
-        if (stillPending.length === 0) {
-          // Reload campaign to get fresh data, then update stats
-          const freshCampaign = await Campaign.findById(campaign._id);
-          if (freshCampaign) {
-            await freshCampaign.updateStats();
-
-            freshCampaign.status = 'completed';
-            freshCampaign.completedAt = new Date();
-            await freshCampaign.save();
-            console.log(`[RCS] ✅ Campaign ${campaign._id} auto-completed (stuck check)`);
-          }
-        }
-      }
-    } catch (error) {
-      console.error('[RCS] Error checking stuck campaigns:', error.message);
     }
   }
 

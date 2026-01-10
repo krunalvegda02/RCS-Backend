@@ -1,16 +1,17 @@
 module.exports = {
   apps: [
     {
-      name: 'backend',
+      name: 'api',
       script: 'src/index.js',
       instances: 1,
-      exec_mode: 'fork',
+      exec_mode: 'cluster',
       env: {
         NODE_ENV: 'production',
         PORT: 3000,
         REDIS_HOST: '127.0.0.1',
         REDIS_PORT: 6379,
         MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
+        KAFKA_BROKER: 'localhost:9092',
         // Cloudinary
         CLOUDINARY_CLOUD_NAME: 'krunalvegda02',
         CLOUDINARY_API_KEY: '528136484569676',
@@ -34,8 +35,8 @@ module.exports = {
       listen_timeout: 10000
     },
     {
-      name: 'worker',
-      script: 'src/workers/worker.js',
+      name: 'kafka-consumer-1',
+      script: 'src/workers/kafkaConsumer.js',
       instances: 1,
       exec_mode: 'fork',
       env: {
@@ -43,7 +44,42 @@ module.exports = {
         WORKER_MODE: 'true',
         REDIS_HOST: '127.0.0.1',
         REDIS_PORT: 6379,
-        MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority'
+        MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
+        KAFKA_BROKER: 'localhost:9092'
+      },
+      wait_ready: true,
+      listen_timeout: 10000,
+      restart_delay: 5000
+    },
+    {
+      name: 'kafka-consumer-2',
+      script: 'src/workers/kafkaConsumer.js',
+      instances: 1,
+      exec_mode: 'fork',
+      env: {
+        NODE_ENV: 'production',
+        WORKER_MODE: 'true',
+        REDIS_HOST: '127.0.0.1',
+        REDIS_PORT: 6379,
+        MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
+        KAFKA_BROKER: 'localhost:9092'
+      },
+      wait_ready: true,
+      listen_timeout: 10000,
+      restart_delay: 5000
+    },
+    {
+      name: 'kafka-consumer-3',
+      script: 'src/workers/kafkaConsumer.js',
+      instances: 1,
+      exec_mode: 'fork',
+      env: {
+        NODE_ENV: 'production',
+        WORKER_MODE: 'true',
+        REDIS_HOST: '127.0.0.1',
+        REDIS_PORT: 6379,
+        MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
+        KAFKA_BROKER: 'localhost:9092'
       },
       wait_ready: true,
       listen_timeout: 10000,
