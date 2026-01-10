@@ -169,11 +169,6 @@ if (cluster.isPrimary) {
 
       const server = createServer(app);
 
-      // Start MessageLogProcessor only in first worker
-      if (process.env.pm_id === '0' || cluster.worker.id === 1) {
-        MessageLogProcessor.start(5000);
-      }
-
       server.listen(PORT, () => {
         console.log(`✅ Worker ${process.pid} listening on port ${PORT}`);
       });

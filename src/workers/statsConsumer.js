@@ -31,11 +31,11 @@ async function startStatsConsumer() {
     let totalProcessed = 0;
     
     await consumer.run({
-      partitionsConsumedConcurrently: 5,
+      partitionsConsumedConcurrently: 10,
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
         const startTime = Date.now();
-        const messages = batch.messages.slice(0, 1000);
+        const messages = batch.messages.slice(0, 2000);
         
         const logIds = messages.map(m => JSON.parse(m.value.toString()).logId);
         
