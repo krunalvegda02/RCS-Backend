@@ -25,13 +25,13 @@ app.use(
 );
 
 // High-performance middleware for large payloads
-app.use(express.json({ 
+app.use(express.json({
   limit: '500mb',
   parameterLimit: 130000,
   extended: true
 }));
-app.use(express.urlencoded({ 
-  limit: '500mb', 
+app.use(express.urlencoded({
+  limit: '500mb',
   extended: true,
   parameterLimit: 130000
 }));
@@ -70,8 +70,9 @@ app.use("/api/realtime", authenticateToken, realtimeRoutes);
 // Jio RCS Webhook Endpoint (fire-and-forget to Kafka)
 app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
   // Respond immediately
+  console.log("webhook received", req.body.data)
   res.status(200).json({ success: true });
-  
+
   // Send to Kafka async (don't await)
   sendWebhookToKafka({
     data: req.body,
