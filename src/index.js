@@ -124,6 +124,7 @@ import { dirname, join } from "path";
 import app from "./app.js";
 import connectDB from "./db/index.js";
 import JioRCSService from "./services/JioRCS.service.js";
+import MessageLogProcessor from "./services/MessageLogProcessor.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -168,7 +169,10 @@ if (cluster.isPrimary) {
 
       const server = createServer(app);
 
- 
+      // Start MessageLogProcessor only in first worker
+      if (process.env.pm_id === '0' || cluster.worker.id === 1) {
+        MessageLogProcessor.start(5000);
+      }
 
       server.listen(PORT, () => {
         console.log(`✅ Worker ${process.pid} listening on port ${PORT}`);
