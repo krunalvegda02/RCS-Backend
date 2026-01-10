@@ -1,6 +1,7 @@
 import Campaign from '../models/campaign.model.js';
 import Template from '../models/template.model.js';
 import jioRCSService from '../services/JioRCS.service.js';
+import { sendCampaignMessages } from '../services/campaignSender.service.js';
 import mongoose from 'mongoose';
 import pLimit from "p-limit";
 
@@ -1994,6 +1995,44 @@ export const getReachableUsers = async (req, res) => {
       success: false,
       message: error.message
     });
+  }
+};
+
+// Send campaign messages to Kafka
+export const sendCampaign = async (req, res) => {
+  try {
+    const { campaignId } = req.body;
+    const userId = req.user._id;
+    
+    console.log(`[Campaign] Send campaign request: ${campaignId}`);
+    
+    const campaign = await Campaign.findOne({ _id: campaignId, userId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, message: 'Campaign not found' });
+    }
+    
+    // Update campaign status
+    campaign.status = 'running';
+    campaign.startedAt = new Date();
+    await campaign.save();
+    
+    // Send messages to Kafka in background
+    setImmediate(async () => {
+      try {
+        await sendCampaignMessages(campaignId, userId);
+      } catch (error) {
+        console.error('[Campaign] Send error:', error);
+        await Campaign.updateOne({ _id: campaignId }, { status: 'failed' });
+      }
+    });
+    
+    res.json({
+      success: true,
+      message: 'Campaign started, messages are being queued'
+    });
+  } catch (error) {
+    console.error('[Campaign] Send campaign error:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 

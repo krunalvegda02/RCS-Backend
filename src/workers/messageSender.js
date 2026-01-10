@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 import { Kafka } from 'kafkajs';
 import axios from 'axios';
 import connectDB from '../db/index.js';
-import Message from '../models/message.model.js';
+import ContactCampaignMessage from '../models/message.model.js';
 import User from '../models/user.model.js';
 
 process.env.WORKER_MODE = 'true';
@@ -19,6 +19,44 @@ let totalFailed = 0;
 let total429 = 0;
 let totalTimeout = 0;
 let totalRetries = 0;
+
+// Token cache: { userId: { token, expiresAt } }
+const tokenCache = new Map();
+// User cache: { userId: { user, cachedAt } }
+const userCache = new Map();
+
+async function getUser(userId) {
+  const cached = userCache.get(userId);
+  if (cached && (Date.now() - cached.cachedAt) < 300000) { // 5 min cache
+    return cached.user;
+  }
+  
+  const user = await User.findById(userId).select('+jioConfig.clientSecret');
+  userCache.set(userId, { user, cachedAt: Date.now() });
+  return user;
+}
+
+async function getAccessToken(jioConfig, userId) {
+  // Check cache first
+  const cached = tokenCache.get(userId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.token;
+  }
+  
+  // Fetch new token
+  const { clientId, clientSecret } = jioConfig;
+  const url = `https://tgs.businessmessaging.jio.com/v1/oauth/token?grant_type=client_credentials&client_id=${clientId}&client_secret=${clientSecret}&scope=read`;
+  const response = await axios.get(url, { timeout: 10000 });
+  const token = response.data.access_token;
+  
+  // Cache for 55 minutes (tokens usually valid for 1 hour)
+  tokenCache.set(userId, {
+    token,
+    expiresAt: Date.now() + (55 * 60 * 1000)
+  });
+  
+  return token;
+}
 
 async function startMessageSender() {
   try {
@@ -120,12 +158,12 @@ async function sendMessage(messageData) {
   const { phoneNumber, messageId, userId, templateType, content, variables } = messageData;
   
   try {
-    const user = await User.findById(userId).select('+jioConfig.clientSecret');
+    const user = await getUser(userId);
     if (!user?.jioConfig?.isConfigured) {
       return { success: false, error: 'Jio RCS not configured' };
     }
     
-    const accessToken = await getAccessToken(user.jioConfig);
+    const accessToken = await getAccessToken(user.jioConfig, userId);
     const assistantId = user.jioConfig.assistantId;
     
     const payload = buildPayload(templateType, content, variables);
@@ -140,12 +178,13 @@ async function sendMessage(messageData) {
     });
     
     if (response.status === 201) {
-      await Message.updateOne(
-        { messageId },
+      await ContactCampaignMessage.updateOne(
+        { 'campaigns.messageId': messageId },
         { 
           $set: { 
-            rcsMessageId: response.data?.messageId,
-            status: 'processing'
+            'campaigns.$.rcsMessageId': response.data?.messageId,
+            'campaigns.$.status': 'sent',
+            'campaigns.$.sentAt': new Date()
           }
         }
       );
@@ -170,13 +209,6 @@ function classifyError(statusCode, errorMessage) {
   return 'other';
 }
 
-async function getAccessToken(jioConfig) {
-  const { clientId, clientSecret } = jioConfig;
-  const url = `https://tgs.businessmessaging.jio.com/v1/oauth/token?grant_type=client_credentials&client_id=${clientId}&client_secret=${clientSecret}&scope=read`;
-  const response = await axios.get(url, { timeout: 10000 });
-  return response.data.access_token;
-}
-
 function buildPayload(templateType, content, variables) {
   // Simplified payload builder
   if (templateType === 'plainText') {
@@ -187,9 +219,15 @@ function buildPayload(templateType, content, variables) {
 }
 
 async function markMessageFailed(messageId, error) {
-  await Message.updateOne(
-    { messageId },
-    { $set: { status: 'failed', error } }
+  await ContactCampaignMessage.updateOne(
+    { 'campaigns.messageId': messageId },
+    { 
+      $set: { 
+        'campaigns.$.status': 'failed',
+        'campaigns.$.errorMessage': error,
+        'campaigns.$.failedAt': new Date()
+      }
+    }
   );
 }
 

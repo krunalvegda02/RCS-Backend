@@ -22,6 +22,9 @@ router.get('/check-capability/progress', cacheMiddleware, CampaignController.get
 // Create campaign entries (bulk insert)
 router.post('/create-entries', CampaignController.createCampaignEntries);
 
+// Send campaign messages to Kafka
+router.post('/send', CampaignController.sendCampaign);
+
 // Batched contact upload
 router.post('/batches/upload', CampaignController.uploadContactBatch);
 router.post('/batches/:batchId/process', CampaignController.processContactBatch);
