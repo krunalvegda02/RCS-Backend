@@ -13,8 +13,11 @@ async function startKafkaConsumer() {
     const MessageLog = (await import('../models/messageLog.model.js')).default;
     const ContactCampaignMessage = (await import('../models/message.model.js')).default;
     
+    let totalProcessed = 0;
+    let totalSkipped = 0;
+    
     await consumer.run({
-      partitionsConsumedConcurrently: 5,
+      partitionsConsumedConcurrently: 10,
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
         const startTime = Date.now();
@@ -71,6 +74,7 @@ async function startKafkaConsumer() {
         // Step 3: Build logs array
         const logsToInsert = [];
         const offsetsToCommit = [];
+        let skippedCount = 0;
         
         for (const parsed of parsedData) {
           const msgInfo = messageMap[parsed.messageId];
@@ -94,8 +98,16 @@ async function startKafkaConsumer() {
             });
             offsetsToCommit.push(parsed.offset);
           } else {
+            skippedCount++;
             await resolveOffset(parsed.offset);
           }
+        }
+        
+        totalSkipped += skippedCount;
+        totalProcessed += logsToInsert.length;
+        
+        if (skippedCount > 0) {
+          console.log(`[Kafka] ⚠️  Skipped ${skippedCount} webhooks | Total: Processed=${totalProcessed}, Skipped=${totalSkipped}`);
         }
         
         // Step 4: Bulk insert with retry
