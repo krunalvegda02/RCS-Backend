@@ -70,17 +70,18 @@ app.use("/api/realtime", authenticateToken, realtimeRoutes);
 // Webhook counter
 let webhookCount = 0;
 let startTime = Date.now();
+console.log('🚀 Webhook counter initialized - tracking all incoming webhooks');
 
 // Jio RCS Webhook Endpoint (fire-and-forget to Kafka)
 app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
   // Increment counter
   webhookCount++;
   
-  // Log every 1000 webhooks
-  if (webhookCount % 1000 === 0) {
+  // Log every 100 webhooks for visibility
+  if (webhookCount % 100 === 0) {
     const elapsed = (Date.now() - startTime) / 1000;
     const rate = (webhookCount / elapsed).toFixed(2);
-    console.log(`📊 Total Webhooks: ${webhookCount} | Rate: ${rate}/sec`);
+    console.log(`📊 WEBHOOK COUNT: ${webhookCount} | Rate: ${rate}/sec | Elapsed: ${elapsed.toFixed(1)}s`);
   }
   
   // Respond immediately
