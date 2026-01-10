@@ -14,7 +14,7 @@ async function startKafkaConsumer() {
     const ContactCampaignMessage = (await import('../models/message.model.js')).default;
     
     await consumer.run({
-      partitionsConsumedConcurrently: 10,
+      partitionsConsumedConcurrently: 5,
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
         const startTime = Date.now();
