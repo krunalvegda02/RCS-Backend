@@ -67,10 +67,23 @@ import { sendWebhookToKafka } from "./services/kafka.service.js";
 app.use("/api/v1", router);
 app.use("/api/realtime", authenticateToken, realtimeRoutes);
 
+// Webhook counter
+let webhookCount = 0;
+let startTime = Date.now();
+
 // Jio RCS Webhook Endpoint (fire-and-forget to Kafka)
 app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
+  // Increment counter
+  webhookCount++;
+  
+  // Log every 1000 webhooks
+  if (webhookCount % 1000 === 0) {
+    const elapsed = (Date.now() - startTime) / 1000;
+    const rate = (webhookCount / elapsed).toFixed(2);
+    console.log(`📊 Total Webhooks: ${webhookCount} | Rate: ${rate}/sec`);
+  }
+  
   // Respond immediately
-  console.log("webhook received", req.body.data)
   res.status(200).json({ success: true });
 
   // Send to Kafka async (don't await)
