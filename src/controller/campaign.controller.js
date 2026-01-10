@@ -162,40 +162,57 @@ export const createCampaignEntries = async (req, res) => {
       let totalInserted = 0;
       let totalModified = 0;
 
+      const subLimit = pLimit(3);
+      const executeBulkWithRetry = async (bulkOps, retries = 3) => {
+        for (let attempt = 1; attempt <= retries; attempt++) {
+          try {
+            return await ContactCampaignMessage.bulkWrite(bulkOps, {
+              ordered: false,
+              writeConcern: { w: 1, j: false },
+            });
+          } catch (error) {
+            if (attempt === retries || !error.message.includes('SSL') && !error.message.includes('ECONNRESET')) {
+              throw error;
+            }
+            console.log(`[Campaign] Sub-campaign retry ${attempt}/${retries}`);
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+          }
+        }
+      };
+
       await Promise.all(
-        subCampaigns.map(async (subCampaign, index) => {
-          const chunk = chunks[index];
-          const bulkOps = chunk.map(phone => {
-            const cleanPhone = phone.replace(/^\+?91/, "").replace(/\D/g, "");
-            return {
-              updateOne: {
-                filter: { recipientPhoneNumber: cleanPhone, userId },
-                update: {
-                  $setOnInsert: { recipientPhoneNumber: cleanPhone, userId },
-                  $push: {
-                    campaigns: {
-                      campaignId: subCampaign._id,
-                      templateId,
-                      messageId: uuidv4(),
-                      status: "draft",
-                      queuedAt: new Date(),
+        subCampaigns.map((subCampaign, index) =>
+          subLimit(async () => {
+            const chunk = chunks[index];
+            const bulkOps = chunk.map(phone => {
+              const cleanPhone = phone.replace(/^\+?91/, "").replace(/\D/g, "");
+              return {
+                updateOne: {
+                  filter: { recipientPhoneNumber: cleanPhone, userId },
+                  update: {
+                    $setOnInsert: { recipientPhoneNumber: cleanPhone, userId },
+                    $push: {
+                      campaigns: {
+                        campaignId: subCampaign._id,
+                        templateId,
+                        messageId: uuidv4(),
+                        status: "draft",
+                        queuedAt: new Date(),
+                      },
                     },
+                    $addToSet: { campaignIds: subCampaign._id },
                   },
-                  $addToSet: { campaignIds: subCampaign._id },
+                  upsert: true,
                 },
-                upsert: true,
-              },
-            };
-          });
+              };
+            });
 
-          const result = await ContactCampaignMessage.bulkWrite(bulkOps, {
-            ordered: false,
-            writeConcern: { w: 1, j: false },
-          });
+            const result = await executeBulkWithRetry(bulkOps);
 
-          totalInserted += result.upsertedCount || 0;
-          totalModified += result.modifiedCount || 0;
-        })
+            totalInserted += result.upsertedCount || 0;
+            totalModified += result.modifiedCount || 0;
+          })
+        )
       );
 
       console.log(`[Campaign] ✅ Created ${subCampaigns.length} sub-campaigns with ${totalInserted} entries`);
@@ -220,7 +237,7 @@ export const createCampaignEntries = async (req, res) => {
     const { v4: uuidv4 } = await import("uuid");
 
     const CHUNK_SIZE = 2000;
-    const CONCURRENCY = 10;
+    const CONCURRENCY = 3;
     const chunks = [];
     for (let i = 0; i < phoneNumbers.length; i += CHUNK_SIZE) {
       chunks.push(phoneNumbers.slice(i, i + CHUNK_SIZE));
@@ -231,6 +248,23 @@ export const createCampaignEntries = async (req, res) => {
     const limit = pLimit(CONCURRENCY);
     let totalInserted = 0;
     let totalModified = 0;
+
+    const executeBulkWithRetry = async (bulkOps, retries = 3) => {
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+          return await ContactCampaignMessage.bulkWrite(bulkOps, {
+            ordered: false,
+            writeConcern: { w: 1, j: false },
+          });
+        } catch (error) {
+          if (attempt === retries || !error.message.includes('SSL') && !error.message.includes('ECONNRESET')) {
+            throw error;
+          }
+          console.log(`[Campaign] Retry ${attempt}/${retries} after connection error`);
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+        }
+      }
+    };
 
     await Promise.all(
       chunks.map((chunk, idx) =>
@@ -258,10 +292,7 @@ export const createCampaignEntries = async (req, res) => {
             };
           });
 
-          const result = await ContactCampaignMessage.bulkWrite(bulkOps, {
-            ordered: false,
-            writeConcern: { w: 1, j: false },
-          });
+          const result = await executeBulkWithRetry(bulkOps);
 
           totalInserted += result.upsertedCount || 0;
           totalModified += result.modifiedCount || 0;
