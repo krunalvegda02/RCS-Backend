@@ -259,8 +259,13 @@ async function checkCampaignCompletion(campaignId) {
       }
     ]);
     
-    if (result.length > 0 && result[0].pending === 0 && result[0].total > 0) {
-      console.log(`[Retry] ✅ Campaign ${campaignId} completed (${result[0].total} messages)`);
+    // Complete if: (1) no pending messages AND has messages, OR (2) no messages at all
+    const hasPending = result.length > 0 && result[0].pending > 0;
+    const hasMessages = result.length > 0 && result[0].total > 0;
+    
+    if (!hasPending) {
+      const totalMessages = hasMessages ? result[0].total : 0;
+      console.log(`[Retry] ✅ Campaign ${campaignId} completed (${totalMessages} messages)`);
       await Campaign.updateOne(
         { _id: campaignId, status: 'running' },
         { status: 'completed', completedAt: new Date() }
