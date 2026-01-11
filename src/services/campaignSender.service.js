@@ -74,7 +74,8 @@ export async function sendCampaignMessages(campaignId, userId) {
         {
           userId,
           'campaigns.campaignId': campaignId,
-          'campaigns.messageId': { $in: messageIds }
+          'campaigns.messageId': { $in: messageIds },
+          'campaigns.status': 'draft'
         },
         {
           $set: {
@@ -83,7 +84,13 @@ export async function sendCampaignMessages(campaignId, userId) {
           }
         },
         {
-          arrayFilters: [{ 'elem.messageId': { $in: messageIds } }]
+          arrayFilters: [
+            { 
+              'elem.campaignId': campaignId,
+              'elem.messageId': { $in: messageIds },
+              'elem.status': 'draft'
+            }
+          ]
         }
       );
       

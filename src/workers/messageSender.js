@@ -128,7 +128,7 @@ async function startMessageSender() {
               } else {
                 // Final failure
                 totalFailed++;
-                await markMessageFailed(messageData.messageId, result.error);
+                await markMessageFailed(messageData.messageId, result.error, messageData.campaignId);
               }
               
               await resolveOffset(message.offset);
@@ -179,7 +179,10 @@ async function sendMessage(messageData) {
     
     if (response.status === 201) {
       await ContactCampaignMessage.updateOne(
-        { 'campaigns.messageId': messageId },
+        { 
+          'campaigns.messageId': messageId,
+          'campaigns.campaignId': messageData.campaignId
+        },
         { 
           $set: { 
             'campaigns.$.rcsMessageId': response.data?.messageId,
@@ -218,9 +221,12 @@ function buildPayload(templateType, content, variables) {
   return { content };
 }
 
-async function markMessageFailed(messageId, error) {
+async function markMessageFailed(messageId, error, campaignId) {
   await ContactCampaignMessage.updateOne(
-    { 'campaigns.messageId': messageId },
+    { 
+      'campaigns.messageId': messageId,
+      'campaigns.campaignId': campaignId
+    },
     { 
       $set: { 
         'campaigns.$.status': 'failed',

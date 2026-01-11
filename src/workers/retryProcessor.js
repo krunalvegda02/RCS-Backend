@@ -115,7 +115,7 @@ async function startRetryProcessor() {
               } else {
                 // Final failure
                 finalFailures++;
-                await markMessageFailed(retryData.messageId, `Max retries (${retryData.retryCount}) reached: ${result.error}`);
+                await markMessageFailed(retryData.messageId, `Max retries (${retryData.retryCount}) reached: ${result.error}`, retryData.campaignId);
                 console.log(`[Retry] ❌ Final failure for ${retryData.phoneNumber} after ${retryData.retryCount} attempts`);
               }
               
@@ -166,7 +166,10 @@ async function sendMessage(messageData) {
     
     if (response.status === 201) {
       await ContactCampaignMessage.updateOne(
-        { 'campaigns.messageId': messageId },
+        { 
+          'campaigns.messageId': messageId,
+          'campaigns.campaignId': messageData.campaignId
+        },
         { 
           $set: { 
             'campaigns.$.rcsMessageId': response.data?.messageId,
@@ -203,9 +206,12 @@ function buildPayload(templateType, content, variables) {
   return { content };
 }
 
-async function markMessageFailed(messageId, error) {
+async function markMessageFailed(messageId, error, campaignId) {
   await ContactCampaignMessage.updateOne(
-    { 'campaigns.messageId': messageId },
+    { 
+      'campaigns.messageId': messageId,
+      'campaigns.campaignId': campaignId
+    },
     { 
       $set: { 
         'campaigns.$.status': 'failed',
