@@ -15,13 +15,22 @@ export async function sendCampaignMessages(campaignId, userId) {
       throw new Error('Campaign or template not found');
     }
     
+    // If master campaign, get all sub-campaign IDs
+    let campaignIds = [campaignId];
+    if (campaign.isMaster) {
+      const subCampaigns = await Campaign.find({ masterCampaignId: campaignId }).select('_id').lean();
+      campaignIds = subCampaigns.map(s => s._id);
+      console.log(`[CampaignSender] Master campaign detected, sending for ${campaignIds.length} sub-campaigns`);
+    }
+    
     const template = campaign.templateId;
     const templatePayload = template.generatePayload();
     
-    // Check total draft messages first
+    // Check total draft messages first (across all sub-campaigns if master)
     const totalDraft = await ContactCampaignMessage.countDocuments({
       userId,
-      'campaigns.campaignId': campaignId,
+      campaignIds: { $in: campaignIds },
+      'campaigns.campaignId': { $in: campaignIds },
       'campaigns.status': 'draft'
     });
     
@@ -32,7 +41,7 @@ export async function sendCampaignMessages(campaignId, userId) {
       return { sent: 0, duration: 0, rate: 0 };
     }
     
-    // Get all draft messages in batches
+    // Get all draft messages in batches (across all sub-campaigns if master)
     const BATCH_SIZE = 5000;
     let skip = 0;
     let totalSent = 0;
@@ -40,7 +49,7 @@ export async function sendCampaignMessages(campaignId, userId) {
     while (true) {
       const messages = await ContactCampaignMessage.find({
         userId,
-        'campaigns.campaignId': campaignId,
+        campaignIds: { $in: campaignIds },
         'campaigns.status': 'draft'
       })
       .select('recipientPhoneNumber campaigns')
@@ -54,16 +63,14 @@ export async function sendCampaignMessages(campaignId, userId) {
       
       // Send all to Kafka in parallel (fire-and-forget)
       const kafkaPromises = [];
-      const messageIds = [];
+      const updateOps = []; // Track updates per sub-campaign
       
       for (const contact of messages) {
         const campaignData = contact.campaigns.find(c => 
-          c.campaignId.toString() === campaignId.toString() && c.status === 'draft'
+          campaignIds.some(id => id.toString() === c.campaignId.toString()) && c.status === 'draft'
         );
         
         if (!campaignData) continue;
-        
-        messageIds.push(campaignData.messageId);
         
         // Fire-and-forget to Kafka (no await)
         kafkaPromises.push(
@@ -71,44 +78,60 @@ export async function sendCampaignMessages(campaignId, userId) {
             messageId: campaignData.messageId,
             phoneNumber: `+91${contact.recipientPhoneNumber}`,
             userId: userId.toString(),
-            campaignId: campaignId.toString(),
+            campaignId: campaignData.campaignId.toString(),
             templateId: template._id.toString(),
             templateType: template.templateType,
             content: templatePayload,
             variables: {}
           })
         );
+        
+        updateOps.push({
+          campaignId: campaignData.campaignId,
+          messageId: campaignData.messageId
+        });
       }
       
       // Wait for all Kafka sends (they're already fire-and-forget internally)
       await Promise.all(kafkaPromises);
       
-      // Bulk update all statuses in ONE query
-      await ContactCampaignMessage.updateMany(
-        {
-          userId,
-          'campaigns.campaignId': campaignId,
-          'campaigns.messageId': { $in: messageIds },
-          'campaigns.status': 'draft'
-        },
-        {
-          $set: {
-            'campaigns.$[elem].status': 'queued',
-            'campaigns.$[elem].queuedAt': new Date()
-          }
-        },
-        {
-          arrayFilters: [
-            { 
-              'elem.campaignId': campaignId,
-              'elem.messageId': { $in: messageIds },
-              'elem.status': 'draft'
+      // Bulk update all statuses - group by campaignId for proper arrayFilters
+      const updatesByCampaign = {};
+      updateOps.forEach(op => {
+        const cid = op.campaignId.toString();
+        if (!updatesByCampaign[cid]) updatesByCampaign[cid] = [];
+        updatesByCampaign[cid].push(op.messageId);
+      });
+      
+      await Promise.all(
+        Object.entries(updatesByCampaign).map(([cid, messageIds]) =>
+          ContactCampaignMessage.updateMany(
+            {
+              userId,
+              'campaigns.campaignId': cid,
+              'campaigns.messageId': { $in: messageIds },
+              'campaigns.status': 'draft'
+            },
+            {
+              $set: {
+                'campaigns.$[elem].status': 'queued',
+                'campaigns.$[elem].queuedAt': new Date()
+              }
+            },
+            {
+              arrayFilters: [
+                { 
+                  'elem.campaignId': cid,
+                  'elem.messageId': { $in: messageIds },
+                  'elem.status': 'draft'
+                }
+              ]
             }
-          ]
-        }
+          )
+        )
       );
       
-      totalSent += messageIds.length;
+      totalSent += updateOps.length;
       console.log(`[CampaignSender] Queued ${totalSent} messages (${Math.round(totalSent / ((Date.now() - startTime) / 1000))}/sec)`);
       
       skip += BATCH_SIZE;

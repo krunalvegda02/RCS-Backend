@@ -9,7 +9,7 @@ import Message from '../models/message.model.js';
 import MessageLog from '../models/messageLog.model.js';
 import Campaign from '../models/campaign.model.js';
 import User from '../models/user.model.js';
-import ContactBatch from '../models/contactBatch.model.js';
+// import ContactBatch from '../models/contactBatch.model.js';
 
 const JIOAPI_BASE_URL =
   process.env.JIO_API_BASE_URL || 'https://api.businessmessaging.jio.com';
@@ -276,54 +276,54 @@ class JioRCSService {
           console.log(apiResponse);
 
           // Directly push to database if campaignId is available
-          if (global.currentCampaignId && global.currentUserId) {
-            try {
-              // Fetch current batch to calculate cumulative RCS capable count
-              const currentBatch = await ContactBatch.findOne({
-                campaignId: global.currentCampaignId,
-                userId: global.currentUserId
-              });
+          // if (global.currentCampaignId && global.currentUserId) {
+          //   try {
+          //     // Fetch current batch to calculate cumulative RCS capable count
+          //     const currentBatch = await ContactBatch.findOne({
+          //       campaignId: global.currentCampaignId,
+          //       userId: global.currentUserId
+          //     });
 
-              // Count all RCS capable from existing chunks + current chunk
-              const allReachableUsers = new Set();
-              if (currentBatch?.apiResponse) {
-                currentBatch.apiResponse.forEach(chunk => {
-                  if (chunk.reachableUsers) {
-                    chunk.reachableUsers.forEach(phone => allReachableUsers.add(phone));
-                  }
-                });
-              }
+          //     // Count all RCS capable from existing chunks + current chunk
+          //     const allReachableUsers = new Set();
+          //     if (currentBatch?.apiResponse) {
+          //       currentBatch.apiResponse.forEach(chunk => {
+          //         if (chunk.reachableUsers) {
+          //           chunk.reachableUsers.forEach(phone => allReachableUsers.add(phone));
+          //         }
+          //       });
+          //     }
 
-              // Add current chunk's reachable users
-              if (apiResponse?.reachableUsers) {
-                apiResponse.reachableUsers.forEach(phone => allReachableUsers.add(phone));
-              }
+          //     // Add current chunk's reachable users
+          //     if (apiResponse?.reachableUsers) {
+          //       apiResponse.reachableUsers.forEach(phone => allReachableUsers.add(phone));
+          //     }
 
-              await ContactBatch.updateMany(
-                { campaignId: global.currentCampaignId, userId: global.currentUserId },
-                {
-                  $push: {
-                    apiResponse: {
-                      chunkNumber: i + 1,
-                      reachableUsers: apiResponse?.reachableUsers || [],
-                      totalRandomSampleUserCount: apiResponse?.totalRandomSampleUserCount || 0,
-                      reachableRandomSampleUserCount: apiResponse?.reachableRandomSampleUserCount || 0,
-                      processedAt: new Date()
-                    }
-                  },
-                  $set: {
-                    processedContacts: allResults.length,
-                    rcsCapableCount: allReachableUsers.size,
-                    status: i === chunks.length - 1 ? 'completed' : 'processing',
-                    processingCompletedAt: i === chunks.length - 1 ? new Date() : undefined
-                  }
-                },
-              );
-              console.log(`[RCS] ✅ Pushed API response for chunk ${i + 1}, Total RCS capable: ${allReachableUsers.size}/${allResults.length}`);
-            } catch (dbError) {
-              console.error(`[RCS] Failed to push API response to database:`, dbError.message);
-            }
-          }
+          //     await ContactBatch.updateMany(
+          //       { campaignId: global.currentCampaignId, userId: global.currentUserId },
+          //       {
+          //         $push: {
+          //           apiResponse: {
+          //             chunkNumber: i + 1,
+          //             reachableUsers: apiResponse?.reachableUsers || [],
+          //             totalRandomSampleUserCount: apiResponse?.totalRandomSampleUserCount || 0,
+          //             reachableRandomSampleUserCount: apiResponse?.reachableRandomSampleUserCount || 0,
+          //             processedAt: new Date()
+          //           }
+          //         },
+          //         $set: {
+          //           processedContacts: allResults.length,
+          //           rcsCapableCount: allReachableUsers.size,
+          //           status: i === chunks.length - 1 ? 'completed' : 'processing',
+          //           processingCompletedAt: i === chunks.length - 1 ? new Date() : undefined
+          //         }
+          //       },
+          //     );
+          //     console.log(`[RCS] ✅ Pushed API response for chunk ${i + 1}, Total RCS capable: ${allReachableUsers.size}/${allResults.length}`);
+          //   } catch (dbError) {
+          //     console.error(`[RCS] Failed to push API response to database:`, dbError.message);
+          //   }
+          // }
 
           const reachableUsers = apiResponse?.reachableUsers || [];
 
@@ -1073,40 +1073,8 @@ class JioRCSService {
 
 
 
-  async saveCapabilityResults(campaignId, userId, batchNumber, phoneNumbers, capabilityResults) {
-    try {
-      const rcsCapableCount = capabilityResults.filter(r => r.isCapable).length;
 
-      const updateResult = await ContactBatch.updateOne(
-        {
-          campaignId,
-          userId,
-          batchNumber
-        },
-        {
-          $set: {
-            capabilityResults: capabilityResults,
-            processedContacts: phoneNumbers.length,
-            rcsCapableCount: rcsCapableCount,
-            status: 'completed',
-            processingCompletedAt: new Date()
-          }
-        },
-        { upsert: false }
-      );
-
-      if (updateResult.matchedCount === 0) {
-        throw new Error(`ContactBatch not found for campaign ${campaignId}, batch ${batchNumber}`);
-      }
-
-      console.log(`[RCS] ✅ Saved ${capabilityResults.length} capability results to batch ${batchNumber}`);
-      return updateResult;
-    } catch (error) {
-      console.error(`[RCS] Failed to save capability results:`, error.message);
-      throw error;
-    }
-  }
-
+  
 
 
 

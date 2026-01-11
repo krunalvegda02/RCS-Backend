@@ -266,13 +266,42 @@ async function checkCampaignCompletion(campaignId) {
     if (!hasPending) {
       const totalMessages = hasMessages ? result[0].total : 0;
       console.log(`[Retry] ✅ Campaign ${campaignId} completed (${totalMessages} messages)`);
-      await Campaign.updateOne(
+      
+      const campaign = await Campaign.findOneAndUpdate(
         { _id: campaignId, status: 'running' },
+        { status: 'completed', completedAt: new Date() },
+        { new: true }
+      );
+      
+      // If this is a sub-campaign, check if master campaign should be completed
+      if (campaign && campaign.masterCampaignId) {
+        await checkMasterCampaignCompletion(campaign.masterCampaignId);
+      }
+    }
+  } catch (error) {
+    console.error('[Retry] Campaign completion check error:', error.message);
+  }
+}
+
+async function checkMasterCampaignCompletion(masterCampaignId) {
+  try {
+    const Campaign = (await import('../models/campaign.model.js')).default;
+    
+    // Check if all sub-campaigns are completed
+    const pendingSubCampaigns = await Campaign.countDocuments({
+      masterCampaignId,
+      status: { $nin: ['completed', 'failed'] }
+    });
+    
+    if (pendingSubCampaigns === 0) {
+      console.log(`[Retry] ✅ Master campaign ${masterCampaignId} completed (all sub-campaigns done)`);
+      await Campaign.updateOne(
+        { _id: masterCampaignId, status: 'running' },
         { status: 'completed', completedAt: new Date() }
       );
     }
   } catch (error) {
-    console.error('[Retry] Campaign completion check error:', error.message);
+    console.error('[Retry] Master campaign completion check error:', error.message);
   }
 }
 

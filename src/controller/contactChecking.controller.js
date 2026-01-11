@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 import pLimit from "p-limit";
-import ContactChecking from "../models/ContactChecking.model.js";
+// import ContactChecking from "../models/ContactChecking.model.js";
 
 const BATCH_SIZE = 1000;
 const CHUNK_SIZE = 2000;
@@ -54,22 +54,22 @@ const uploadContacts = async (req, res) => {
     const limit = pLimit(CONCURRENCY);
     const tasks = [];
 
-    for (let i = 0; i < normalizedNumbers.length; i += CHUNK_SIZE) {
-      const chunk = normalizedNumbers.slice(i, i + CHUNK_SIZE);
+    // for (let i = 0; i < normalizedNumbers.length; i += CHUNK_SIZE) {
+    //   const chunk = normalizedNumbers.slice(i, i + CHUNK_SIZE);
 
-      tasks.push(
-        limit(async () => {
-          const docs = await ContactChecking.find(
-            { contact: { $in: chunk } },
-            { contact: 1, isRcsCapable: 1, campaignIds: 1 }
-          ).lean();
+    //   tasks.push(
+    //     limit(async () => {
+    //       const docs = await ContactChecking.find(
+    //         { contact: { $in: chunk } },
+    //         { contact: 1, isRcsCapable: 1, campaignIds: 1 }
+    //       ).lean();
 
-          for (const doc of docs) {
-            existingMap.set(doc.contact, doc);
-          }
-        })
-      );
-    }
+    //       for (const doc of docs) {
+    //         existingMap.set(doc.contact, doc);
+    //       }
+    //     })
+    //   );
+    // }
 
     await Promise.all(tasks);
 
