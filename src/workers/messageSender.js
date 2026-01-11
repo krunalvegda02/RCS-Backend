@@ -213,11 +213,13 @@ function classifyError(statusCode, errorMessage) {
 }
 
 function buildPayload(templateType, content, variables) {
-  // Simplified payload builder
-  if (templateType === 'plainText') {
-    return { content: { plainText: content.text || content.body } };
+  // Content from Kafka is double-nested: { content: { richCardDetails: ... } }
+  // Unwrap it to get the actual Jio API payload
+  if (content && content.content) {
+    return content; // Already in correct format { content: { ... } }
   }
-  // Add other types as needed
+  
+  // Fallback: wrap if not already wrapped
   return { content };
 }
 
