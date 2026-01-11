@@ -178,6 +178,10 @@ async function sendMessage(messageData) {
           }
         }
       );
+      
+      // Check if campaign is complete
+      await checkCampaignCompletion(messageData.campaignId);
+      
       return { success: true };
     }
     
@@ -224,6 +228,47 @@ async function markMessageFailed(messageId, error, campaignId) {
       }
     }
   );
+  
+  // Check if campaign is complete
+  await checkCampaignCompletion(campaignId);
+}
+
+async function checkCampaignCompletion(campaignId) {
+  try {
+    const Campaign = (await import('../models/campaign.model.js')).default;
+    
+    // Use aggregation to check and update in one query (faster)
+    const result = await ContactCampaignMessage.aggregate([
+      { $match: { 'campaigns.campaignId': campaignId } },
+      { $unwind: '$campaigns' },
+      { $match: { 'campaigns.campaignId': campaignId } },
+      {
+        $group: {
+          _id: null,
+          pending: {
+            $sum: {
+              $cond: [
+                { $in: ['$campaigns.status', ['draft', 'queued', 'processing']] },
+                1,
+                0
+              ]
+            }
+          },
+          total: { $sum: 1 }
+        }
+      }
+    ]);
+    
+    if (result.length > 0 && result[0].pending === 0 && result[0].total > 0) {
+      console.log(`[Retry] ✅ Campaign ${campaignId} completed (${result[0].total} messages)`);
+      await Campaign.updateOne(
+        { _id: campaignId, status: 'running' },
+        { status: 'completed', completedAt: new Date() }
+      );
+    }
+  } catch (error) {
+    console.error('[Retry] Campaign completion check error:', error.message);
+  }
 }
 
 startRetryProcessor();

@@ -249,19 +249,33 @@ async function markMessageFailed(messageId, error, campaignId) {
 async function checkCampaignCompletion(campaignId) {
   try {
     const Campaign = (await import('../models/campaign.model.js')).default;
-    const campaign = await Campaign.findById(campaignId);
-    if (!campaign || campaign.status !== 'running') return;
     
-    // Count pending messages
-    const pendingCount = await ContactCampaignMessage.countDocuments({
-      'campaigns.campaignId': campaignId,
-      'campaigns.status': { $in: ['draft', 'queued', 'processing'] }
-    });
+    // Use aggregation to check and update in one query (faster)
+    const result = await ContactCampaignMessage.aggregate([
+      { $match: { 'campaigns.campaignId': campaignId } },
+      { $unwind: '$campaigns' },
+      { $match: { 'campaigns.campaignId': campaignId } },
+      {
+        $group: {
+          _id: null,
+          pending: {
+            $sum: {
+              $cond: [
+                { $in: ['$campaigns.status', ['draft', 'queued', 'processing']] },
+                1,
+                0
+              ]
+            }
+          },
+          total: { $sum: 1 }
+        }
+      }
+    ]);
     
-    if (pendingCount === 0) {
-      console.log(`[Sender] ✅ Campaign ${campaignId} completed`);
+    if (result.length > 0 && result[0].pending === 0 && result[0].total > 0) {
+      console.log(`[Sender] ✅ Campaign ${campaignId} completed (${result[0].total} messages)`);
       await Campaign.updateOne(
-        { _id: campaignId },
+        { _id: campaignId, status: 'running' },
         { status: 'completed', completedAt: new Date() }
       );
     }
