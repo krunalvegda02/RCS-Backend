@@ -18,6 +18,20 @@ export async function sendCampaignMessages(campaignId, userId) {
     const template = campaign.templateId;
     const templatePayload = template.generatePayload();
     
+    // Check total draft messages first
+    const totalDraft = await ContactCampaignMessage.countDocuments({
+      userId,
+      'campaigns.campaignId': campaignId,
+      'campaigns.status': 'draft'
+    });
+    
+    console.log(`[CampaignSender] Found ${totalDraft} draft messages to send`);
+    
+    if (totalDraft === 0) {
+      console.log(`[CampaignSender] ⚠️ No draft messages found for campaign ${campaignId}`);
+      return { sent: 0, duration: 0, rate: 0 };
+    }
+    
     // Get all draft messages in batches
     const BATCH_SIZE = 5000;
     let skip = 0;

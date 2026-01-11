@@ -237,7 +237,7 @@ export const createCampaignEntries = async (req, res) => {
     const ContactCampaignMessage = (await import("../models/message.model.js")).default;
     const { v4: uuidv4 } = await import("uuid");
 
-    const CHUNK_SIZE = 2000;
+    const CHUNK_SIZE = 1000;
     const CONCURRENCY = 3;
     const chunks = [];
     for (let i = 0; i < phoneNumbers.length; i += CHUNK_SIZE) {
