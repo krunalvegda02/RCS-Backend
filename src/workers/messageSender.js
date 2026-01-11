@@ -76,7 +76,8 @@ async function startMessageSender() {
     
     const retryProducer = kafka.producer({
       allowAutoTopicCreation: true,
-      maxInFlightRequests: 10
+      maxInFlightRequests: 100,
+      compression: 0
     });
     
     await consumer.connect();
@@ -86,69 +87,56 @@ async function startMessageSender() {
     console.log('✅ Message Sender subscribed to rcs-messages');
     
     await consumer.run({
-      partitionsConsumedConcurrently: 20,
+      partitionsConsumedConcurrently: 50,
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat }) => {
         const messages = batch.messages;
-        const batchPromises = [];
         
-        // Process all messages in parallel
-        for (const message of messages) {
-          batchPromises.push(
-            (async () => {
-              const messageData = JSON.parse(message.value.toString());
+        // Process all messages without waiting
+        messages.forEach(message => {
+          const messageData = JSON.parse(message.value.toString());
+          
+          sendMessage(messageData).then(result => {
+            if (result.success) {
+              totalSent++;
+            } else {
+              const errorType = classifyError(result.statusCode, result.error);
+              const policy = RETRY_POLICIES[errorType];
               
-              try {
-                const result = await sendMessage(messageData);
+              if (policy && messageData.retryCount < policy.maxRetries) {
+                const delay = Math.random() * (policy.delayRange[1] - policy.delayRange[0]) + policy.delayRange[0];
                 
-                if (result.success) {
-                  totalSent++;
-                } else {
-                  const errorType = classifyError(result.statusCode, result.error);
-                  const policy = RETRY_POLICIES[errorType];
-                  
-                  if (policy && messageData.retryCount < policy.maxRetries) {
-                    const delay = Math.random() * (policy.delayRange[1] - policy.delayRange[0]) + policy.delayRange[0];
-                    
-                    retryProducer.send({
-                      topic: 'rcs-retries',
-                      messages: [{
-                        key: messageData.messageId,
-                        value: JSON.stringify({
-                          ...messageData,
-                          retryCount: (messageData.retryCount || 0) + 1,
-                          errorType,
-                          retryAfter: Date.now() + delay
-                        })
-                      }]
-                    }).catch(err => console.error('[Sender] Retry queue error:', err.message));
-                    
-                    totalRetries++;
-                    if (errorType === '429') total429++;
-                    if (errorType === 'timeout') totalTimeout++;
-                  } else {
-                    totalFailed++;
-                    markMessageFailed(messageData.messageId, result.error, messageData.campaignId).catch(err => console.error('[Sender] Mark failed error:', err.message));
-                  }
-                }
+                retryProducer.send({
+                  topic: 'rcs-retries',
+                  messages: [{
+                    key: messageData.messageId,
+                    value: JSON.stringify({
+                      ...messageData,
+                      retryCount: (messageData.retryCount || 0) + 1,
+                      errorType,
+                      retryAfter: Date.now() + delay
+                    })
+                  }]
+                }).catch(() => {});
                 
-                await resolveOffset(message.offset);
-              } catch (error) {
-                console.error('[Sender] Error:', error.message);
-                await resolveOffset(message.offset);
+                totalRetries++;
+              } else {
+                totalFailed++;
               }
-            })()
-          );
-        }
+            }
+          }).catch(() => {
+            totalFailed++;
+          });
+          
+          resolveOffset(message.offset).catch(() => {});
+        });
         
-        // Wait for all messages in batch
-        await Promise.all(batchPromises);
         await heartbeat();
         
-        // Log stats every 500 messages
-        if (totalSent % 500 === 0 && totalSent > 0) {
+        // Log stats every 1000 messages
+        if (totalSent % 1000 === 0 && totalSent > 0) {
           const rate = Math.round(totalSent / ((Date.now() - startTime) / 60000));
-          console.log(`[Sender] Sent: ${totalSent}, Failed: ${totalFailed}, Rate: ${rate}/min`);
+          console.log(`[Sender] Sent: ${totalSent}, Rate: ${rate}/min`);
         }
       }
     });
@@ -176,44 +164,38 @@ async function sendMessage(messageData) {
     const payload = buildPayload(templateType, content, variables);
     const url = `https://api.businessmessaging.jio.com/v1/messaging/users/${phoneNumber}/assistantMessages/async?messageId=${messageId}&assistantId=${assistantId}`;
     
-    const response = await axios.post(url, payload, {
+    // Send to Jio API - don't wait for response
+    axios.post(url, payload, {
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json'
       },
-      timeout: 5000
-    });
-    
-    if (response.status === 201) {
-      const jioMessageId = response.data?.messageId;
-      
-      // Fire-and-forget DB update
-      ContactCampaignMessage.updateOne(
-        { 
-          'campaigns.messageId': messageId,
-          'campaigns.campaignId': campaignId
-        },
-        { 
-          $set: { 
-            'campaigns.$.rcsMessageId': jioMessageId,
-            'campaigns.$.jioMessageId': jioMessageId,
-            'campaigns.$.status': 'sent',
-            'campaigns.$.sentAt': new Date()
+      timeout: 3000
+    }).then(response => {
+      if (response.status === 201) {
+        const jioMessageId = response.data?.messageId;
+        // Fire-and-forget DB update
+        ContactCampaignMessage.updateOne(
+          { 
+            'campaigns.messageId': messageId,
+            'campaigns.campaignId': campaignId
+          },
+          { 
+            $set: { 
+              'campaigns.$.rcsMessageId': jioMessageId,
+              'campaigns.$.jioMessageId': jioMessageId,
+              'campaigns.$.status': 'sent',
+              'campaigns.$.sentAt': new Date()
+            }
           }
-        }
-      ).catch(err => console.error('[Sender] DB update error:', err.message));
-      
-      return { success: true };
-    }
+        ).catch(() => {});
+      }
+    }).catch(() => {});
     
-    return { success: false, statusCode: response.status, error: response.data };
+    return { success: true };
     
   } catch (error) {
-    return { 
-      success: false, 
-      statusCode: error.response?.status,
-      error: error.message 
-    };
+    return { success: false, error: error.message };
   }
 }
 
