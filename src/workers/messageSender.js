@@ -76,7 +76,7 @@ async function startMessageSender() {
     
     const retryProducer = kafka.producer({
       allowAutoTopicCreation: true,
-      maxInFlightRequests: 5
+      maxInFlightRequests: 10
     });
     
     await consumer.connect();
@@ -86,64 +86,69 @@ async function startMessageSender() {
     console.log('✅ Message Sender subscribed to rcs-messages');
     
     await consumer.run({
-      partitionsConsumedConcurrently: 10,
+      partitionsConsumedConcurrently: 20,
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat }) => {
-        for (const message of batch.messages) {
-          const messageData = JSON.parse(message.value.toString());
-          
-          try {
-            const result = await sendMessage(messageData);
-            
-            if (result.success) {
-              totalSent++;
-              await resolveOffset(message.offset);
-            } else {
-              // Check if should retry
-              const errorType = classifyError(result.statusCode, result.error);
-              const policy = RETRY_POLICIES[errorType];
+        const messages = batch.messages;
+        const batchPromises = [];
+        
+        // Process all messages in parallel
+        for (const message of messages) {
+          batchPromises.push(
+            (async () => {
+              const messageData = JSON.parse(message.value.toString());
               
-              if (policy && messageData.retryCount < policy.maxRetries) {
-                // Send to retry topic
-                const delay = Math.random() * (policy.delayRange[1] - policy.delayRange[0]) + policy.delayRange[0];
+              try {
+                const result = await sendMessage(messageData);
                 
-                await retryProducer.send({
-                  topic: 'rcs-retries',
-                  messages: [{
-                    key: messageData.messageId,
-                    value: JSON.stringify({
-                      ...messageData,
-                      retryCount: (messageData.retryCount || 0) + 1,
-                      errorType,
-                      retryAfter: Date.now() + delay
-                    })
-                  }]
-                });
+                if (result.success) {
+                  totalSent++;
+                } else {
+                  const errorType = classifyError(result.statusCode, result.error);
+                  const policy = RETRY_POLICIES[errorType];
+                  
+                  if (policy && messageData.retryCount < policy.maxRetries) {
+                    const delay = Math.random() * (policy.delayRange[1] - policy.delayRange[0]) + policy.delayRange[0];
+                    
+                    retryProducer.send({
+                      topic: 'rcs-retries',
+                      messages: [{
+                        key: messageData.messageId,
+                        value: JSON.stringify({
+                          ...messageData,
+                          retryCount: (messageData.retryCount || 0) + 1,
+                          errorType,
+                          retryAfter: Date.now() + delay
+                        })
+                      }]
+                    }).catch(err => console.error('[Sender] Retry queue error:', err.message));
+                    
+                    totalRetries++;
+                    if (errorType === '429') total429++;
+                    if (errorType === 'timeout') totalTimeout++;
+                  } else {
+                    totalFailed++;
+                    markMessageFailed(messageData.messageId, result.error, messageData.campaignId).catch(err => console.error('[Sender] Mark failed error:', err.message));
+                  }
+                }
                 
-                totalRetries++;
-                if (errorType === '429') total429++;
-                if (errorType === 'timeout') totalTimeout++;
-                
-                console.log(`[Sender] Retry queued for ${messageData.phoneNumber} (${errorType}, attempt ${messageData.retryCount + 1})`);
-              } else {
-                // Final failure
-                totalFailed++;
-                await markMessageFailed(messageData.messageId, result.error, messageData.campaignId);
+                await resolveOffset(message.offset);
+              } catch (error) {
+                console.error('[Sender] Error:', error.message);
+                await resolveOffset(message.offset);
               }
-              
-              await resolveOffset(message.offset);
-            }
-          } catch (error) {
-            console.error('[Sender] Error:', error.message);
-            await resolveOffset(message.offset);
-          }
-          
-          await heartbeat();
+            })()
+          );
         }
         
-        // Log stats every 100 messages
-        if (totalSent % 100 === 0 && totalSent > 0) {
-          console.log(`[Sender] Sent: ${totalSent}, Failed: ${totalFailed}, 429: ${total429}, Timeout: ${totalTimeout}, Retries: ${totalRetries}`);
+        // Wait for all messages in batch
+        await Promise.all(batchPromises);
+        await heartbeat();
+        
+        // Log stats every 500 messages
+        if (totalSent % 500 === 0 && totalSent > 0) {
+          const rate = Math.round(totalSent / ((Date.now() - startTime) / 60000));
+          console.log(`[Sender] Sent: ${totalSent}, Failed: ${totalFailed}, Rate: ${rate}/min`);
         }
       }
     });
@@ -154,15 +159,14 @@ async function startMessageSender() {
   }
 }
 
+const startTime = Date.now();
+
 async function sendMessage(messageData) {
-  const { phoneNumber, messageId, userId, templateType, content, variables } = messageData;
-  
-  console.log(`[Sender] Processing message: messageId=${messageId}, phone=${phoneNumber}`);
+  const { phoneNumber, messageId, userId, templateType, content, variables, campaignId } = messageData;
   
   try {
     const user = await getUser(userId);
     if (!user?.jioConfig?.isConfigured) {
-      console.error(`[Sender] User ${userId} Jio not configured`);
       return { success: false, error: 'Jio RCS not configured' };
     }
     
@@ -177,27 +181,27 @@ async function sendMessage(messageData) {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json'
       },
-      timeout: 8000
+      timeout: 5000
     });
     
     if (response.status === 201) {
-      console.log(`[Sender] ✅ Message sent successfully: messageId=${messageId}`);
-      await ContactCampaignMessage.updateOne(
+      const jioMessageId = response.data?.messageId;
+      
+      // Fire-and-forget DB update
+      ContactCampaignMessage.updateOne(
         { 
           'campaigns.messageId': messageId,
-          'campaigns.campaignId': messageData.campaignId
+          'campaigns.campaignId': campaignId
         },
         { 
           $set: { 
-            'campaigns.$.rcsMessageId': response.data?.messageId,
+            'campaigns.$.rcsMessageId': jioMessageId,
+            'campaigns.$.jioMessageId': jioMessageId,
             'campaigns.$.status': 'sent',
             'campaigns.$.sentAt': new Date()
           }
         }
-      );
-      
-      // Check if campaign is complete
-      await checkCampaignCompletion(messageData.campaignId);
+      ).catch(err => console.error('[Sender] DB update error:', err.message));
       
       return { success: true };
     }
@@ -232,7 +236,8 @@ function buildPayload(templateType, content, variables) {
 }
 
 async function markMessageFailed(messageId, error, campaignId) {
-  await ContactCampaignMessage.updateOne(
+  // Fire-and-forget
+  ContactCampaignMessage.updateOne(
     { 
       'campaigns.messageId': messageId,
       'campaigns.campaignId': campaignId
@@ -244,82 +249,18 @@ async function markMessageFailed(messageId, error, campaignId) {
         'campaigns.$.failedAt': new Date()
       }
     }
-  );
-  
-  // Check if campaign is complete
-  await checkCampaignCompletion(campaignId);
+  ).catch(err => console.error('[Sender] Mark failed error:', err.message));
 }
 
+// Remove slow campaign completion checks - handle separately
 async function checkCampaignCompletion(campaignId) {
-  try {
-    const Campaign = (await import('../models/campaign.model.js')).default;
-    
-    // Use aggregation to check and update in one query (faster)
-    const result = await ContactCampaignMessage.aggregate([
-      { $match: { 'campaigns.campaignId': campaignId } },
-      { $unwind: '$campaigns' },
-      { $match: { 'campaigns.campaignId': campaignId } },
-      {
-        $group: {
-          _id: null,
-          pending: {
-            $sum: {
-              $cond: [
-                { $in: ['$campaigns.status', ['draft', 'queued', 'processing']] },
-                1,
-                0
-              ]
-            }
-          },
-          total: { $sum: 1 }
-        }
-      }
-    ]);
-    
-    // Complete if: (1) no pending messages AND has messages, OR (2) no messages at all
-    const hasPending = result.length > 0 && result[0].pending > 0;
-    const hasMessages = result.length > 0 && result[0].total > 0;
-    
-    if (!hasPending) {
-      const totalMessages = hasMessages ? result[0].total : 0;
-      console.log(`[Sender] ✅ Campaign ${campaignId} completed (${totalMessages} messages)`);
-      
-      const campaign = await Campaign.findOneAndUpdate(
-        { _id: campaignId, status: 'running' },
-        { status: 'completed', completedAt: new Date() },
-        { new: true }
-      );
-      
-      // If this is a sub-campaign, check if master campaign should be completed
-      if (campaign && campaign.masterCampaignId) {
-        await checkMasterCampaignCompletion(campaign.masterCampaignId);
-      }
-    }
-  } catch (error) {
-    console.error('[Sender] Campaign completion check error:', error.message);
-  }
+  // Disabled for speed - completion checked by separate worker
+  return;
 }
 
 async function checkMasterCampaignCompletion(masterCampaignId) {
-  try {
-    const Campaign = (await import('../models/campaign.model.js')).default;
-    
-    // Check if all sub-campaigns are completed
-    const pendingSubCampaigns = await Campaign.countDocuments({
-      masterCampaignId,
-      status: { $nin: ['completed', 'failed'] }
-    });
-    
-    if (pendingSubCampaigns === 0) {
-      console.log(`[Sender] ✅ Master campaign ${masterCampaignId} completed (all sub-campaigns done)`);
-      await Campaign.updateOne(
-        { _id: masterCampaignId, status: 'running' },
-        { status: 'completed', completedAt: new Date() }
-      );
-    }
-  } catch (error) {
-    console.error('[Sender] Master campaign completion check error:', error.message);
-  }
+  // Disabled for speed - completion checked by separate worker
+  return;
 }
 
 startMessageSender();

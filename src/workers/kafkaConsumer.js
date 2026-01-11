@@ -63,22 +63,45 @@ async function startKafkaConsumer() {
           return;
         }
         
-        const messageDocs = await ContactCampaignMessage.find(
-          { 'campaigns.messageId': { $in: messageIds } },
-          { userId: 1, 'campaigns.messageId': 1, 'campaigns.campaignId': 1 }
-        ).lean();
+        const messageDocs = await ContactCampaignMessage.find({
+          $or: [
+            { 'campaigns.messageId': { $in: messageIds } },
+            { 'campaigns.jioMessageId': { $in: messageIds } },
+            { 'campaigns.rcsMessageId': { $in: messageIds } }
+          ]
+        }, { userId: 1, recipientPhoneNumber: 1, campaigns: 1 }).lean();
         
         console.log(`[KafkaConsumer] Found ${messageDocs.length} matching messages in DB`);
         
         // DIAGNOSTIC: Log first few messageIds being searched
         if (messageDocs.length === 0 && messageIds.length > 0) {
           console.log(`[KafkaConsumer] ❌ NO MATCHES! Searching for messageIds:`, messageIds.slice(0, 3));
-          // Check if ANY messages exist in DB
-          const anyMessage = await ContactCampaignMessage.findOne({}).select('campaigns.messageId').lean();
-          if (anyMessage) {
-            console.log(`[KafkaConsumer] Sample DB messageId:`, anyMessage.campaigns?.[0]?.messageId);
-          } else {
-            console.log(`[KafkaConsumer] ❌ NO MESSAGES IN DATABASE AT ALL!`);
+          
+          // Fallback: Try phone number matching for recent messages
+          const phoneNumbers = parsedData.map(p => p.phoneNumber?.replace(/^\+91/, '')).filter(Boolean);
+          if (phoneNumbers.length > 0) {
+            const recentTime = new Date(Date.now() - 3600000); // Last hour
+            const phoneMatches = await ContactCampaignMessage.find({
+              recipientPhoneNumber: { $in: phoneNumbers },
+              'campaigns.sentAt': { $gte: recentTime }
+            }).lean();
+            
+            console.log(`[KafkaConsumer] Phone fallback found ${phoneMatches.length} recent messages`);
+            
+            if (phoneMatches.length > 0) {
+              messageDocs.push(...phoneMatches);
+            }
+          }
+          
+          // Still no matches? Check sample
+          if (messageDocs.length === 0) {
+            const anyMessage = await ContactCampaignMessage.findOne({}).select('campaigns.messageId campaigns.jioMessageId').lean();
+            if (anyMessage) {
+              console.log(`[KafkaConsumer] Sample DB messageId:`, anyMessage.campaigns?.[0]?.messageId);
+              console.log(`[KafkaConsumer] Sample DB jioMessageId:`, anyMessage.campaigns?.[0]?.jioMessageId);
+            } else {
+              console.log(`[KafkaConsumer] ❌ NO MESSAGES IN DATABASE AT ALL!`);
+            }
           }
         }
 
@@ -86,12 +109,10 @@ async function startKafkaConsumer() {
         const messageMap = {};
         messageDocs.forEach(doc => {
           doc.campaigns?.forEach(camp => {
-            if (camp.messageId) {
-              messageMap[camp.messageId] = {
-                userId: doc.userId,
-                campaignId: camp.campaignId
-              };
-            }
+            // Match by any ID field
+            if (camp.messageId) messageMap[camp.messageId] = { userId: doc.userId, campaignId: camp.campaignId };
+            if (camp.jioMessageId) messageMap[camp.jioMessageId] = { userId: doc.userId, campaignId: camp.campaignId };
+            if (camp.rcsMessageId) messageMap[camp.rcsMessageId] = { userId: doc.userId, campaignId: camp.campaignId };
           });
         });
         

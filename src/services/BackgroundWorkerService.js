@@ -1,4 +1,3 @@
-import Bull from 'bull';
 import { createClient } from 'redis';
 import Campaign from '../models/campaign.model.js';
 import Message from '../models/message.model.js';

@@ -165,6 +165,8 @@ async function sendMessage(messageData) {
     });
     
     if (response.status === 201) {
+      const jioMessageId = response.data?.messageId;
+      
       await ContactCampaignMessage.updateOne(
         { 
           'campaigns.messageId': messageId,
@@ -172,7 +174,8 @@ async function sendMessage(messageData) {
         },
         { 
           $set: { 
-            'campaigns.$.rcsMessageId': response.data?.messageId,
+            'campaigns.$.rcsMessageId': jioMessageId,
+            'campaigns.$.jioMessageId': jioMessageId,
             'campaigns.$.status': 'sent',
             'campaigns.$.sentAt': new Date()
           }
