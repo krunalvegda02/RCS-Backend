@@ -9,7 +9,7 @@ process.env.WORKER_MODE = 'true';
 
 // Retry policies (matching Python script)
 const RETRY_POLICIES = {
-  '429': { maxRetries: Infinity, delayRange: [500, 2000] },
+  '429': { maxRetries: 50, delayRange: [500, 2000] }, // Limit 429 retries to 50
   'timeout': { maxRetries: 100, delayRange: [1000, 3000] },
   'connection': { maxRetries: 3, delayRange: [1000, 2000] }
 };
