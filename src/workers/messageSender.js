@@ -157,9 +157,12 @@ async function startMessageSender() {
 async function sendMessage(messageData) {
   const { phoneNumber, messageId, userId, templateType, content, variables } = messageData;
   
+  console.log(`[Sender] Processing message: messageId=${messageId}, phone=${phoneNumber}`);
+  
   try {
     const user = await getUser(userId);
     if (!user?.jioConfig?.isConfigured) {
+      console.error(`[Sender] User ${userId} Jio not configured`);
       return { success: false, error: 'Jio RCS not configured' };
     }
     
@@ -178,6 +181,7 @@ async function sendMessage(messageData) {
     });
     
     if (response.status === 201) {
+      console.log(`[Sender] ✅ Message sent successfully: messageId=${messageId}`);
       await ContactCampaignMessage.updateOne(
         { 
           'campaigns.messageId': messageId,

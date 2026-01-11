@@ -39,13 +39,18 @@ async function startStatsConsumer() {
         
         const logIds = messages.map(m => JSON.parse(m.value.toString()).logId);
         
+        console.log(`[StatsConsumer] Processing batch of ${logIds.length} log IDs`);
+        
         // Fetch unprocessed logs
         const logs = await MessageLog.find({
           _id: { $in: logIds },
           processed: false
         }).lean();
         
+        console.log(`[StatsConsumer] Found ${logs.length} unprocessed logs in DB`);
+        
         if (logs.length === 0) {
+          console.log('[StatsConsumer] No unprocessed logs, skipping batch');
           for (const msg of messages) await resolveOffset(msg.offset);
           await heartbeat();
           return;
@@ -57,7 +62,10 @@ async function startStatsConsumer() {
           { $set: { processed: true, processedAt: new Date() } }
         );
         
+        console.log(`[StatsConsumer] Marked ${markResult.modifiedCount} logs as processed`);
+        
         if (markResult.modifiedCount === 0) {
+          console.log('[StatsConsumer] No logs marked (already processed), skipping');
           for (const msg of messages) await resolveOffset(msg.offset);
           await heartbeat();
           return;
@@ -152,10 +160,12 @@ async function startStatsConsumer() {
           try {
             const result = await ContactCampaignMessage.bulkWrite(bulkOps, { ordered: false });
             totalProcessed += result.modifiedCount;
-            console.log(`[Stats] ✅ ${result.modifiedCount} messages updated | Total: ${totalProcessed}`);
+            console.log(`[StatsConsumer] ✅ Updated ${result.modifiedCount} messages | Total: ${totalProcessed}`);
           } catch (error) {
-            console.error('[Stats] Bulk write error:', error.message);
+            console.error('[StatsConsumer] Bulk write error:', error.message);
           }
+        } else {
+          console.log('[StatsConsumer] No message updates needed');
         }
         
         // Bulk update wallets
@@ -177,14 +187,14 @@ async function startStatsConsumer() {
           }
           try {
             await User.bulkWrite(walletBulk, { ordered: false });
-            console.log(`[Stats] ✅ ${walletOps.size} wallets updated`);
+            console.log(`[StatsConsumer] ✅ Updated ${walletOps.size} wallets`);
           } catch (error) {
-            console.error('[Stats] Wallet error:', error.message);
+            console.error('[StatsConsumer] Wallet error:', error.message);
           }
         }
         
         const duration = Date.now() - startTime;
-        console.log(`[Stats] Batch: ${logs.length} logs in ${duration}ms`);
+        console.log(`[StatsConsumer] Batch complete: ${logs.length} logs in ${duration}ms`);
         
         for (const msg of messages) await resolveOffset(msg.offset);
         await heartbeat();

@@ -32,24 +32,33 @@ async function startKafkaConsumer() {
           try {
             const webhookData = JSON.parse(message.value.toString());
             const data = webhookData.data;
+            const messageId = data?.entity?.messageId || data?.messageId;
+            const eventType = data?.entity?.eventType || data?.eventType;
+            
             parsedData.push({
               offset: message.offset,
-              messageId: data?.entity?.messageId || data?.messageId,
+              messageId,
               entityType: data?.entityType,
-              eventType: data?.entity?.eventType || data?.eventType,
+              eventType,
               phoneNumber: data?.userPhoneNumber || data?.entity?.userPhoneNumber,
               suggestionResponse: data?.entity?.suggestionResponse,
               rawPayload: data,
               timestamp: webhookData.timestamp
             });
+            
+            console.log(`[KafkaConsumer] Parsed webhook: messageId=${messageId}, eventType=${eventType}`);
           } catch (error) {
+            console.error('[KafkaConsumer] Parse error:', error.message);
             await resolveOffset(message.offset);
           }
         }
         
         // Step 2: Batch query all messageIds
         const messageIds = parsedData.map(p => p.messageId).filter(Boolean);
+        console.log(`[KafkaConsumer] Querying ${messageIds.length} messageIds:`, messageIds.slice(0, 5));
+        
         if (messageIds.length === 0) {
+          console.log('[KafkaConsumer] No messageIds to process');
           await heartbeat();
           return;
         }
@@ -58,6 +67,21 @@ async function startKafkaConsumer() {
           { 'campaigns.messageId': { $in: messageIds } },
           { userId: 1, 'campaigns.messageId': 1, 'campaigns.campaignId': 1 }
         ).lean();
+        
+        console.log(`[KafkaConsumer] Found ${messageDocs.length} matching messages in DB`);
+        
+        // DIAGNOSTIC: Log first few messageIds being searched
+        if (messageDocs.length === 0 && messageIds.length > 0) {
+          console.log(`[KafkaConsumer] ❌ NO MATCHES! Searching for messageIds:`, messageIds.slice(0, 3));
+          // Check if ANY messages exist in DB
+          const anyMessage = await ContactCampaignMessage.findOne({}).select('campaigns.messageId').lean();
+          if (anyMessage) {
+            console.log(`[KafkaConsumer] Sample DB messageId:`, anyMessage.campaigns?.[0]?.messageId);
+          } else {
+            console.log(`[KafkaConsumer] ❌ NO MESSAGES IN DATABASE AT ALL!`);
+          }
+        }
+
         
         const messageMap = {};
         messageDocs.forEach(doc => {
@@ -70,6 +94,8 @@ async function startKafkaConsumer() {
             }
           });
         });
+        
+        console.log(`[KafkaConsumer] Built messageMap with ${Object.keys(messageMap).length} entries`);
         
         // Step 3: Build logs array
         const logsToInsert = [];
@@ -106,8 +132,10 @@ async function startKafkaConsumer() {
         totalSkipped += skippedCount;
         totalProcessed += logsToInsert.length;
         
+        console.log(`[KafkaConsumer] Batch summary: ${logsToInsert.length} to insert, ${skippedCount} skipped`);
+        
         if (skippedCount > 0) {
-          console.log(`[Kafka] ⚠️  Skipped ${skippedCount} webhooks | Total: Processed=${totalProcessed}, Skipped=${totalSkipped}`);
+          console.log(`[KafkaConsumer] ⚠️  Skipped ${skippedCount} webhooks | Total: Processed=${totalProcessed}, Skipped=${totalSkipped}`);
         }
         
         // Step 4: Bulk insert with retry
@@ -120,7 +148,7 @@ async function startKafkaConsumer() {
               await MessageLog.insertMany(logsToInsert, { ordered: false });
               success = true;
               const duration = Date.now() - startTime;
-              console.log(`[Kafka] ✅ ${logsToInsert.length} logs in ${duration}ms`);
+              console.log(`[KafkaConsumer] ✅ Inserted ${logsToInsert.length} logs in ${duration}ms | Total processed: ${totalProcessed}`);
               break;
             } catch (bulkError) {
               retries--;
