@@ -191,6 +191,10 @@ async function sendMessage(messageData) {
           }
         }
       );
+      
+      // Check if campaign is complete
+      await checkCampaignCompletion(messageData.campaignId);
+      
       return { success: true };
     }
     
@@ -237,6 +241,33 @@ async function markMessageFailed(messageId, error, campaignId) {
       }
     }
   );
+  
+  // Check if campaign is complete
+  await checkCampaignCompletion(campaignId);
+}
+
+async function checkCampaignCompletion(campaignId) {
+  try {
+    const Campaign = (await import('../models/campaign.model.js')).default;
+    const campaign = await Campaign.findById(campaignId);
+    if (!campaign || campaign.status !== 'running') return;
+    
+    // Count pending messages
+    const pendingCount = await ContactCampaignMessage.countDocuments({
+      'campaigns.campaignId': campaignId,
+      'campaigns.status': { $in: ['draft', 'queued', 'processing'] }
+    });
+    
+    if (pendingCount === 0) {
+      console.log(`[Sender] ✅ Campaign ${campaignId} completed`);
+      await Campaign.updateOne(
+        { _id: campaignId },
+        { status: 'completed', completedAt: new Date() }
+      );
+    }
+  } catch (error) {
+    console.error('[Sender] Campaign completion check error:', error.message);
+  }
 }
 
 startMessageSender();
