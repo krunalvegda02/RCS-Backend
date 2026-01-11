@@ -81,7 +81,7 @@ async function startMessageSender() {
     
     await consumer.connect();
     await retryProducer.connect();
-    await consumer.subscribe({ topic: 'rcs-messages', fromBeginning: false });
+    await consumer.subscribe({ topic: 'rcs-messages', fromBeginning: true });
     
     console.log('✅ Message Sender subscribed to rcs-messages');
     

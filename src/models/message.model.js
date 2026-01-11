@@ -5,7 +5,6 @@ const campaignStateSchema = new mongoose.Schema(
     campaignId: {
       type: mongoose.Schema.Types.ObjectId,
       required: true,
-      index: true,
     },
 
     templateId: {
