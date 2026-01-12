@@ -576,7 +576,14 @@ export const getAll = async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
 
     // Only show master campaigns or standalone campaigns (not sub-campaigns)
-    let query = { userId, $or: [{ isMaster: true }, { isMaster: { $exists: false } }, { masterCampaignId: { $exists: false } }] };
+    let query = { 
+      userId, 
+      $or: [
+        { isMaster: true }, 
+        { isMaster: { $exists: false } }, 
+        { masterCampaignId: { $exists: false } }
+      ] 
+    };
     if (status) query.status = status;
 
     const campaigns = await Campaign.find(query)
@@ -586,7 +593,13 @@ export const getAll = async (req, res) => {
       .skip((page - 1) * limit);
 
     // Sync stats for master campaigns
-    await Promise.all(campaigns.map(c => c.isMaster ? c.syncMasterStats() : Promise.resolve()));
+    await Promise.all(campaigns.map(async (c) => {
+      if (c.isMaster) {
+        console.log(`[Campaign] Syncing stats for master campaign: ${c.name}`);
+        await c.syncMasterStats();
+      }
+      return Promise.resolve();
+    }));
 
     const total = await Campaign.countDocuments(query);
 
@@ -794,7 +807,14 @@ export const getUserCampaignReports = async (req, res) => {
     const { search, status, type, campaign, startDate, endDate, sort = 'newest' } = req.query;
 
     // Build query - only show master campaigns or standalone campaigns (hide sub-campaigns)
-    let query = { userId, $or: [{ isMaster: true }, { isMaster: { $exists: false } }, { masterCampaignId: { $exists: false } }] };
+    let query = { 
+      userId, 
+      $or: [
+        { isMaster: true }, 
+        { isMaster: { $exists: false } }, 
+        { masterCampaignId: { $exists: false } }
+      ] 
+    };
 
     // Status filter
     if (status && status !== 'all') {
@@ -863,7 +883,13 @@ export const getUserCampaignReports = async (req, res) => {
       .select('name description status stats estimatedCost actualCost createdAt completedAt isMaster masterCampaignId');
 
     // Sync master campaign stats BEFORE converting to lean
-    await Promise.all(campaigns.map(c => c.isMaster ? c.syncMasterStats() : Promise.resolve()));
+    await Promise.all(campaigns.map(async (c) => {
+      if (c.isMaster) {
+        console.log(`[Campaign] Syncing master campaign stats for: ${c.name}`);
+        await c.syncMasterStats();
+      }
+      return Promise.resolve();
+    }));
     
     // Convert to plain objects after syncing
     const campaignsLean = campaigns.map(c => c.toObject ? c.toObject() : c);
@@ -1061,7 +1087,13 @@ export const getAllForAdmin = async (req, res) => {
     }
 
     // Only show master campaigns or standalone campaigns (hide sub-campaigns)
-    let query = { $or: [{ isMaster: true }, { isMaster: { $exists: false } }, { masterCampaignId: { $exists: false } }] };
+    let query = { 
+      $or: [
+        { isMaster: true }, 
+        { isMaster: { $exists: false } }, 
+        { masterCampaignId: { $exists: false } }
+      ] 
+    };
     if (status) query.status = status;
 
     // Date range filter
@@ -1128,7 +1160,13 @@ export const getAllForAdmin = async (req, res) => {
 
     // Sync master campaign stats before returning
     await Promise.all(
-      paginatedCampaigns.map(c => c.isMaster ? c.syncMasterStats() : Promise.resolve())
+      paginatedCampaigns.map(async (c) => {
+        if (c.isMaster) {
+          console.log(`[Campaign] Admin syncing stats for master campaign: ${c.name}`);
+          await c.syncMasterStats();
+        }
+        return Promise.resolve();
+      })
     );
 
     // Get campaign IDs for aggregation
@@ -1404,7 +1442,13 @@ export const getAllCampaignsForExport = async (req, res) => {
     }
 
     // Only show master campaigns or standalone campaigns (hide sub-campaigns)
-    let query = { $or: [{ isMaster: true }, { isMaster: { $exists: false } }, { masterCampaignId: { $exists: false } }] };
+    let query = { 
+      $or: [
+        { isMaster: true }, 
+        { isMaster: { $exists: false } }, 
+        { masterCampaignId: { $exists: false } }
+      ] 
+    };
     
     // If not admin or userId is provided, filter by userId
     if (!isAdmin) {

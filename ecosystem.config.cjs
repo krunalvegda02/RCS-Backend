@@ -42,6 +42,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         WORKER_MODE: 'true',
+        WORKER_ID: 'kafka-consumer-1',
         REDIS_HOST: '127.0.0.1',
         REDIS_PORT: 6379,
         MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
@@ -59,6 +60,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         WORKER_MODE: 'true',
+        WORKER_ID: 'kafka-consumer-2',
         REDIS_HOST: '127.0.0.1',
         REDIS_PORT: 6379,
         MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
@@ -76,6 +78,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         WORKER_MODE: 'true',
+        WORKER_ID: 'kafka-consumer-3',
         REDIS_HOST: '127.0.0.1',
         REDIS_PORT: 6379,
         MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
@@ -89,6 +92,23 @@ module.exports = {
       name: 'stats-consumer',
       script: 'src/workers/statsConsumer.js',
       instances: 3,
+      exec_mode: 'fork',
+      env: {
+        NODE_ENV: 'production',
+        WORKER_MODE: 'true',
+        REDIS_HOST: '127.0.0.1',
+        REDIS_PORT: 6379,
+        MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
+        KAFKA_BROKER: 'localhost:9092'
+      },
+      wait_ready: true,
+      listen_timeout: 10000,
+      restart_delay: 5000
+    },
+    {
+      name: 'batch-entries-consumer',
+      script: 'src/workers/batchEntriesConsumer.js',
+      instances: 2,
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',

@@ -27,3 +27,5 @@ services:
       KAFKA_LOG_RETENTION_HOURS: 24
       KAFKA_LOG_SEGMENT_BYTES: 1073741824
       KAFKA_COMPRESSION_TYPE: gzip
+      # Pre-create topics for better performance
+      KAFKA_CREATE_TOPICS: "rcs-webhooks:10:1,campaign-batch-entries:5:1,message-log-processing:5:1,rcs-db-updates:3:1"

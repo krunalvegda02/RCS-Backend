@@ -1,10 +1,12 @@
 import Campaign from '../models/campaign.model.js';
 import Template from '../models/template.model.js';
+import ContactCampaignMessage from '../models/contact_campaign_message.model.js';
+import { sendBatchEntriesToKafka } from '../services/kafka.service.js';
 
-// Create master campaign with sub-campaigns
+// Create master campaign with 30 sub-campaigns
 export const createMasterCampaign = async (req, res) => {
   try {
-    const { name, templateId, phoneNumbers, subCampaignSize = 200 } = req.body;
+    const { name, templateId, phoneNumbers } = req.body;
     const userId = req.user._id;
 
     if (!phoneNumbers || phoneNumbers.length === 0) {
@@ -16,13 +18,16 @@ export const createMasterCampaign = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Template not found' });
     }
 
+    // Calculate sub-campaign size to create exactly 30 sub-campaigns
+    const subCampaignSize = Math.ceil(phoneNumbers.length / 30);
+    
     // Create master campaign
     const masterCampaign = await Campaign.create({
       name,
       userId,
       templateId,
       isMaster: true,
-      status: 'processing',
+      status: 'pending',
       payload: JSON.stringify(template.generatePayload()),
       stats: {
         total: phoneNumbers.length,
@@ -33,8 +38,7 @@ export const createMasterCampaign = async (req, res) => {
       }
     });
 
-    // Split contacts into sub-campaigns
-    const subCampaigns = [];
+    // Split contacts into exactly 30 sub-campaigns
     const chunks = [];
     for (let i = 0; i < phoneNumbers.length; i += subCampaignSize) {
       chunks.push(phoneNumbers.slice(i, i + subCampaignSize));
@@ -45,7 +49,7 @@ export const createMasterCampaign = async (req, res) => {
     // Create sub-campaigns in parallel
     const subCampaignPromises = chunks.map(async (chunk, index) => {
       return Campaign.create({
-        name: `${name} - Part ${index + 1}`,
+        name: `bot${index + 1}`,
         userId,
         templateId,
         isMaster: false,
@@ -65,144 +69,72 @@ export const createMasterCampaign = async (req, res) => {
 
     const createdSubCampaigns = await Promise.all(subCampaignPromises);
 
-    // Create entries for each sub-campaign in parallel
-    const { v4: uuidv4 } = await import('uuid');
+    // Send batch entries to Kafka for fast processing
+    const batchData = {
+      masterCampaignId: masterCampaign._id,
+      templateId,
+      userId,
+      totalContacts: phoneNumbers.length,
+      subCampaigns: createdSubCampaigns.map((subCampaign, index) => ({
+        campaignId: subCampaign._id,
+        phoneNumbers: chunks[index]
+      }))
+    };
 
-    await Promise.all(
-      createdSubCampaigns.map(async (subCampaign, index) => {
-        const chunk = chunks[index];
-        const bulkOps = chunk.map(phone => {
-          const cleanPhone = phone.replace(/^\+?91/, '').replace(/\D/g, '');
-          return {
-            updateOne: {
-              filter: { recipientPhoneNumber: cleanPhone, userId },
-              update: {
-                $setOnInsert: { recipientPhoneNumber: cleanPhone, userId },
-                $push: {
-                  campaigns: {
-                    campaignId: subCampaign._id,
-                    templateId,
-                    messageId: uuidv4(),
-                    status: 'draft',
-                    queuedAt: new Date()
-                  }
+    // Send to Kafka for async processing
+    const kafkaResult = await sendBatchEntriesToKafka(batchData);
+    
+    if (!kafkaResult.success) {
+      console.error('[SubCampaign] Kafka send failed, falling back to direct processing');
+      
+      // Fallback: Direct processing if Kafka fails
+      const { v4: uuidv4 } = await import('uuid');
+      await Promise.all(
+        createdSubCampaigns.map(async (subCampaign, index) => {
+          const chunk = chunks[index];
+          const bulkOps = chunk.map(phone => {
+            const cleanPhone = phone.replace(/^\+?91/, '').replace(/\D/g, '');
+            return {
+              updateOne: {
+                filter: { recipientPhoneNumber: cleanPhone, userId },
+                update: {
+                  $setOnInsert: { recipientPhoneNumber: cleanPhone, userId },
+                  $push: {
+                    campaigns: {
+                      campaignId: subCampaign._id,
+                      templateId,
+                      messageId: uuidv4(),
+                      status: 'draft',
+                      queuedAt: new Date()
+                    }
+                  },
+                  $addToSet: { campaignIds: subCampaign._id }
                 },
-                $addToSet: { campaignIds: subCampaign._id }
-              },
-              upsert: true
-            }
-          };
-        });
+                upsert: true
+              }
+            };
+          });
 
-        await ContactCampaignMessage.bulkWrite(bulkOps, { ordered: false });
-      })
-    );
+          await ContactCampaignMessage.bulkWrite(bulkOps, { ordered: false });
+        })
+      );
+    }
+
+    console.log(`[SubCampaign] ✅ Created master campaign with ${createdSubCampaigns.length} sub-campaigns`);
+    console.log(`[SubCampaign] ✅ Batch entries sent to Kafka for processing`);
 
     res.json({
       success: true,
-      message: `Master campaign created with ${createdSubCampaigns.length} sub-campaigns`,
+      message: `Master campaign created with ${createdSubCampaigns.length} sub-campaigns. Batch entries processing via Kafka.`,
       data: {
         masterCampaign,
         subCampaignsCount: createdSubCampaigns.length,
-        totalContacts: phoneNumbers.length
+        totalContacts: phoneNumbers.length,
+        processingMethod: kafkaResult.success ? 'kafka' : 'direct'
       }
     });
   } catch (error) {
     console.error('[SubCampaign] Error:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// Get master campaign with sub-campaigns stats
-export const getMasterCampaignStats = async (req, res) => {
-  try {
-    const { masterCampaignId } = req.params;
-    const userId = req.user._id;
-
-    const masterCampaign = await Campaign.findOne({ _id: masterCampaignId, userId, isMaster: true });
-    if (!masterCampaign) {
-      return res.status(404).json({ success: false, message: 'Master campaign not found' });
-    }
-
-    // Get all sub-campaigns
-    const subCampaigns = await Campaign.find({ masterCampaignId, isMaster: false }).lean();
-
-    // Aggregate stats from sub-campaigns
-    const subCampaignIds = subCampaigns.map(sc => sc._id);
-
-    const aggregatedStats = await ContactCampaignMessage.aggregate([
-      { $match: { userId, 'campaigns.campaignId': { $in: subCampaignIds } } },
-      { $unwind: '$campaigns' },
-      { $match: { 'campaigns.campaignId': { $in: subCampaignIds } } },
-      {
-        $group: {
-          _id: '$campaigns.status',
-          count: { $sum: 1 }
-        }
-      }
-    ]);
-
-    const stats = {
-      total: 0,
-      sent: 0,
-      delivered: 0,
-      failed: 0,
-      pending: 0
-    };
-
-    aggregatedStats.forEach(stat => {
-      stats.total += stat.count;
-      if (['sent', 'delivered', 'read', 'replied'].includes(stat._id)) stats.sent += stat.count;
-      if (['delivered', 'read', 'replied'].includes(stat._id)) stats.delivered += stat.count;
-      if (stat._id === 'failed') stats.failed += stat.count;
-      if (['draft', 'queued', 'pending'].includes(stat._id)) stats.pending += stat.count;
-    });
-
-    res.json({
-      success: true,
-      data: {
-        masterCampaign,
-        subCampaignsCount: subCampaigns.length,
-        stats
-      }
-    });
-  } catch (error) {
-    console.error('[SubCampaign] Stats error:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// Start all sub-campaigns in parallel
-export const startMasterCampaign = async (req, res) => {
-  try {
-    const { masterCampaignId } = req.params;
-    const userId = req.user._id;
-
-    const masterCampaign = await Campaign.findOne({ _id: masterCampaignId, userId, isMaster: true });
-    if (!masterCampaign) {
-      return res.status(404).json({ success: false, message: 'Master campaign not found' });
-    }
-
-    // Update all sub-campaigns to processing
-    await Campaign.updateMany(
-      { masterCampaignId, isMaster: false },
-      { status: 'processing' }
-    );
-
-    // Update master campaign
-    masterCampaign.status = 'processing';
-    await masterCampaign.save();
-
-    // Mark sub-campaigns as ready for Python bot processing
-    console.log(`[SubCampaign] Marked ${subCampaigns.length} sub-campaigns as ready for Python bot`);
-
-    res.json({
-      success: true,
-      message: `Started ${subCampaigns.length} sub-campaigns - ready for Python bot processing`,
-      data: { subCampaignsCount: subCampaigns.length }
-    });
-  } catch (error) {
-    console.error('[SubCampaign] Start error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };

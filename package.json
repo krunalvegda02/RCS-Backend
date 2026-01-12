@@ -7,6 +7,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon -r dotenv/config --experimental-json-modules src/index.js",
     "kafka-consumer": "node -r dotenv/config src/workers/kafkaConsumer.js",
+    "batch-consumer": "node -r dotenv/config src/workers/batchEntriesConsumer.js",
+    "stats-consumer": "node -r dotenv/config src/workers/statsConsumer.js",
     "seed": "node -r dotenv/config src/scripts/seedTestData.js"
   },
   "keywords": [],

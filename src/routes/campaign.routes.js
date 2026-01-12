@@ -1,5 +1,6 @@
 import express from 'express';
 import * as CampaignController from '../controller/campaign.controller.js';
+import * as SubCampaignController from '../controller/subCampaign.controller.js';
 import { authenticateToken, requireUser, requireAdmin, checkWalletBalance } from '../middlewares/auth.middleware.js';
 import { cacheMiddleware } from '../middlewares/cache.middleware.js';
 
@@ -21,6 +22,9 @@ router.get('/check-capability/progress', cacheMiddleware, CampaignController.get
 
 // Create campaign entries (bulk insert)
 router.post('/create-entries', CampaignController.createCampaignEntries);
+
+// Create master campaign with sub-campaigns
+router.post('/master', SubCampaignController.createMasterCampaign);
 
 // Send campaign messages to Kafka
 router.post('/send', CampaignController.sendCampaign);

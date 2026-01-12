@@ -119,6 +119,37 @@ export async function connectConsumer() {
   return consumer;
 }
 
+export async function sendBatchEntriesToKafka(batchData) {
+  try {
+    if (!dbProducerConnected) {
+      if (!dbConnectingPromise) {
+        dbConnectingPromise = dbProducer.connect().then(() => {
+          dbProducerConnected = true;
+          dbConnectingPromise = null;
+          console.log('✅ Kafka DB Producer connected');
+        });
+      }
+      await dbConnectingPromise;
+    }
+    
+    // Send batch data to Kafka for processing
+    await dbProducer.send({
+      topic: 'campaign-batch-entries',
+      messages: [{
+        key: batchData.masterCampaignId,
+        value: JSON.stringify(batchData),
+        timestamp: Date.now()
+      }]
+    });
+    
+    console.log(`[Kafka] Sent batch entries to Kafka: ${batchData.totalContacts} contacts`);
+    return { success: true };
+  } catch (error) {
+    console.error('[Kafka] Batch entries send error:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
 export async function sendDBUpdateToKafka(updateData) {
   try {
     if (!dbProducerConnected) {

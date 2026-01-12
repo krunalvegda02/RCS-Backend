@@ -37,6 +37,8 @@ services:
       KAFKA_COMPRESSION_TYPE: gzip
       KAFKA_LOG_DIRS: /var/lib/kafka/data
       KAFKA_HEAP_OPTS: "-Xmx2G -Xms2G"
+      # Pre-create topics for better performance
+      KAFKA_CREATE_TOPICS: "rcs-webhooks:10:1,campaign-batch-entries:5:1,message-log-processing:5:1,rcs-db-updates:3:1"
     volumes:
       - kafka-data:/var/lib/kafka/data
     networks:

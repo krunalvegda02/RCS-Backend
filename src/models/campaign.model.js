@@ -1,6 +1,14 @@
 
 import mongoose from 'mongoose';
 
+// Import ContactCampaignMessage for stats aggregation
+let ContactCampaignMessage;
+try {
+  ContactCampaignMessage = mongoose.model('ContactCampaignMessage');
+} catch {
+  // Will be set when the model is registered
+}
+
 const campaignSchema = new mongoose.Schema(
   {
     name: {
@@ -104,6 +112,10 @@ campaignSchema.index({ masterCampaignId: 1, isMaster: 1 });
 
 // Sync stats from ContactCampaignMessage
 campaignSchema.methods.syncStats = async function () {
+  // Lazy load ContactCampaignMessage if not available
+  if (!ContactCampaignMessage) {
+    ContactCampaignMessage = mongoose.model('ContactCampaignMessage');
+  }
   
   // If this is a sub-campaign, sync from messages
   if (!this.isMaster) {
