@@ -1,5 +1,4 @@
 import Campaign from '../models/campaign.model.js';
-import Message from '../models/contact_campaign_message.model.js';
 import statsService from '../services/CampaignStatsService.js';
 
 // Get campaign reports with pagination for large datasets

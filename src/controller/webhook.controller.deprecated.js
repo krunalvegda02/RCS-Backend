@@ -3,7 +3,6 @@
 // Use kafkaConsumer.js with bulk insertMany() instead
 
 import mongoose from 'mongoose';
-import ContactCampaignMessage from '../models/contact_campaign_message.model.js';
 import MessageLog from '../models/messageLog.model.js';
 
 // ❌ DEPRECATED: Individual DB writes, not scalable

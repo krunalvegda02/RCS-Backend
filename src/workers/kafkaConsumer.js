@@ -11,7 +11,6 @@ async function startKafkaConsumer() {
     
     const consumer = await connectConsumer();
     const MessageLog = (await import('../models/messageLog.model.js')).default;
-    const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
     
     let totalProcessed = 0;
     let totalSkipped = 0;

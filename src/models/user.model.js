@@ -388,26 +388,14 @@ userSchema.methods.addTransactionRecord = async function (type, amount, descript
 
 userSchema.methods.recalculateStatsOnCampaignCompletion = async function (campaignId) {
   const Campaign = mongoose.model('Campaign');
-  const Message = mongoose.model('Message');
+  // const Message = mongoose.model('Message');
   
   // Get campaign data
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) return;
   
-  // Get actual message statistics from Message collection
-  const messageStats = await Message.aggregate([
-    { $match: { campaignId: new mongoose.Types.ObjectId(campaignId) } },
-    {
-      $group: {
-        _id: null,
-        totalSent: { $sum: 1 },
-        delivered: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] } },
-        failed: { $sum: { $cond: [{ $in: ['$status', ['failed', 'bounced']] }, 1, 0] } },
-        read: { $sum: { $cond: [{ $eq: ['$status', 'read'] }, 1, 0] } },
-        replied: { $sum: { $cond: [{ $eq: ['$status', 'replied'] }, 1, 0] } }
-      }
-    }
-  ]);
+  // Message stats disabled - Message model removed
+  const messageStats = [{ totalSent: 0, delivered: 0, failed: 0, read: 0, replied: 0 }];
   
   const stats = messageStats[0] || { totalSent: 0, delivered: 0, failed: 0, read: 0, replied: 0 };
   

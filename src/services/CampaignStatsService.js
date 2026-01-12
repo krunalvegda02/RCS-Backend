@@ -1,7 +1,6 @@
 import { createClient } from 'redis';
 import mongoose from 'mongoose';
 import Campaign from '../models/campaign.model.js';
-import Message from '../models/contact_campaign_message.model.js';
 
 // Single Redis client for stats only
 let redisClient = null;

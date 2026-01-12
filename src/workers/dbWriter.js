@@ -1,7 +1,6 @@
 import mongoose from 'mongoose';
 import { Kafka } from 'kafkajs';
 import connectDB from '../db/index.js';
-import ContactCampaignMessage from '../models/contact_campaign_message.model.js';
 
 process.env.WORKER_MODE = 'true';
 

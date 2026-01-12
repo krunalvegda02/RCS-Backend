@@ -1,6 +1,6 @@
 import User from '../models/user.model.js';
 import Campaign from '../models/campaign.model.js';
-import Message from '../models/contact_campaign_message.model.js';
+import ContactCampaignMessage from '../models/contact_campaign_message.model.js';
 
 export const getUserReport = async (req, res) => {
   try {
@@ -26,15 +26,19 @@ export const getUserReport = async (req, res) => {
       .skip((parseInt(campaignPage) - 1) * parseInt(campaignLimit))
       .lean();
 
-    // Get message statistics for each campaign
+    // Get campaign IDs for message statistics
     const campaignIds = campaigns.map(c => c._id);
-    const campaignMessageStats = await Message.aggregate([
-      { $match: { campaignId: { $in: campaignIds } } },
+
+    // Get message statistics using ContactCampaignMessage
+    const campaignMessageStats = await ContactCampaignMessage.aggregate([
+      { $match: { userId: user._id, 'campaigns.campaignId': { $in: campaignIds } } },
+      { $unwind: '$campaigns' },
+      { $match: { 'campaigns.campaignId': { $in: campaignIds } } },
       {
         $group: {
-          _id: '$campaignId',
-          read: { $sum: { $cond: [{ $ne: ['$readAt', null] }, 1, 0] } },
-          replied: { $sum: { $cond: [{ $or: [{ $eq: ['$status', 'replied'] }, { $gt: ['$userReplyCount', 0] }] }, 1, 0] } },
+          _id: '$campaigns.campaignId',
+          read: { $sum: { $cond: [{ $ne: ['$campaigns.readAt', null] }, 1, 0] } },
+          replied: { $sum: { $cond: [{ $or: [{ $eq: ['$campaigns.status', 'replied'] }, { $gt: ['$campaigns.userReplyCount', 0] }] }, 1, 0] } },
         }
       }
     ]);
@@ -44,19 +48,20 @@ export const getUserReport = async (req, res) => {
       statsMap[stat._id.toString()] = { read: stat.read, replied: stat.replied };
     });
 
-    // Get overall message statistics
-    const messageStats = await Message.aggregate([
+    // Get overall message statistics using ContactCampaignMessage
+    const messageStats = await ContactCampaignMessage.aggregate([
       { $match: { userId: user._id } },
+      { $unwind: '$campaigns' },
       {
         $group: {
           _id: null,
           totalSent: { $sum: 1 },
-          delivered: { $sum: { $cond: [{ $in: ['$status', ['delivered', 'read', 'replied']] }, 1, 0] } },
-          failed: { $sum: { $cond: [{ $in: ['$status', ['failed', 'bounced']] }, 1, 0] } },
-          read: { $sum: { $cond: [{ $ne: ['$readAt', null] }, 1, 0] } },
-          replied: { $sum: { $cond: [{ $or: [{ $eq: ['$status', 'replied'] }, { $gt: ['$userReplyCount', 0] }] }, 1, 0] } },
-          totalInteractions: { $sum: '$userClickCount' },
-          totalReplies: { $sum: '$userReplyCount' }
+          delivered: { $sum: { $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0] } },
+          failed: { $sum: { $cond: [{ $in: ['$campaigns.status', ['failed', 'bounced']] }, 1, 0] } },
+          read: { $sum: { $cond: [{ $ne: ['$campaigns.readAt', null] }, 1, 0] } },
+          replied: { $sum: { $cond: [{ $or: [{ $eq: ['$campaigns.status', 'replied'] }, { $gt: ['$campaigns.userReplyCount', 0] }] }, 1, 0] } },
+          totalInteractions: { $sum: '$campaigns.userClickCount' },
+          totalReplies: { $sum: '$campaigns.userReplyCount' }
         }
       }
     ]);

@@ -171,7 +171,6 @@ campaignSchema.methods.updateStats = async function () {
 campaignSchema.methods.syncFromMessages = async function (force = false) {
   try {
     // Import model dynamically to avoid circular dependency
-    const ContactCampaignMessage = (await import('./contact_campaign_message.model.js')).default;
     
     // Aggregate campaign states for this campaign
     const campaignStats = await ContactCampaignMessage.aggregate([

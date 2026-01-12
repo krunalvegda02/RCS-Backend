@@ -1,7 +1,6 @@
 import User from '../models/user.model.js';
 import Campaign from '../models/campaign.model.js';
 import Template from '../models/template.model.js';
-import Message from '../models/contact_campaign_message.model.js';
 import MessageLog from '../models/messageLog.model.js';
 import WalletRequest from '../models/walletRequest.model.js';
 import statsService from '../services/CampaignStatsService.js';

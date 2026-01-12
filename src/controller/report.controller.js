@@ -1,5 +1,4 @@
 import { Report } from '../models/report.model.js';
-import Message from '../models/contact_campaign_message.model.js';
 
 // Generate report
 export const generate = async (req, res) => {

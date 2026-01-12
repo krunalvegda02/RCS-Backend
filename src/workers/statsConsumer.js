@@ -25,7 +25,6 @@ async function startStatsConsumer() {
     console.log('✅ Stats Consumer subscribed to message-log-processing');
     
     const MessageLog = (await import('../models/messageLog.model.js')).default;
-    const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
     const User = (await import('../models/user.model.js')).default;
     
     let totalProcessed = 0;

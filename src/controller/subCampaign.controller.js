@@ -66,7 +66,6 @@ export const createMasterCampaign = async (req, res) => {
     const createdSubCampaigns = await Promise.all(subCampaignPromises);
 
     // Create entries for each sub-campaign in parallel
-    const ContactCampaignMessage = (await import('../models/message.model.js')).default;
     const { v4: uuidv4 } = await import('uuid');
 
     await Promise.all(
@@ -129,7 +128,6 @@ export const getMasterCampaignStats = async (req, res) => {
     const subCampaigns = await Campaign.find({ masterCampaignId, isMaster: false }).lean();
 
     // Aggregate stats from sub-campaigns
-    const ContactCampaignMessage = (await import('../models/message.model.js')).default;
     const subCampaignIds = subCampaigns.map(sc => sc._id);
 
     const aggregatedStats = await ContactCampaignMessage.aggregate([

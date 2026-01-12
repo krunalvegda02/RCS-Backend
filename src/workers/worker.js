@@ -1,7 +1,6 @@
 import mongoose from 'mongoose';
 import Bull from 'bull';
 import '../models/campaign.model.js';
-import '../models/contact_campaign_message.model.js';
 import '../models/messageLog.model.js';
 import '../models/template.model.js';
 import { processWebhookData, processUserInteraction } from '../controller/webhook.controller.js';
