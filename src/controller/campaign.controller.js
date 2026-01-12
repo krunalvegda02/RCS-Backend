@@ -1,5 +1,6 @@
 import Campaign from '../models/campaign.model.js';
 import Template from '../models/template.model.js';
+import ContactCampaignMessage from '../models/contact_campaign_message.model.js';
 import jioRCSService from '../services/JioRCS.service.js';
 import { sendCampaignMessages } from '../services/campaignSender.service.js';
 import mongoose from 'mongoose';
