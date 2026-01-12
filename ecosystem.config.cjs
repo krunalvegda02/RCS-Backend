@@ -122,7 +122,7 @@ module.exports = {
     {
       name: 'message-sender',
       script: 'src/workers/messageSender.js',
-      instances: 10,
+      instances: 5,
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',

@@ -1,67 +1,94 @@
 import mongoose from 'mongoose';
 import { Kafka } from 'kafkajs';
 import axios from 'axios';
+import Bottleneck from 'bottleneck';
 import connectDB from '../db/index.js';
-import ContactCampaignMessage from '../models/message.model.js';
 import User from '../models/user.model.js';
+import { sendDBUpdateToKafka } from '../services/kafka.service.js';
 
 process.env.WORKER_MODE = 'true';
 
-// Retry policies (matching Python script)
+// 🔥 GLOBAL RATE LIMITER - Safe for Jio RBM (66 TPS)
+const limiter = new Bottleneck({
+  maxConcurrent: 10,
+  minTime: 15,
+  reservoir: 4000,
+  reservoirRefreshAmount: 4000,
+  reservoirRefreshInterval: 60000,
+  id: 'jio-rcs-limiter',
+  datastore: 'ioredis',
+  clientOptions: {
+    host: process.env.REDIS_HOST || 'localhost',
+    port: process.env.REDIS_PORT || 6379
+  }
+});
+
 const RETRY_POLICIES = {
-  '429': { maxRetries: 50, delayRange: [500, 2000] }, // Limit 429 retries to 50
+  '429': { maxRetries: 50, delayRange: [500, 2000] },
   'timeout': { maxRetries: 100, delayRange: [1000, 3000] },
   'connection': { maxRetries: 3, delayRange: [1000, 2000] }
 };
 
 let totalSent = 0;
 let totalFailed = 0;
-let total429 = 0;
-let totalTimeout = 0;
 let totalRetries = 0;
 
-// Token cache: { userId: { token, expiresAt } }
-const tokenCache = new Map();
-// User cache: { userId: { user, cachedAt } }
-const userCache = new Map();
+// 🔥 FIX #4: PRELOAD USERS & TOKENS
+const userMap = new Map();
+const tokenMap = new Map();
 
-async function getUser(userId) {
-  const cached = userCache.get(userId);
-  if (cached && (Date.now() - cached.cachedAt) < 300000) { // 5 min cache
-    return cached.user;
-  }
+async function preloadUsers() {
+  const users = await User.find({ 'jioConfig.isConfigured': true })
+    .select('_id jioConfig')
+    .lean();
   
-  const user = await User.findById(userId).select('+jioConfig.clientSecret');
-  userCache.set(userId, { user, cachedAt: Date.now() });
-  return user;
+  users.forEach(user => {
+    userMap.set(user._id.toString(), user);
+  });
+  
+  console.log(`✅ Preloaded ${users.length} users`);
 }
 
-async function getAccessToken(jioConfig, userId) {
-  // Check cache first
-  const cached = tokenCache.get(userId);
+async function refreshTokens() {
+  for (const [userId, user] of userMap.entries()) {
+    try {
+      const { clientId, clientSecret } = user.jioConfig;
+      const url = `https://tgs.businessmessaging.jio.com/v1/oauth/token?grant_type=client_credentials&client_id=${clientId}&client_secret=${clientSecret}&scope=read`;
+      const response = await axios.get(url, { timeout: 10000 });
+      tokenMap.set(userId, {
+        token: response.data.access_token,
+        expiresAt: Date.now() + (55 * 60 * 1000)
+      });
+    } catch (error) {
+      console.error(`[Token] Refresh failed for user ${userId}`);
+    }
+  }
+  console.log(`✅ Refreshed ${tokenMap.size} tokens`);
+}
+
+function getUser(userId) {
+  return userMap.get(userId);
+}
+
+function getAccessToken(userId) {
+  const cached = tokenMap.get(userId);
   if (cached && cached.expiresAt > Date.now()) {
     return cached.token;
   }
-  
-  // Fetch new token
-  const { clientId, clientSecret } = jioConfig;
-  const url = `https://tgs.businessmessaging.jio.com/v1/oauth/token?grant_type=client_credentials&client_id=${clientId}&client_secret=${clientSecret}&scope=read`;
-  const response = await axios.get(url, { timeout: 10000 });
-  const token = response.data.access_token;
-  
-  // Cache for 55 minutes (tokens usually valid for 1 hour)
-  tokenCache.set(userId, {
-    token,
-    expiresAt: Date.now() + (55 * 60 * 1000)
-  });
-  
-  return token;
+  return null;
 }
 
 async function startMessageSender() {
   try {
     await connectDB();
     console.log('✅ Message Sender connected to MongoDB');
+    
+    // 🔥 FIX #4: Preload users and tokens
+    await preloadUsers();
+    await refreshTokens();
+    
+    // Refresh tokens every 50 minutes
+    setInterval(refreshTokens, 50 * 60 * 1000);
     
     const kafka = new Kafka({
       clientId: 'message-sender',
@@ -76,7 +103,8 @@ async function startMessageSender() {
     
     const retryProducer = kafka.producer({
       allowAutoTopicCreation: true,
-      maxInFlightRequests: 10
+      maxInFlightRequests: 5,
+      retry: { retries: 3, initialRetryTime: 100 }
     });
     
     await consumer.connect();
@@ -85,70 +113,68 @@ async function startMessageSender() {
     
     console.log('✅ Message Sender subscribed to rcs-messages');
     
+    // 🔥 FIX #5: Larger batches, fewer consumers
     await consumer.run({
-      partitionsConsumedConcurrently: 20,
+      partitionsConsumedConcurrently: 5,
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat }) => {
-        const messages = batch.messages;
-        const batchPromises = [];
+        const promises = [];
         
-        // Process all messages in parallel
-        for (const message of messages) {
-          batchPromises.push(
-            (async () => {
-              const messageData = JSON.parse(message.value.toString());
-              
-              try {
-                const result = await sendMessage(messageData);
+        for (const message of batch.messages) {
+          const messageData = JSON.parse(message.value.toString());
+          
+          // 🔥 FIX #2: ACK AFTER send completes
+          const promise = sendMessageLimited(messageData)
+            .then(result => {
+              if (result.success) {
+                totalSent++;
+              } else {
+                const errorType = classifyError(result.statusCode, result.error);
+                const policy = RETRY_POLICIES[errorType];
                 
-                if (result.success) {
-                  totalSent++;
-                } else {
-                  const errorType = classifyError(result.statusCode, result.error);
-                  const policy = RETRY_POLICIES[errorType];
+                if (policy && (messageData.retryCount || 0) < policy.maxRetries) {
+                  const delay = Math.random() * (policy.delayRange[1] - policy.delayRange[0]) + policy.delayRange[0];
+                  const delaySeconds = Math.floor(delay / 1000);
                   
-                  if (policy && messageData.retryCount < policy.maxRetries) {
-                    const delay = Math.random() * (policy.delayRange[1] - policy.delayRange[0]) + policy.delayRange[0];
-                    
-                    retryProducer.send({
-                      topic: 'rcs-retries',
-                      messages: [{
-                        key: messageData.messageId,
-                        value: JSON.stringify({
-                          ...messageData,
-                          retryCount: (messageData.retryCount || 0) + 1,
-                          errorType,
-                          retryAfter: Date.now() + delay
-                        })
-                      }]
-                    }).catch(err => console.error('[Sender] Retry queue error:', err.message));
-                    
-                    totalRetries++;
-                    if (errorType === '429') total429++;
-                    if (errorType === 'timeout') totalTimeout++;
-                  } else {
-                    totalFailed++;
-                    markMessageFailed(messageData.messageId, result.error, messageData.campaignId).catch(err => console.error('[Sender] Mark failed error:', err.message));
-                  }
+                  // 🔥 FIX #3: Route to delay-specific topic
+                  const retryTopic = delaySeconds <= 5 ? 'rcs-retries-5s' :
+                                    delaySeconds <= 30 ? 'rcs-retries-30s' : 'rcs-retries-2m';
+                  
+                  retryProducer.send({
+                    topic: retryTopic,
+                    messages: [{
+                      key: messageData.messageId,
+                      value: JSON.stringify({
+                        ...messageData,
+                        retryCount: (messageData.retryCount || 0) + 1,
+                        errorType
+                      })
+                    }]
+                  }).catch(() => {});
+                  
+                  totalRetries++;
+                } else {
+                  totalFailed++;
                 }
-                
-                await resolveOffset(message.offset);
-              } catch (error) {
-                console.error('[Sender] Error:', error.message);
-                await resolveOffset(message.offset);
               }
-            })()
-          );
+              return resolveOffset(message.offset);
+            })
+            .catch(() => {
+              totalFailed++;
+              return resolveOffset(message.offset);
+            });
+          
+          promises.push(promise);
         }
         
-        // Wait for all messages in batch
-        await Promise.all(batchPromises);
+        await Promise.all(promises);
         await heartbeat();
         
-        // Log stats every 500 messages
-        if (totalSent % 500 === 0 && totalSent > 0) {
+        // Log stats every 1000 messages
+        if (totalSent % 1000 === 0 && totalSent > 0) {
           const rate = Math.round(totalSent / ((Date.now() - startTime) / 60000));
-          console.log(`[Sender] Sent: ${totalSent}, Failed: ${totalFailed}, Rate: ${rate}/min`);
+          const limiterStats = limiter.counts();
+          console.log(`[Sender] Sent: ${totalSent}, Rate: ${rate}/min, Queue: ${limiterStats.EXECUTING}/${limiterStats.QUEUED}`);
         }
       }
     });
@@ -165,12 +191,17 @@ async function sendMessage(messageData) {
   const { phoneNumber, messageId, userId, templateType, content, variables, campaignId } = messageData;
   
   try {
-    const user = await getUser(userId);
+    // 🔥 FIX #4: No DB lookup - instant Map access
+    const user = getUser(userId);
     if (!user?.jioConfig?.isConfigured) {
       return { success: false, error: 'Jio RCS not configured' };
     }
     
-    const accessToken = await getAccessToken(user.jioConfig, userId);
+    const accessToken = getAccessToken(userId);
+    if (!accessToken) {
+      return { success: false, error: 'Token not available' };
+    }
+    
     const assistantId = user.jioConfig.assistantId;
     
     const payload = buildPayload(templateType, content, variables);
@@ -187,21 +218,17 @@ async function sendMessage(messageData) {
     if (response.status === 201) {
       const jioMessageId = response.data?.messageId;
       
-      // Fire-and-forget DB update
-      ContactCampaignMessage.updateOne(
-        { 
-          'campaigns.messageId': messageId,
-          'campaigns.campaignId': campaignId
-        },
-        { 
-          $set: { 
-            'campaigns.$.rcsMessageId': jioMessageId,
-            'campaigns.$.jioMessageId': jioMessageId,
-            'campaigns.$.status': 'sent',
-            'campaigns.$.sentAt': new Date()
-          }
+      // 🔥 FIX #3: Queue DB update for batching
+      sendDBUpdateToKafka({
+        messageId,
+        campaignId,
+        fields: {
+          'campaigns.$.rcsMessageId': jioMessageId,
+          'campaigns.$.jioMessageId': jioMessageId,
+          'campaigns.$.status': 'sent',
+          'campaigns.$.sentAt': new Date()
         }
-      ).catch(err => console.error('[Sender] DB update error:', err.message));
+      });
       
       return { success: true };
     }
@@ -217,6 +244,9 @@ async function sendMessage(messageData) {
   }
 }
 
+// 🔥 Wrap sendMessage with rate limiter
+const sendMessageLimited = limiter.wrap(sendMessage);
+
 function classifyError(statusCode, errorMessage) {
   if (statusCode === 429) return '429';
   if (errorMessage?.includes('timeout')) return 'timeout';
@@ -225,42 +255,10 @@ function classifyError(statusCode, errorMessage) {
 }
 
 function buildPayload(templateType, content, variables) {
-  // Content from Kafka is double-nested: { content: { richCardDetails: ... } }
-  // Unwrap it to get the actual Jio API payload
   if (content && content.content) {
-    return content; // Already in correct format { content: { ... } }
+    return content;
   }
-  
-  // Fallback: wrap if not already wrapped
   return { content };
-}
-
-async function markMessageFailed(messageId, error, campaignId) {
-  // Fire-and-forget
-  ContactCampaignMessage.updateOne(
-    { 
-      'campaigns.messageId': messageId,
-      'campaigns.campaignId': campaignId
-    },
-    { 
-      $set: { 
-        'campaigns.$.status': 'failed',
-        'campaigns.$.errorMessage': error,
-        'campaigns.$.failedAt': new Date()
-      }
-    }
-  ).catch(err => console.error('[Sender] Mark failed error:', err.message));
-}
-
-// Remove slow campaign completion checks - handle separately
-async function checkCampaignCompletion(campaignId) {
-  // Disabled for speed - completion checked by separate worker
-  return;
-}
-
-async function checkMasterCampaignCompletion(masterCampaignId) {
-  // Disabled for speed - completion checked by separate worker
-  return;
 }
 
 startMessageSender();

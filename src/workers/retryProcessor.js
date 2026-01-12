@@ -1,52 +1,79 @@
 import mongoose from 'mongoose';
 import { Kafka } from 'kafkajs';
 import axios from 'axios';
+import Bottleneck from 'bottleneck';
 import connectDB from '../db/index.js';
-import ContactCampaignMessage from '../models/message.model.js';
 import User from '../models/user.model.js';
+import { sendDBUpdateToKafka } from '../services/kafka.service.js';
 
 process.env.WORKER_MODE = 'true';
 
+// 🔥 GLOBAL RATE LIMITER - Shared with messageSender
+const limiter = new Bottleneck({
+  maxConcurrent: 10,
+  minTime: 15,
+  reservoir: 4000,
+  reservoirRefreshAmount: 4000,
+  reservoirRefreshInterval: 60000,
+  id: 'jio-rcs-limiter',
+  datastore: 'ioredis',
+  clientOptions: {
+    host: process.env.REDIS_HOST || 'localhost',
+    port: process.env.REDIS_PORT || 6379
+  }
+});
+
 const RETRY_POLICIES = {
-  '429': { maxRetries: 50, delayRange: [500, 2000] }, // Limit 429 retries to 50
+  '429': { maxRetries: 50, delayRange: [500, 2000] },
   'timeout': { maxRetries: 100, delayRange: [1000, 3000] },
   'connection': { maxRetries: 3, delayRange: [1000, 2000] }
 };
 
 let successAfterRetry = 0;
 let finalFailures = 0;
+let skippedNotReady = 0;
 
-// Token cache
-const tokenCache = new Map();
-const userCache = new Map();
+const userMap = new Map();
+const tokenMap = new Map();
 
-async function getUser(userId) {
-  const cached = userCache.get(userId);
-  if (cached && (Date.now() - cached.cachedAt) < 300000) {
-    return cached.user;
-  }
-  const user = await User.findById(userId).select('+jioConfig.clientSecret');
-  userCache.set(userId, { user, cachedAt: Date.now() });
-  return user;
+async function preloadUsers() {
+  const users = await User.find({ 'jioConfig.isConfigured': true }).select('_id jioConfig').lean();
+  users.forEach(user => userMap.set(user._id.toString(), user));
+  console.log(`✅ Preloaded ${users.length} users`);
 }
 
-async function getAccessToken(jioConfig, userId) {
-  const cached = tokenCache.get(userId);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.token;
+async function refreshTokens() {
+  for (const [userId, user] of userMap.entries()) {
+    try {
+      const { clientId, clientSecret } = user.jioConfig;
+      const url = `https://tgs.businessmessaging.jio.com/v1/oauth/token?grant_type=client_credentials&client_id=${clientId}&client_secret=${clientSecret}&scope=read`;
+      const response = await axios.get(url, { timeout: 10000 });
+      tokenMap.set(userId, {
+        token: response.data.access_token,
+        expiresAt: Date.now() + (55 * 60 * 1000)
+      });
+    } catch (error) {}
   }
-  const { clientId, clientSecret } = jioConfig;
-  const url = `https://tgs.businessmessaging.jio.com/v1/oauth/token?grant_type=client_credentials&client_id=${clientId}&client_secret=${clientSecret}&scope=read`;
-  const response = await axios.get(url, { timeout: 10000 });
-  const token = response.data.access_token;
-  tokenCache.set(userId, { token, expiresAt: Date.now() + (55 * 60 * 1000) });
-  return token;
+}
+
+function getUser(userId) {
+  return userMap.get(userId);
+}
+
+function getAccessToken(userId) {
+  const cached = tokenMap.get(userId);
+  if (cached && cached.expiresAt > Date.now()) return cached.token;
+  return null;
 }
 
 async function startRetryProcessor() {
   try {
     await connectDB();
     console.log('✅ Retry Processor connected to MongoDB');
+    
+    await preloadUsers();
+    await refreshTokens();
+    setInterval(refreshTokens, 50 * 60 * 1000);
     
     const kafka = new Kafka({
       clientId: 'retry-processor',
@@ -66,7 +93,10 @@ async function startRetryProcessor() {
     
     await consumer.connect();
     await retryProducer.connect();
-    await consumer.subscribe({ topic: 'rcs-retries', fromBeginning: false });
+    await consumer.subscribe({ 
+      topics: ['rcs-retries-5s', 'rcs-retries-30s', 'rcs-retries-2m'],
+      fromBeginning: false 
+    });
     
     console.log('✅ Retry Processor subscribed to rcs-retries');
     
@@ -74,63 +104,58 @@ async function startRetryProcessor() {
       partitionsConsumedConcurrently: 5,
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat }) => {
+        const promises = [];
+        
         for (const message of batch.messages) {
           const retryData = JSON.parse(message.value.toString());
           
-          // Wait for retry delay
-          const now = Date.now();
-          if (retryData.retryAfter > now) {
-            await new Promise(resolve => setTimeout(resolve, retryData.retryAfter - now));
-          }
-          
-          try {
-            const result = await sendMessage(retryData);
+          // 🔥 FIX #1: Delay topics handle timing naturally
+          const promise = sendMessageLimited(retryData)
             
-            if (result.success) {
-              successAfterRetry++;
-              console.log(`[Retry] ✅ Success after ${retryData.retryCount} attempts for ${retryData.phoneNumber}`);
-              await resolveOffset(message.offset);
-            } else {
-              const errorType = classifyError(result.statusCode, result.error);
-              const policy = RETRY_POLICIES[errorType];
-              
-              if (policy && retryData.retryCount < policy.maxRetries) {
-                // Re-queue for another retry
-                const delay = Math.random() * (policy.delayRange[1] - policy.delayRange[0]) + policy.delayRange[0];
-                
-                await retryProducer.send({
-                  topic: 'rcs-retries',
-                  messages: [{
-                    key: retryData.messageId,
-                    value: JSON.stringify({
-                      ...retryData,
-                      retryCount: retryData.retryCount + 1,
-                      errorType,
-                      retryAfter: Date.now() + delay
-                    })
-                  }]
-                });
-                
-                console.log(`[Retry] Re-queued ${retryData.phoneNumber} (${errorType}, attempt ${retryData.retryCount + 1})`);
+            .then(result => {
+              if (result.success) {
+                successAfterRetry++;
               } else {
-                // Final failure
-                finalFailures++;
-                await markMessageFailed(retryData.messageId, `Max retries (${retryData.retryCount}) reached: ${result.error}`, retryData.campaignId);
-                console.log(`[Retry] ❌ Final failure for ${retryData.phoneNumber} after ${retryData.retryCount} attempts`);
+                const errorType = classifyError(result.statusCode, result.error);
+                const policy = RETRY_POLICIES[errorType];
+                
+                if (policy && retryData.retryCount < policy.maxRetries) {
+                  const delay = Math.random() * (policy.delayRange[1] - policy.delayRange[0]) + policy.delayRange[0];
+                  const delaySeconds = Math.floor(delay / 1000);
+                  const retryTopic = delaySeconds <= 5 ? 'rcs-retries-5s' :
+                                    delaySeconds <= 30 ? 'rcs-retries-30s' : 'rcs-retries-2m';
+                  
+                  retryProducer.send({
+                    topic: retryTopic,
+                    messages: [{
+                      key: retryData.messageId,
+                      value: JSON.stringify({
+                        ...retryData,
+                        retryCount: retryData.retryCount + 1,
+                        errorType
+                      })
+                    }]
+                  }).catch(() => {});
+                } else {
+                  finalFailures++;
+                  markMessageFailed(retryData.messageId, `Max retries: ${result.error}`, retryData.campaignId);
+                }
               }
-              
-              await resolveOffset(message.offset);
-            }
-          } catch (error) {
-            console.error('[Retry] Error:', error.message);
-            await resolveOffset(message.offset);
-          }
+              return resolveOffset(message.offset);
+            })
+            .catch(error => {
+              console.error('[Retry] Error:', error.message);
+              return resolveOffset(message.offset);
+            });
           
-          await heartbeat();
+          promises.push(promise);
         }
         
+        await Promise.all(promises);
+        await heartbeat();
+        
         if (successAfterRetry % 50 === 0 && successAfterRetry > 0) {
-          console.log(`[Retry] Success: ${successAfterRetry}, Final Failures: ${finalFailures}`);
+          console.log(`[Retry] Success: ${successAfterRetry}, Failures: ${finalFailures}, Skipped: ${skippedNotReady}`);
         }
       }
     });
@@ -145,12 +170,16 @@ async function sendMessage(messageData) {
   const { phoneNumber, messageId, userId, templateType, content, variables } = messageData;
   
   try {
-    const user = await getUser(userId);
+    const user = getUser(userId);
     if (!user?.jioConfig?.isConfigured) {
       return { success: false, error: 'Jio RCS not configured' };
     }
     
-    const accessToken = await getAccessToken(user.jioConfig, userId);
+    const accessToken = getAccessToken(userId);
+    if (!accessToken) {
+      return { success: false, error: 'Token not available' };
+    }
+    
     const assistantId = user.jioConfig.assistantId;
     
     const payload = buildPayload(templateType, content, variables);
@@ -167,23 +196,16 @@ async function sendMessage(messageData) {
     if (response.status === 201) {
       const jioMessageId = response.data?.messageId;
       
-      await ContactCampaignMessage.updateOne(
-        { 
-          'campaigns.messageId': messageId,
-          'campaigns.campaignId': messageData.campaignId
-        },
-        { 
-          $set: { 
-            'campaigns.$.rcsMessageId': jioMessageId,
-            'campaigns.$.jioMessageId': jioMessageId,
-            'campaigns.$.status': 'sent',
-            'campaigns.$.sentAt': new Date()
-          }
+      sendDBUpdateToKafka({
+        messageId,
+        campaignId: messageData.campaignId,
+        fields: {
+          'campaigns.$.rcsMessageId': jioMessageId,
+          'campaigns.$.jioMessageId': jioMessageId,
+          'campaigns.$.status': 'sent',
+          'campaigns.$.sentAt': new Date()
         }
-      );
-      
-      // Check if campaign is complete
-      await checkCampaignCompletion(messageData.campaignId);
+      });
       
       return { success: true };
     }
@@ -218,94 +240,17 @@ function buildPayload(templateType, content, variables) {
 }
 
 async function markMessageFailed(messageId, error, campaignId) {
-  await ContactCampaignMessage.updateOne(
-    { 
-      'campaigns.messageId': messageId,
-      'campaigns.campaignId': campaignId
-    },
-    { 
-      $set: { 
-        'campaigns.$.status': 'failed',
-        'campaigns.$.errorMessage': error,
-        'campaigns.$.failedAt': new Date()
-      }
+  sendDBUpdateToKafka({
+    messageId,
+    campaignId,
+    fields: {
+      'campaigns.$.status': 'failed',
+      'campaigns.$.errorMessage': error,
+      'campaigns.$.failedAt': new Date()
     }
-  );
-  
-  // Check if campaign is complete
-  await checkCampaignCompletion(campaignId);
+  });
 }
 
-async function checkCampaignCompletion(campaignId) {
-  try {
-    const Campaign = (await import('../models/campaign.model.js')).default;
-    
-    // Use aggregation to check and update in one query (faster)
-    const result = await ContactCampaignMessage.aggregate([
-      { $match: { 'campaigns.campaignId': campaignId } },
-      { $unwind: '$campaigns' },
-      { $match: { 'campaigns.campaignId': campaignId } },
-      {
-        $group: {
-          _id: null,
-          pending: {
-            $sum: {
-              $cond: [
-                { $in: ['$campaigns.status', ['draft', 'queued', 'processing']] },
-                1,
-                0
-              ]
-            }
-          },
-          total: { $sum: 1 }
-        }
-      }
-    ]);
-    
-    // Complete if: (1) no pending messages AND has messages, OR (2) no messages at all
-    const hasPending = result.length > 0 && result[0].pending > 0;
-    const hasMessages = result.length > 0 && result[0].total > 0;
-    
-    if (!hasPending) {
-      const totalMessages = hasMessages ? result[0].total : 0;
-      console.log(`[Retry] ✅ Campaign ${campaignId} completed (${totalMessages} messages)`);
-      
-      const campaign = await Campaign.findOneAndUpdate(
-        { _id: campaignId, status: 'running' },
-        { status: 'completed', completedAt: new Date() },
-        { new: true }
-      );
-      
-      // If this is a sub-campaign, check if master campaign should be completed
-      if (campaign && campaign.masterCampaignId) {
-        await checkMasterCampaignCompletion(campaign.masterCampaignId);
-      }
-    }
-  } catch (error) {
-    console.error('[Retry] Campaign completion check error:', error.message);
-  }
-}
-
-async function checkMasterCampaignCompletion(masterCampaignId) {
-  try {
-    const Campaign = (await import('../models/campaign.model.js')).default;
-    
-    // Check if all sub-campaigns are completed
-    const pendingSubCampaigns = await Campaign.countDocuments({
-      masterCampaignId,
-      status: { $nin: ['completed', 'failed'] }
-    });
-    
-    if (pendingSubCampaigns === 0) {
-      console.log(`[Retry] ✅ Master campaign ${masterCampaignId} completed (all sub-campaigns done)`);
-      await Campaign.updateOne(
-        { _id: masterCampaignId, status: 'running' },
-        { status: 'completed', completedAt: new Date() }
-      );
-    }
-  } catch (error) {
-    console.error('[Retry] Master campaign completion check error:', error.message);
-  }
-}
+const sendMessageLimited = limiter.wrap(sendMessage);
 
 startRetryProcessor();

@@ -11,16 +11,25 @@ const kafka = new Kafka({
 
 const producer = kafka.producer({
   allowAutoTopicCreation: true,
-  maxInFlightRequests: 10,
+  maxInFlightRequests: 5,
+  retry: {
+    retries: 2,
+    initialRetryTime: 100
+  } 
+});
+
+const statsProducer = kafka.producer({
+  allowAutoTopicCreation: true,
+  maxInFlightRequests: 5,
   retry: {
     retries: 2,
     initialRetryTime: 100
   }
 });
 
-const statsProducer = kafka.producer({
+const dbProducer = kafka.producer({
   allowAutoTopicCreation: true,
-  maxInFlightRequests: 5,
+  maxInFlightRequests: 10,
   retry: {
     retries: 2,
     initialRetryTime: 100
@@ -35,8 +44,10 @@ const consumer = kafka.consumer({
 
 let producerConnected = false;
 let statsProducerConnected = false;
+let dbProducerConnected = false;
 let connectingPromise = null;
 let statsConnectingPromise = null;
+let dbConnectingPromise = null;
 
 export async function connectProducer() {
   if (producerConnected) return;
@@ -108,9 +119,33 @@ export async function connectConsumer() {
   return consumer;
 }
 
+export async function sendDBUpdateToKafka(updateData) {
+  try {
+    if (!dbProducerConnected) {
+      if (!dbConnectingPromise) {
+        dbConnectingPromise = dbProducer.connect().then(() => {
+          dbProducerConnected = true;
+          dbConnectingPromise = null;
+          console.log('✅ Kafka DB Producer connected');
+        });
+      }
+      await dbConnectingPromise;
+    }
+    
+    dbProducer.send({
+      topic: 'rcs-db-updates',
+      messages: [{
+        key: updateData.messageId,
+        value: JSON.stringify(updateData)
+      }]
+    }).catch(() => {});
+  } catch (error) {}
+}
+
 export async function disconnectKafka() {
   await producer.disconnect();
   await statsProducer.disconnect();
+  await dbProducer.disconnect();
   await consumer.disconnect();
   console.log('🛑 Kafka disconnected');
 }
