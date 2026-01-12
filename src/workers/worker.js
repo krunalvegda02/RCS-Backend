@@ -3,6 +3,7 @@ import Bull from 'bull';
 import '../models/campaign.model.js';
 import '../models/messageLog.model.js';
 import '../models/template.model.js';
+import ContactCampaignMessage from '../models/contact_campaign_message.model.js';
 import { processWebhookData, processUserInteraction } from '../controller/webhook.controller.js';
 import BackgroundWorkerService from '../services/BackgroundWorkerService.js';
 // import MessageLogProcessor from '../services/MessageLogProcessor.js';
@@ -42,7 +43,6 @@ async function startWorker() {
     console.log('✅ Worker connected to MongoDB');
     
     // Test database access
-    const ContactCampaignMessage = mongoose.model('ContactCampaignMessage');
     const testCount = await ContactCampaignMessage.countDocuments();
     console.log(`📊 Worker sees ${testCount} contact records in database`);
     
