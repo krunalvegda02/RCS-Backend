@@ -5,7 +5,7 @@ import { createClient } from 'redis';
 import http from 'http';
 import https from 'https';
 
-import Message from '../models/message.model.js';
+import Message from '../models/contact_campaign_message.model.js';
 import MessageLog from '../models/messageLog.model.js';
 import Campaign from '../models/campaign.model.js';
 import User from '../models/user.model.js';

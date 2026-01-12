@@ -157,7 +157,7 @@ export const createCampaignEntries = async (req, res) => {
       );
 
       // Create entries for each sub-campaign
-      const ContactCampaignMessage = (await import("../models/message.model.js")).default;
+      const ContactCampaignMessage = (await import("../models/contact_campaign_message.model.js")).default;
       const { v4: uuidv4 } = await import("uuid");
 
       let totalInserted = 0;
@@ -234,7 +234,7 @@ export const createCampaignEntries = async (req, res) => {
     console.log(`[Campaign] Creating entries for ${phoneNumbers.length} contacts`);
     console.time("CampaignInsert");
 
-    const ContactCampaignMessage = (await import("../models/message.model.js")).default;
+    const ContactCampaignMessage = (await import("../models/contact_campaign_message.model.js")).default;
     const { v4: uuidv4 } = await import("uuid");
 
     const CHUNK_SIZE = 1000;
@@ -996,7 +996,7 @@ export const getUserCampaignReports = async (req, res) => {
     console.log(`[Campaign] Found ${campaignsLean.length} campaigns for user ${userId}`);
 
     // Get ContactCampaignMessage model to aggregate interaction counts
-    const ContactCampaignMessage = (await import('../models/message.model.js')).default;
+    const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
 
     // Get interaction counts for current page campaigns only
     const campaignIds = campaignsLean.map(c => c._id);
@@ -1261,7 +1261,7 @@ export const getAllForAdmin = async (req, res) => {
     const campaignIds = paginatedCampaigns.map(c => c._id);
 
     // Get ContactCampaignMessage model and aggregate stats
-    const ContactCampaignMessage = (await import('../models/message.model.js')).default;
+    const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
     
     // Aggregate stats for paginated campaigns
     const campaignStatsAgg = await ContactCampaignMessage.aggregate([
@@ -1355,7 +1355,7 @@ export const getCampaignMessages = async (req, res) => {
       });
     }
 
-    const ContactCampaignMessage = (await import('../models/message.model.js')).default;
+    const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
 
     // If master campaign, get messages from all sub-campaigns
     let campaignIds = [campaign._id];
@@ -1465,7 +1465,7 @@ export const getAllCampaignMessagesForExport = async (req, res) => {
       });
     }
 
-    const ContactCampaignMessage = (await import('../models/message.model.js')).default;
+    const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
 
     // If master campaign, get messages from all sub-campaigns
     let campaignIds = [campaign._id];

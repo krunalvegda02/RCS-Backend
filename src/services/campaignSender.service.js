@@ -1,4 +1,4 @@
-import ContactCampaignMessage from '../models/message.model.js';
+import ContactCampaignMessage from '../models/contact_campaign_message.model.js';
 import Template from '../models/template.model.js';
 import Campaign from '../models/campaign.model.js';
 import { sendMessageToKafka } from './kafka.service.js';

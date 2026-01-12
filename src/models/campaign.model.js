@@ -104,7 +104,7 @@ campaignSchema.index({ masterCampaignId: 1, isMaster: 1 });
 
 // Sync stats from ContactCampaignMessage
 campaignSchema.methods.syncStats = async function () {
-  const ContactCampaignMessage = (await import('./message.model.js')).default;
+  const ContactCampaignMessage = (await import('./contact_campaign_message.model.js')).default;
   
   // If this is a sub-campaign, sync from messages
   if (!this.isMaster) {

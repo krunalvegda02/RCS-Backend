@@ -1,4 +1,4 @@
-import Message from '../models/message.model.js';
+import Message from '../models/contact_campaign_message.model.js';
 import MessageLog from '../models/messageLog.model.js';
 
 // Get messages
