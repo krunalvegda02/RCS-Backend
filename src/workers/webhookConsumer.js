@@ -16,19 +16,17 @@ async function startKafkaConsumer() {
     let totalProcessed = 0;
     let totalSkipped = 0;
     
-    // 🔥 OPTIMIZATION: In-memory cache for messageId → userId/campaignId
+    // 🔥 In-memory cache for messageId → userId/campaignId
     const messageCache = new Map();
     let lastCacheRefresh = Date.now();
-    const CACHE_REFRESH_INTERVAL = 60000;
     
     await consumer.run({
-      partitionsConsumedConcurrently: 20, // 🔥 Increased from 10
+      partitionsConsumedConcurrently: 20,
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
         const startTime = Date.now();
-        const messages = batch.messages; // 🔥 Process ALL messages
+        const messages = batch.messages;
         
-        // 🔥 STEP 1: Parse all webhooks (fast)
         const parsedData = [];
         for (const message of messages) {
           if (!isRunning() || isStale()) break;
@@ -59,7 +57,7 @@ async function startKafkaConsumer() {
           return;
         }
         
-        // 🔥 STEP 2: Check cache first, only query DB for missing IDs
+        // Check cache first
         const uncachedIds = [];
         const messageMap = {};
         
@@ -71,7 +69,7 @@ async function startKafkaConsumer() {
           }
         }
         
-        // 🔥 STEP 3: Batch query ONLY uncached messageIds
+        // Query DB only for uncached IDs
         if (uncachedIds.length > 0) {
           const messageDocs = await ContactCampaignMessage.find({
             $or: [
@@ -100,7 +98,6 @@ async function startKafkaConsumer() {
           });
         }
         
-        // 🔥 STEP 4: Build logs array (fast)
         const logsToInsert = [];
         let skippedCount = 0;
         
@@ -132,21 +129,19 @@ async function startKafkaConsumer() {
         totalSkipped += skippedCount;
         totalProcessed += logsToInsert.length;
         
-        // 🔥 STEP 5: Bulk insert (unordered, ignore duplicates)
         if (logsToInsert.length > 0) {
           try {
             await MessageLog.insertMany(logsToInsert, { ordered: false });
             const duration = Date.now() - startTime;
             const rate = Math.round(logsToInsert.length / (duration / 1000));
-            console.log(`[KafkaConsumer] ✅ ${logsToInsert.length} logs in ${duration}ms (${rate}/sec) | Total: ${totalProcessed}`);
+            console.log(`[Webhook] ✅ ${logsToInsert.length} logs in ${duration}ms (${rate}/sec) | Total: ${totalProcessed}`);
           } catch (bulkError) {
             if (!bulkError.message.includes('E11000')) {
-              console.error('[Kafka] Bulk insert error:', bulkError.message);
+              console.error('[Webhook] Error:', bulkError.message);
             }
           }
         }
         
-        // 🔥 STEP 6: ACK all offsets at once
         if (messages.length > 0) {
           const highestOffset = messages[messages.length - 1].offset;
           await resolveOffset(highestOffset);
@@ -154,11 +149,10 @@ async function startKafkaConsumer() {
         
         await heartbeat();
         
-        // 🔥 Periodic cache cleanup
-        if (Date.now() - lastCacheRefresh > CACHE_REFRESH_INTERVAL) {
+        if (Date.now() - lastCacheRefresh > 60000) {
           if (messageCache.size > 100000) {
             messageCache.clear();
-            console.log('[KafkaConsumer] Cache cleared');
+            console.log('[Webhook] Cache cleared');
           }
           lastCacheRefresh = Date.now();
         }
@@ -166,7 +160,7 @@ async function startKafkaConsumer() {
     });
 
     const shutdown = async () => {
-      console.log('🛑 Shutting down Kafka consumer...');
+      console.log('🛑 Shutting down...');
       messageCache.clear();
       await disconnectKafka();
       await mongoose.connection.close();
@@ -177,7 +171,7 @@ async function startKafkaConsumer() {
     process.on('SIGINT', shutdown);
 
   } catch (error) {
-    console.error('❌ Kafka consumer startup failed:', error);
+    console.error('❌ Startup failed:', error);
     process.exit(1);
   }
 }
