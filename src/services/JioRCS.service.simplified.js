@@ -3,7 +3,6 @@ import { createClient } from 'redis';
 import http from 'http';
 import https from 'https';
 
-import MessageLog from '../models/messageLog.model.js';
 import User from '../models/user.model.js';
 
 const JIOAPI_BASE_URL =

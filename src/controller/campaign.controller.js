@@ -1,8 +1,7 @@
 import Campaign from '../models/campaign.model.js';
 import Template from '../models/template.model.js';
 import ContactCampaignMessage from '../models/contact_campaign_message.model.js';
-import jioRCSService from '../services/JioRCS.service.js';
-import { sendCampaignMessages } from '../services/campaignSender.service.js';
+import jioRCSService from '../services/JioRCS.service.js'; // Still needed for capability check
 import mongoose from 'mongoose';
 import pLimit from "p-limit";
 
@@ -108,129 +107,6 @@ export const createCampaignEntries = async (req, res) => {
       return res.status(400).json({ success: false, message: "Phone numbers array is required" });
     }
 
-    // If large campaign and createSubCampaigns is true, create sub-campaigns
-    if (createSubCampaigns && phoneNumbers.length > subCampaignSize) {
-      console.log(`[Campaign] Creating sub-campaigns for ${phoneNumbers.length} contacts`);
-      
-      const template = await Template.findById(templateId);
-      const masterCampaign = await Campaign.findById(campaignId);
-      
-      // Update master campaign
-      masterCampaign.isMaster = true;
-      await masterCampaign.save();
-
-      // Always create exactly 30 sub-campaigns
-      const SUB_CAMPAIGN_COUNT = 30;
-      const contactsPerSubCampaign = Math.ceil(phoneNumbers.length / SUB_CAMPAIGN_COUNT);
-      const chunks = [];
-      
-      for (let i = 0; i < SUB_CAMPAIGN_COUNT; i++) {
-        const start = i * contactsPerSubCampaign;
-        const end = Math.min(start + contactsPerSubCampaign, phoneNumbers.length);
-        if (start < phoneNumbers.length) {
-          chunks.push(phoneNumbers.slice(start, end));
-        }
-      }
-
-      console.log(`[Campaign] Creating ${chunks.length} sub-campaigns with ~${contactsPerSubCampaign} contacts each`);
-
-      // Create sub-campaigns
-      const subCampaigns = await Promise.all(
-        chunks.map(async (chunk, index) => {
-          return Campaign.create({
-            name: `bot${index + 1}`,
-            userId,
-            templateId,
-            isMaster: false,
-            masterCampaignId: campaignId,
-            subCampaignIndex: index,
-            status: 'pending',
-            payload: JSON.stringify(template.generatePayload()),
-            stats: {
-              total: chunk.length,
-              pending: chunk.length,
-              sent: 0,
-              delivered: 0,
-              failed: 0
-            }
-          });
-        })
-      );
-
-      // Create entries for each sub-campaign
-      const { v4: uuidv4 } = await import("uuid");
-
-      let totalInserted = 0;
-      let totalModified = 0;
-
-      const subLimit = pLimit(3);
-      const executeBulkWithRetry = async (bulkOps, retries = 3) => {
-        for (let attempt = 1; attempt <= retries; attempt++) {
-          try {
-            return await ContactCampaignMessage.bulkWrite(bulkOps, {
-              ordered: false,
-              writeConcern: { w: 1, j: false },
-            });
-          } catch (error) {
-            if (attempt === retries || !error.message.includes('SSL') && !error.message.includes('ECONNRESET')) {
-              throw error;
-            }
-            console.log(`[Campaign] Sub-campaign retry ${attempt}/${retries}`);
-            await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-          }
-        }
-      };
-
-      await Promise.all(
-        subCampaigns.map((subCampaign, index) =>
-          subLimit(async () => {
-            const chunk = chunks[index];
-            const bulkOps = chunk.map(phone => {
-              const cleanPhone = phone.replace(/^\+?91/, "").replace(/\D/g, "");
-              return {
-                updateOne: {
-                  filter: { recipientPhoneNumber: cleanPhone, userId },
-                  update: {
-                    $setOnInsert: { recipientPhoneNumber: cleanPhone, userId },
-                    $push: {
-                      campaigns: {
-                        campaignId: subCampaign._id,
-                        templateId,
-                        messageId: uuidv4(),
-                        status: "draft",
-                        queuedAt: new Date(),
-                      },
-                    },
-                    $addToSet: { campaignIds: subCampaign._id },
-                  },
-                  upsert: true,
-                },
-              };
-            });
-
-            const result = await executeBulkWithRetry(bulkOps);
-
-            totalInserted += result.upsertedCount || 0;
-            totalModified += result.modifiedCount || 0;
-          })
-        )
-      );
-
-      console.log(`[Campaign] ✅ Created ${subCampaigns.length} sub-campaigns with ${totalInserted} entries`);
-
-      return res.json({
-        success: true,
-        message: "Sub-campaigns created",
-        data: { 
-          subCampaignsCount: subCampaigns.length,
-          total: phoneNumbers.length, 
-          inserted: totalInserted, 
-          modified: totalModified 
-        },
-      });
-    }
-
-    // Standard single campaign flow
     console.log(`[Campaign] Creating entries for ${phoneNumbers.length} contacts`);
     console.time("CampaignInsert");
 
@@ -301,15 +177,31 @@ export const createCampaignEntries = async (req, res) => {
       )
     );
 
-    await Campaign.findByIdAndUpdate(campaignId, { status: "pending" });
+    // Set campaign status to pending (ready for Python bot)
+    await Campaign.findByIdAndUpdate(campaignId, { 
+      status: "pending",
+      stats: {
+        total: phoneNumbers.length,
+        pending: phoneNumbers.length,
+        sent: 0,
+        delivered: 0,
+        failed: 0
+      }
+    });
 
     console.timeEnd("CampaignInsert");
     console.log(`[Campaign] ✅ Entries created: ${totalInserted} inserted, ${totalModified} modified`);
+    console.log(`[Campaign] ✅ Campaign set to pending status for Python bot processing`);
 
     res.json({
       success: true,
-      message: "Campaign entries created",
-      data: { total: phoneNumbers.length, inserted: totalInserted, modified: totalModified },
+      message: "Campaign entries created and ready for processing",
+      data: { 
+        total: phoneNumbers.length, 
+        inserted: totalInserted, 
+        modified: totalModified,
+        status: "pending"
+      },
     });
   } catch (error) {
     console.error("[Campaign] Create entries error:", error);
@@ -381,7 +273,7 @@ export const createSimple = async (req, res) => {
       name,
       userId: requestUserId,
       templateId,
-      status: 'processing',
+      status: 'draft', // Always start as draft
       payload: JSON.stringify(template.generatePayload()),
       recipients: [],
       stats: {
@@ -399,7 +291,7 @@ export const createSimple = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: 'Campaign created successfully',
+      message: 'Campaign created successfully (ready for Python bot)',
       data: campaign,
     });
   } catch (error) {
@@ -648,26 +540,8 @@ export const create = async (req, res) => {
       await req.user.incrementUsage('campaigns', 1);
       await req.user.incrementUsage('messages', rcsCapableRecipients.length);
 
-      // For large campaigns, use setImmediate to prevent blocking
-      if (finalRecipients.length > 10000) {
-        setImmediate(() => {
-          jioRCSService.processCampaignBatch(campaign._id, optimizedBatchSize, 500)
-            .catch(error => {
-              console.error(`[Campaign] Background processing failed for ${campaign._id}:`, error);
-              // Mark campaign as failed
-              Campaign.updateOne({ _id: campaign._id }, { status: 'failed' }).catch(console.error);
-            });
-        });
-      } else {
-        setImmediate(() => {
-          jioRCSService.processCampaignBatch(campaign._id, optimizedBatchSize, 1000)
-            .catch(error => {
-              console.error(`[Campaign] Background processing failed for ${campaign._id}:`, error);
-              // Mark campaign as failed
-              Campaign.updateOne({ _id: campaign._id }, { status: 'failed' }).catch(console.error);
-            });
-        });
-      }
+      // Python bot will handle message processing
+      console.log(`[Campaign] Campaign created and ready for Python bot processing`);
     }
 
     // Send appropriate response based on campaign size
@@ -769,14 +643,14 @@ export const getById = async (req, res) => {
   }
 };
 
-// Start campaign
+// Start campaign (for Python bot to pick up)
 export const start = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user._id;
 
     const campaign = await Campaign.findOneAndUpdate(
-      { _id: id, userId, status: 'draft' },
+      { _id: id, userId, status: { $in: ['draft', 'pending'] } },
       {
         status: 'running',
         startedAt: new Date(),
@@ -791,13 +665,11 @@ export const start = async (req, res) => {
       });
     }
 
-    setImmediate(() => {
-      jioRCSService.processCampaignBatch(id, campaign.batchSize, campaign.delayBetweenBatches);
-    });
+    console.log(`[Campaign] Campaign ${id} marked as running for Python bot`);
 
     res.json({
       success: true,
-      message: 'Campaign started successfully',
+      message: 'Campaign started - Python bot will process messages',
       data: campaign,
     });
   } catch (error) {
@@ -843,7 +715,7 @@ export const pause = async (req, res) => {
   }
 };
 
-// Restart campaign processing
+// Restart campaign processing (for Python bot)
 export const restart = async (req, res) => {
   try {
     const { id } = req.params;
@@ -857,13 +729,17 @@ export const restart = async (req, res) => {
       });
     }
 
-    // Restart campaign processing
-    const result = await jioRCSService.restartCampaign(id);
+    // Reset campaign to running status for Python bot
+    campaign.status = 'running';
+    campaign.startedAt = new Date();
+    await campaign.save();
+
+    console.log(`[Campaign] Campaign ${id} restarted for Python bot processing`);
 
     res.json({
       success: true,
-      message: 'Campaign processing restarted',
-      data: result
+      message: 'Campaign restarted - Python bot will process messages',
+      data: { campaignId: id, status: 'running' }
     });
   } catch (error) {
     console.error('[Campaign] Restart error:', error);
@@ -1993,37 +1869,29 @@ export const getReachableUsers = async (req, res) => {
   }
 };
 
-// Send campaign messages to Kafka
+// Mark campaign as ready for Python bot
 export const sendCampaign = async (req, res) => {
   try {
     const { campaignId } = req.body;
     const userId = req.user._id;
     
-    console.log(`[Campaign] Send campaign request: ${campaignId}`);
+    console.log(`[Campaign] Marking campaign as ready: ${campaignId}`);
     
     const campaign = await Campaign.findOne({ _id: campaignId, userId });
     if (!campaign) {
       return res.status(404).json({ success: false, message: 'Campaign not found' });
     }
     
-    // Update campaign status
+    // Update campaign status to running (ready for Python bot)
     campaign.status = 'running';
     campaign.startedAt = new Date();
     await campaign.save();
     
-    // Send messages to Kafka in background
-    setImmediate(async () => {
-      try {
-        await sendCampaignMessages(campaignId, userId);
-      } catch (error) {
-        console.error('[Campaign] Send error:', error);
-        await Campaign.updateOne({ _id: campaignId }, { status: 'failed' });
-      }
-    });
+    console.log(`[Campaign] Campaign ${campaignId} marked as running for Python bot`);
     
     res.json({
       success: true,
-      message: 'Campaign started, messages are being queued'
+      message: 'Campaign marked as ready for Python bot processing'
     });
   } catch (error) {
     console.error('[Campaign] Send campaign error:', error);

@@ -193,21 +193,12 @@ export const startMasterCampaign = async (req, res) => {
     masterCampaign.status = 'processing';
     await masterCampaign.save();
 
-    // Start processing sub-campaigns in parallel
-    const jioRCSService = (await import('../services/JioRCS.service.js')).default;
-    const subCampaigns = await Campaign.find({ masterCampaignId, isMaster: false });
-
-    setImmediate(() => {
-      Promise.all(
-        subCampaigns.map(sc => 
-          jioRCSService.processCampaignBatch(sc._id, 100, 500).catch(console.error)
-        )
-      );
-    });
+    // Mark sub-campaigns as ready for Python bot processing
+    console.log(`[SubCampaign] Marked ${subCampaigns.length} sub-campaigns as ready for Python bot`);
 
     res.json({
       success: true,
-      message: `Started ${subCampaigns.length} sub-campaigns in parallel`,
+      message: `Started ${subCampaigns.length} sub-campaigns - ready for Python bot processing`,
       data: { subCampaignsCount: subCampaigns.length }
     });
   } catch (error) {
