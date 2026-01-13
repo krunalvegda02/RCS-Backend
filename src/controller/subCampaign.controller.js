@@ -71,12 +71,11 @@ export const createMasterCampaign = async (req, res) => {
 
     // Send batch entries to Kafka for fast processing
     const batchData = {
-      masterCampaignId: masterCampaign._id,
-      templateId,
-      userId,
+        templateId: templateId.toString(),
+      userId: userId.toString(),
       totalContacts: phoneNumbers.length,
       subCampaigns: createdSubCampaigns.map((subCampaign, index) => ({
-        campaignId: subCampaign._id,
+        campaignId: subCampaign._id.toString(),
         phoneNumbers: chunks[index]
       }))
     };
