@@ -1,27 +1,5 @@
-import { createClient } from 'redis';
 import mongoose from 'mongoose';
 import Campaign from '../models/campaign.model.js';
-
-// Single Redis client for stats only
-let redisClient = null;
-
-try {
-  redisClient = createClient({
-    url: `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || 6379}`,
-    socket: {
-      connectTimeout: 30000,
-      reconnectStrategy: (retries) => Math.min(retries * 50, 500)
-    }
-  });
-  
-  redisClient.on('error', (err) => console.error('[Stats] Redis Error:', err));
-  
-  if (!redisClient.isOpen) {
-    await redisClient.connect();
-  }
-} catch (error) {
-  console.error('[Stats] Redis connection failed:', error);
-}
 
 class CampaignStatsService {
   constructor() {
@@ -34,92 +12,10 @@ class CampaignStatsService {
     return this.syncStatsToDatabase();
   }
 
-  // High-performance batch sync with connection pooling
+  // No-op - stats write directly to MongoDB
   async syncStatsToDatabase() {
-    if (!redisClient?.isOpen) return;
-    
-    try {
-      const keys = await redisClient.keys('campaign_stats:*');
-      if (keys.length === 0) return;
-
-      // Process in batches to avoid memory issues
-      const batches = this.chunkArray(keys, this.batchSize);
-      
-      for (const batch of batches) {
-        const bulkOps = [];
-        const keysToDelete = [];
-        const campaignsToCheck = [];
-        
-        for (const key of batch) {
-          const campaignId = key.replace('campaign_stats:', '');
-          
-          // Validate ObjectId format
-          if (!this.isValidObjectId(campaignId)) {
-            console.warn(`[Stats] Invalid campaignId: ${campaignId}`);
-            continue;
-          }
-          
-          const stats = await redisClient.hGetAll(key);
-          
-          if (Object.keys(stats).length > 0) {
-            // Safe parseInt with fallback to 0
-            const safeInt = (val) => {
-              const parsed = parseInt(val || '0', 10);
-              return isNaN(parsed) ? 0 : parsed;
-            };
-            
-            bulkOps.push({
-              updateOne: {
-                filter: { _id: campaignId },
-                update: {
-                  $inc: {
-                    'stats.sent': safeInt(stats.sent),
-                    'stats.delivered': safeInt(stats.delivered),
-                    'stats.read': safeInt(stats.read),
-                    'stats.replied': safeInt(stats.replied),
-                    'stats.failed': safeInt(stats.failed),
-                    'stats.bounced': safeInt(stats.bounced),
-                    'stats.processing': safeInt(stats.processing),
-                  },
-                  $set: {
-                    'stats.lastUpdatedAt': new Date()
-                  }
-                }
-              }
-            });
-            
-            keysToDelete.push(key);
-            campaignsToCheck.push(campaignId);
-          }
-        }
-        
-        if (bulkOps.length > 0) {
-          try {
-            // Atomic DB update first
-            await Campaign.bulkWrite(bulkOps, { ordered: false });
-            
-            // Check for campaign completion after stats update
-            for (const campaignId of campaignsToCheck) {
-              await this.checkCampaignCompletion(campaignId);
-            }
-            
-            // Only delete Redis keys after successful DB update
-            if (keysToDelete.length > 0) {
-              const pipeline = redisClient.multi();
-              keysToDelete.forEach(key => pipeline.del(key));
-              await pipeline.exec();
-            }
-          } catch (dbError) {
-            console.error('DB bulk write failed, keeping Redis data:', dbError);
-            // Don't delete Redis keys if DB update failed
-          }
-        }
-      }
-      
-      console.log(`[Stats] Synced ${keys.length} campaign stats`);
-    } catch (error) {
-      console.error('Error syncing campaign stats:', error);
-    }
+    // Stats are now written directly to MongoDB in incrementStat()
+    return;
   }
 
   // Real-time stats with fallback
@@ -131,9 +27,8 @@ class CampaignStatsService {
         return null;
       }
       
-      const [campaign, redisStats, messages] = await Promise.all([
+      const [campaign, messages] = await Promise.all([
         Campaign.findById(campaignId).lean(),
-        redisClient?.isOpen ? redisClient.hGetAll(`campaign_stats:${campaignId}`) : {},
         Message.find({ campaignId }).select('status').lean()
       ]);
       
@@ -189,28 +84,26 @@ class CampaignStatsService {
     }
   }
 
-  // Increment stats atomically
+
+  // Increment stats atomically - direct MongoDB write
   async incrementStat(campaignId, statType, count = 1) {
-    if (!redisClient?.isOpen || !this.isValidObjectId(campaignId)) return;
+    if (!this.isValidObjectId(campaignId)) return;
     
     try {
-      // Validate statType to prevent Redis key pollution
       const validStatTypes = ['sent', 'delivered', 'read', 'replied', 'failed', 'bounced', 'processing'];
-      if (!validStatTypes.includes(statType)) {
-        console.warn(`[Stats] Invalid statType: ${statType}`);
-        return;
-      }
+      if (!validStatTypes.includes(statType)) return;
       
-      await redisClient.hIncrBy(`campaign_stats:${campaignId}`, statType, count);
-      await redisClient.expire(`campaign_stats:${campaignId}`, 3600); // 1 hour TTL
+      // Direct MongoDB update
+      await Campaign.findByIdAndUpdate(campaignId, {
+        $inc: { [`stats.${statType}`]: count },
+        $set: { 'stats.lastUpdatedAt': new Date() }
+      });
       
-      // Check for campaign completion after significant stat updates
       if (['sent', 'delivered', 'failed', 'bounced'].includes(statType)) {
-        // Use setImmediate to avoid blocking the webhook response
         setImmediate(() => this.checkCampaignCompletion(campaignId));
       }
     } catch (error) {
-      console.error(`Error incrementing stat ${statType} for campaign ${campaignId}:`, error);
+      console.error(`Error incrementing stat ${statType}:`, error);
     }
   }
 
@@ -372,33 +265,13 @@ class CampaignStatsService {
   async cleanup() {
     try {
       if (this.syncTimer) clearInterval(this.syncTimer);
-      if (redisClient?.isOpen) {
-        await redisClient.quit();
-      }
     } catch (error) {
       console.error('Cleanup error:', error);
     }
   }
 }
 
-// Enhanced periodic sync with error recovery
 const statsService = new CampaignStatsService();
-
-// Only start auto-sync if not in worker mode
-if (!process.env.WORKER_MODE) {
-  // More frequent sync for high volume campaigns
-  const syncInterval = process.env.NODE_ENV === 'production' ? 15000 : 30000; // 15s prod, 30s dev
-  
-  statsService.syncTimer = setInterval(async () => {
-    try {
-      await statsService.syncStatsToDatabase();
-    } catch (error) {
-      console.error('[Stats] Sync timer error:', error);
-    }
-  }, syncInterval);
-  
-  console.log(`[Stats] Auto-sync enabled with ${syncInterval/1000}s interval`);
-}
 
 // Graceful shutdown handling
 process.on('SIGTERM', () => statsService.cleanup());

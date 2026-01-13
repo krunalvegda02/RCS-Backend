@@ -8,8 +8,6 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 3000,
-        REDIS_HOST: '127.0.0.1',
-        REDIS_PORT: 6379,
         MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
         KAFKA_BROKER: 'localhost:9092',
         // Cloudinary
@@ -43,8 +41,6 @@ module.exports = {
         NODE_ENV: 'production',
         WORKER_MODE: 'true',
         WORKER_ID: 'kafka-consumer-1',
-        REDIS_HOST: '127.0.0.1',
-        REDIS_PORT: 6379,
         MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
         KAFKA_BROKER: 'localhost:9092'
       },
@@ -61,8 +57,6 @@ module.exports = {
         NODE_ENV: 'production',
         WORKER_MODE: 'true',
         WORKER_ID: 'kafka-consumer-2',
-        REDIS_HOST: '127.0.0.1',
-        REDIS_PORT: 6379,
         MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
         KAFKA_BROKER: 'localhost:9092'
       },
@@ -79,8 +73,6 @@ module.exports = {
         NODE_ENV: 'production',
         WORKER_MODE: 'true',
         WORKER_ID: 'kafka-consumer-3',
-        REDIS_HOST: '127.0.0.1',
-        REDIS_PORT: 6379,
         MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
         KAFKA_BROKER: 'localhost:9092'
       },
@@ -96,8 +88,6 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         WORKER_MODE: 'true',
-        REDIS_HOST: '127.0.0.1',
-        REDIS_PORT: 6379,
         MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
         KAFKA_BROKER: 'localhost:9092'
       },
@@ -113,8 +103,6 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         WORKER_MODE: 'true',
-        REDIS_HOST: '127.0.0.1',
-        REDIS_PORT: 6379,
         MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
         KAFKA_BROKER: 'localhost:9092'
       },
@@ -130,8 +118,6 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         WORKER_MODE: 'true',
-        REDIS_HOST: '127.0.0.1',
-        REDIS_PORT: 6379,
         MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
         KAFKA_BROKER: 'localhost:9092'
       },

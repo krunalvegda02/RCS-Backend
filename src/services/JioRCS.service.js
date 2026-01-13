@@ -1,5 +1,4 @@
 import axios from 'axios';
-import { createClient } from 'redis';
 import http from 'http';
 import https from 'https';
 
@@ -9,37 +8,6 @@ import User from '../models/user.model.js';
 const JIOAPI_BASE_URL =
   process.env.JIO_API_BASE_URL || 'https://api.businessmessaging.jio.com';
 
-// ===================== Redis client (optional cache) =====================
-let redisClient = null;
-
-try {
-  redisClient = createClient({
-    url: `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || 6379}`,
-    socket: {
-      connectTimeout: 30000,
-      reconnectStrategy: (retries) => Math.min(retries * 100, 3000)
-    }
-  });
-
-  redisClient.on('error', (err) => {
-    console.error('[RCS] Redis Client Error:', err);
-    redisClient = null;
-  });
-
-  redisClient.on('connect', () => console.log('[RCS] Redis Client Connected'));
-  redisClient.on('ready', () => console.log('[RCS] Redis Client Ready'));
-  redisClient.on('end', () => console.log('[RCS] Redis Client Disconnected'));
-
-  if (!redisClient.isOpen) {
-    redisClient.connect().catch(() => {
-      console.log('[RCS] Redis not available, running without cache');
-      redisClient = null;
-    });
-  }
-} catch (e) {
-  console.log('[RCS] Redis not available, running without cache');
-  redisClient = null;
-}
 
 class JioRCSService {
   constructor() {
@@ -177,44 +145,6 @@ class JioRCSService {
 
   sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  async getCachedToken(key) {
-    if (!redisClient) return null;
-    try {
-      if (!redisClient.isOpen) {
-        await redisClient.connect();
-      }
-      const data = await redisClient.get(key);
-      return data ? JSON.parse(data) : null;
-    } catch (e) {
-      console.error('[RCS] Redis get error:', e.message);
-      return null;
-    }
-  }
-
-  async cacheToken(key, tokenData) {
-    if (!redisClient) return;
-    try {
-      if (!redisClient.isOpen) {
-        await redisClient.connect();
-      }
-      await redisClient.setEx(key, 86400, JSON.stringify(tokenData));
-    } catch (e) {
-      console.error('[RCS] Redis set error:', e.message);
-    }
-  }
-
-  // Graceful shutdown
-  async cleanup() {
-    try {
-      if (redisClient && redisClient.isOpen) {
-        await redisClient.quit();
-        console.log('[RCS] Redis client disconnected');
-      }
-    } catch (e) {
-      console.error('[RCS] Cleanup error:', e.message);
-    }
   }
 }
 
