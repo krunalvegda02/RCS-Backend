@@ -91,16 +91,14 @@ export async function sendWebhookToKafka(webhookData) {
   try {
     await connectProducer();
     
-    // Fire-and-forget for maximum throughput
-    producer.send({
+    // 🔥 FIX: Await the send to catch errors properly
+    await producer.send({
       topic: 'rcs-webhooks',
       messages: [{
         key: webhookData.messageId || Date.now().toString(),
         value: JSON.stringify(webhookData),
         timestamp: Date.now()
       }]
-    }).catch(err => {
-      console.error('[Kafka] Send error:', err.message);
     });
     
     return { success: true };

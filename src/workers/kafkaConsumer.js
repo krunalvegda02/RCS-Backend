@@ -91,6 +91,8 @@ async function startKafkaConsumer() {
         
         // 🔥 STEP 3: Batch query ONLY uncached messageIds
         if (uncachedIds.length > 0) {
+          console.log(`[KafkaConsumer] Querying DB for ${uncachedIds.length} uncached messageIds...`);
+          
           const messageDocs = await ContactCampaignMessage.find({
             $or: [
               { 'campaigns.messageId': { $in: uncachedIds } },
@@ -99,26 +101,42 @@ async function startKafkaConsumer() {
             ]
           }, { userId: 1, campaigns: 1 }).lean();
           
+          console.log(`[KafkaConsumer] Found ${messageDocs.length} documents in DB for ${uncachedIds.length} messageIds`);
+          
           // 🔥 BUG FIX #2: Heartbeat during long operations
           await heartbeat();
           
+          let matchedCount = 0;
           messageDocs.forEach(doc => {
             doc.campaigns?.forEach(camp => {
               const info = { userId: doc.userId, campaignId: camp.campaignId };
               if (camp.messageId) {
                 messageMap[camp.messageId] = info;
                 messageCache.set(getCacheKey('msg', camp.messageId), info);
+                if (uncachedIds.includes(camp.messageId)) matchedCount++;
               }
               if (camp.jioMessageId) {
                 messageMap[camp.jioMessageId] = info;
                 messageCache.set(getCacheKey('jio', camp.jioMessageId), info);
+                if (uncachedIds.includes(camp.jioMessageId)) matchedCount++;
               }
               if (camp.rcsMessageId) {
                 messageMap[camp.rcsMessageId] = info;
                 messageCache.set(getCacheKey('rcs', camp.rcsMessageId), info);
+                if (uncachedIds.includes(camp.rcsMessageId)) matchedCount++;
               }
             });
           });
+          
+          console.log(`[KafkaConsumer] Matched ${matchedCount} messageIds from DB query`);
+          
+          // 🔥 DEBUG: Log first 3 unmatched IDs
+          const unmatchedIds = uncachedIds.filter(id => !messageMap[id]);
+          if (unmatchedIds.length > 0) {
+            console.log(`[KafkaConsumer] ⚠️ ${unmatchedIds.length} messageIds NOT found in DB. Examples: ${unmatchedIds.slice(0, 3).join(', ')}`);
+          }
+        } else {
+          console.log(`[KafkaConsumer] All ${messageIds.length} messageIds found in cache`);
         }
         
         // 🔥 STEP 4: Build logs array (fast)

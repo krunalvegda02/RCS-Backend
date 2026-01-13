@@ -72,12 +72,15 @@ let webhookCount = 0;
 let startTime = Date.now();
 console.log('🚀 Webhook counter initialized - tracking all incoming webhooks');
 
-// Jio RCS Webhook Endpoint (fire-and-forget to Kafka)
-app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
-  console.log(`[Webhook] Received: ${req.body?.entity?.messageId || req.body?.messageId}, eventType = ${req.body?.entity?.eventType || req.body?.eventType}`);
+// Jio RCS Webhook Endpoint
+app.post('/api/v1/jio/rcs/webhooks', async (req, res) => {
+  const messageId = req.body?.entity?.messageId || req.body?.messageId;
+  const eventType = req.body?.entity?.eventType || req.body?.eventType;
+  
+  console.log(`[Webhook] Received: ${messageId}, eventType = ${eventType}`);
+  
   // Increment counter
   webhookCount++;
-
 
   // Log every 100 webhooks for visibility
   if (webhookCount % 100 === 0) {
@@ -86,15 +89,19 @@ app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
     console.log(`📊 WEBHOOK COUNT: ${webhookCount} | Rate: ${rate} / sec | Elapsed: ${elapsed.toFixed(1)}s`);
   }
 
-  // Respond immediately (no validation to avoid blocking)
+  // Respond immediately
   res.status(200).json({ success: true });
 
-  // Send to Kafka async - validation happens in consumer
-  sendWebhookToKafka({
+  // Send to Kafka async
+  const result = await sendWebhookToKafka({
     data: req.body,
     timestamp: Date.now(),
-    messageId: req.body?.entity?.messageId || req.body?.messageId
+    messageId
   });
+  
+  if (!result.success) {
+    console.error(`[Webhook] ❌ Failed to send to Kafka: ${messageId}`);
+  }
 });
 
 
