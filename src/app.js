@@ -67,40 +67,75 @@ import { sendWebhookToKafka } from "./services/kafka.service.js";
 app.use("/api/v1", router);
 app.use("/api/realtime", authenticateToken, realtimeRoutes);
 
-// Webhook counter
+// Webhook counter with event type tracking
 let webhookCount = 0;
+let webhooksByType = {};
+let uniqueMessageIds = new Set();
+let droppedRequests = 0;
+let errorCount = 0;
 let startTime = Date.now();
+let lastLogTime = Date.now();
 console.log('🚀 Webhook counter initialized - tracking all incoming webhooks');
 
-// Jio RCS Webhook Endpoint
-app.post('/api/v1/jio/rcs/webhooks', async (req, res) => {
-  const messageId = req.body?.entity?.messageId || req.body?.messageId;
-  const eventType = req.body?.entity?.eventType || req.body?.eventType;
+// Track all requests to webhook endpoint
+app.use('/api/v1/jio/rcs/webhooks', (req, res, next) => {
+  const requestStart = Date.now();
   
-  console.log(`[Webhook] Received: ${messageId}, eventType = ${eventType}`);
+  // Track response
+  const originalSend = res.send;
+  res.send = function(data) {
+    const duration = Date.now() - requestStart;
+    if (duration > 5000) {
+      console.warn(`⚠️ Slow webhook response: ${duration}ms`);
+    }
+    return originalSend.call(this, data);
+  };
   
-  // Increment counter
-  webhookCount++;
-
-  // Log every 100 webhooks for visibility
-  if (webhookCount % 100 === 0) {
-    const elapsed = (Date.now() - startTime) / 1000;
-    const rate = (webhookCount / elapsed).toFixed(2);
-    console.log(`📊 WEBHOOK COUNT: ${webhookCount} | Rate: ${rate} / sec | Elapsed: ${elapsed.toFixed(1)}s`);
-  }
-
-  // Respond immediately
-  res.status(200).json({ success: true });
-
-  // Send to Kafka async
-  const result = await sendWebhookToKafka({
-    data: req.body,
-    timestamp: Date.now(),
-    messageId
+  // Track if request times out
+  req.on('timeout', () => {
+    droppedRequests++;
+    console.error(`❌ REQUEST TIMEOUT - Total dropped: ${droppedRequests}`);
   });
   
-  if (!result.success) {
-    console.error(`[Webhook] ❌ Failed to send to Kafka: ${messageId}`);
+  next();
+});
+
+// Jio RCS Webhook Endpoint
+app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
+  try {
+    const messageId = req.body?.entity?.messageId || req.body?.messageId;
+    const eventType = req.body?.entity?.eventType || req.body?.eventType;
+    
+    // Respond immediately (BEFORE processing)
+    res.status(200).json({ success: true });
+    
+    // Increment counters
+    webhookCount++;
+    webhooksByType[eventType] = (webhooksByType[eventType] || 0) + 1;
+    if (messageId) uniqueMessageIds.add(messageId);
+
+    // Log every 100 webhooks OR every 10 seconds
+    const now = Date.now();
+    if (webhookCount % 100 === 0 || (now - lastLogTime) > 10000) {
+      const elapsed = (now - startTime) / 1000;
+      const rate = (webhookCount / elapsed).toFixed(2);
+      console.log(`📊 WEBHOOK STATS: Total=${webhookCount} | Unique=${uniqueMessageIds.size} | Dropped=${droppedRequests} | Errors=${errorCount} | Rate=${rate}/sec`);
+      console.log(`📊 Event Breakdown:`, webhooksByType);
+      lastLogTime = now;
+    }
+
+    // Send to Kafka async (non-blocking)
+    sendWebhookToKafka({
+      data: req.body,
+      timestamp: Date.now(),
+      messageId
+    }).catch(err => {
+      errorCount++;
+      console.error(`[Webhook] ❌ Kafka error for ${messageId}:`, err.message);
+    });
+  } catch (error) {
+    errorCount++;
+    console.error(`[Webhook] ❌ Processing error:`, error.message);
   }
 });
 
