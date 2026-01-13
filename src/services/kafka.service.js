@@ -182,7 +182,7 @@ async function flushStatsBuffer() {
 
 export async function connectConsumer() {
   await consumer.connect();
-  await consumer.subscribe({ topic: 'rcs-webhooks', fromBeginning: false });
+  await consumer.subscribe({ topic: 'rcs-webhooks', fromBeginning: true });
   console.log('✅ Kafka Consumer connected and subscribed');
   return consumer;
 }
