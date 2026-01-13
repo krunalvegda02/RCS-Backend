@@ -21,15 +21,20 @@ async function startKafkaConsumer() {
     let lastCacheRefresh = Date.now();
     const CACHE_REFRESH_INTERVAL = 60000;
     
+    // Helper for namespaced cache keys
+    const getCacheKey = (type, id) => `${type}:${id}`;
+    
     await consumer.run({
-      partitionsConsumedConcurrently: 20, // 🔥 Increased from 10
+      partitionsConsumedConcurrently: 4, // 🔥 FIX #3: Reduced from 20 to prevent rebalancing
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
         const startTime = Date.now();
         const messages = batch.messages; // 🔥 Process ALL messages
         
-        // 🔥 STEP 1: Parse all webhooks (fast)
+        // 🔥 FIX #1: Parse all webhooks WITHOUT ACKing on error
         const parsedData = [];
+        const invalidOffsets = [];
+        
         for (const message of messages) {
           if (!isRunning() || isStale()) break;
           
@@ -49,7 +54,7 @@ async function startKafkaConsumer() {
               timestamp: webhookData.timestamp
             });
           } catch (error) {
-            await resolveOffset(message.offset);
+            invalidOffsets.push(message.offset);
           }
         }
         
@@ -64,8 +69,16 @@ async function startKafkaConsumer() {
         const messageMap = {};
         
         for (const id of messageIds) {
-          if (messageCache.has(id)) {
-            messageMap[id] = messageCache.get(id);
+          const msgKey = getCacheKey('msg', id);
+          const jioKey = getCacheKey('jio', id);
+          const rcsKey = getCacheKey('rcs', id);
+          
+          if (messageCache.has(msgKey)) {
+            messageMap[id] = messageCache.get(msgKey);
+          } else if (messageCache.has(jioKey)) {
+            messageMap[id] = messageCache.get(jioKey);
+          } else if (messageCache.has(rcsKey)) {
+            messageMap[id] = messageCache.get(rcsKey);
           } else {
             uncachedIds.push(id);
           }
@@ -81,20 +94,23 @@ async function startKafkaConsumer() {
             ]
           }, { userId: 1, campaigns: 1 }).lean();
           
+          // 🔥 BUG FIX #2: Heartbeat during long operations
+          await heartbeat();
+          
           messageDocs.forEach(doc => {
             doc.campaigns?.forEach(camp => {
               const info = { userId: doc.userId, campaignId: camp.campaignId };
               if (camp.messageId) {
                 messageMap[camp.messageId] = info;
-                messageCache.set(camp.messageId, info);
+                messageCache.set(getCacheKey('msg', camp.messageId), info);
               }
               if (camp.jioMessageId) {
                 messageMap[camp.jioMessageId] = info;
-                messageCache.set(camp.jioMessageId, info);
+                messageCache.set(getCacheKey('jio', camp.jioMessageId), info);
               }
               if (camp.rcsMessageId) {
                 messageMap[camp.rcsMessageId] = info;
-                messageCache.set(camp.rcsMessageId, info);
+                messageCache.set(getCacheKey('rcs', camp.rcsMessageId), info);
               }
             });
           });
@@ -109,8 +125,8 @@ async function startKafkaConsumer() {
           if (msgInfo?.userId) {
             logsToInsert.push({
               messageId: parsed.messageId,
-              campaignId: msgInfo.campaignId,
-              userId: msgInfo.userId,
+              campaignId: new mongoose.Types.ObjectId(msgInfo.campaignId),
+              userId: new mongoose.Types.ObjectId(msgInfo.userId),
               eventType: parsed.entityType === 'USER_MESSAGE' ? 'user_interaction' : 'status_update',
               status: 'success',
               webhookData: {
@@ -129,36 +145,49 @@ async function startKafkaConsumer() {
           }
         }
         
-        totalSkipped += skippedCount;
-        totalProcessed += logsToInsert.length;
+        // 🔥 FIX: Safe ACK pattern - only ACK after successful DB insert
+        let dbSuccess = false;
         
-        // 🔥 STEP 5: Bulk insert (unordered, ignore duplicates)
         if (logsToInsert.length > 0) {
           try {
             await MessageLog.insertMany(logsToInsert, { ordered: false });
+            dbSuccess = true;
             const duration = Date.now() - startTime;
             const rate = Math.round(logsToInsert.length / (duration / 1000));
             console.log(`[KafkaConsumer] ✅ ${logsToInsert.length} logs in ${duration}ms (${rate}/sec) | Total: ${totalProcessed}`);
           } catch (bulkError) {
-            if (!bulkError.message.includes('E11000')) {
-              console.error('[Kafka] Bulk insert error:', bulkError.message);
+            if (bulkError.message.includes('E11000')) {
+              dbSuccess = true; // Duplicates are OK
+            } else {
+              console.error('[Kafka] ❌ DB FAILED - NOT ACKING:', bulkError.message);
             }
+          }
+        } else {
+          dbSuccess = true; // No data = success
+        }
+        
+        // 🔥 BUG FIX #1: Resolve offsets sequentially in order
+        if (dbSuccess) {
+          // Resolve all message offsets in order
+          for (const message of messages) {
+            await resolveOffset(message.offset);
           }
         }
         
-        // 🔥 STEP 6: ACK all offsets at once
-        if (messages.length > 0) {
-          const highestOffset = messages[messages.length - 1].offset;
-          await resolveOffset(highestOffset);
-        }
-        
+        // 🔥 BUG FIX #2: Heartbeat to prevent session timeout
         await heartbeat();
         
-        // 🔥 Periodic cache cleanup
+        // 🔥 Cache cleanup with LRU-style eviction
         if (Date.now() - lastCacheRefresh > CACHE_REFRESH_INTERVAL) {
           if (messageCache.size > 100000) {
-            messageCache.clear();
-            console.log('[KafkaConsumer] Cache cleared');
+            // Evict 20% oldest entries instead of clearing all
+            const entriesToDelete = Math.floor(messageCache.size * 0.2);
+            let deleted = 0;
+            for (const key of messageCache.keys()) {
+              messageCache.delete(key);
+              if (++deleted >= entriesToDelete) break;
+            }
+            console.log(`[KafkaConsumer] Cache pruned: ${deleted} entries removed`);
           }
           lastCacheRefresh = Date.now();
         }

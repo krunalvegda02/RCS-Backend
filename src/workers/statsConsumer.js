@@ -15,7 +15,7 @@ async function startStatsConsumer() {
     });
     
     const consumer = kafka.consumer({ 
-      groupId: 'stats-processor-group',
+      groupId: `stats-processor-${process.env.NODE_ENV || 'dev'}`,
       sessionTimeout: 30000,
       heartbeatInterval: 3000
     });
@@ -35,13 +35,12 @@ async function startStatsConsumer() {
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
         const startTime = Date.now();
-        const messages = batch.messages.slice(0, 2000);
-        
+        // 🔥 FIX #1 & #2: Process ALL messages in batch, ACK only on success
+        const messages = batch.messages;
         const logIds = messages.map(m => JSON.parse(m.value.toString()).logId);
         
         console.log(`[StatsConsumer] Processing batch of ${logIds.length} log IDs`);
         
-        // Fetch unprocessed logs
         const logs = await MessageLog.find({
           _id: { $in: logIds },
           processed: false
@@ -50,8 +49,10 @@ async function startStatsConsumer() {
         console.log(`[StatsConsumer] Found ${logs.length} unprocessed logs in DB`);
         
         if (logs.length === 0) {
-          console.log('[StatsConsumer] No unprocessed logs, skipping batch');
-          for (const msg of messages) await resolveOffset(msg.offset);
+          console.log('[StatsConsumer] No unprocessed logs, ACKing batch');
+          if (messages.length > 0) {
+            await resolveOffset(messages[messages.length - 1].offset);
+          }
           await heartbeat();
           return;
         }
@@ -66,7 +67,7 @@ async function startStatsConsumer() {
           
           // Convert ObjectIds to strings for Map keys
           const userIdStr = userId?.toString ? userId.toString() : userId;
-          const campaignIdStr = campaignId?.toString ? campaignId.toString() : campaignId;
+          const campaignIdObj = campaignId;
           
           const webhookTimestamp = entity?.sendTime || entity?.deliveryTime || 
                                    entity?.readTime || entity?.receiveTime || log.timestamp;
@@ -124,7 +125,7 @@ async function startStatsConsumer() {
               updateOne: {
                 filter: {
                   'campaigns.messageId': messageId,
-                  'campaigns.campaignId': campaignIdStr
+                  'campaigns.campaignId': campaignIdObj
                 },
                 update: {
                   $set: {
@@ -161,43 +162,53 @@ async function startStatsConsumer() {
         }
         
         // Bulk update wallets (only if message updates succeeded)
-        if (messageUpdateSuccess && walletOps.size > 0) {
-          const walletBulk = [];
-          for (const [userIdStr, ops] of walletOps.entries()) {
-            walletBulk.push({
-              updateOne: {
-                filter: { _id: userIdStr },
-                update: {
-                  $inc: {
-                    'wallet.blockedBalance': -(ops.delivered + ops.refund),
-                    'wallet.balance': ops.refund
-                  },
-                  $set: { 'wallet.lastUpdated': new Date() }
-                }
-              }
-            });
-          }
-          try {
-            await User.bulkWrite(walletBulk, { ordered: false });
-            console.log(`[StatsConsumer] ✅ Updated ${walletOps.size} wallets`);
-          } catch (error) {
-            console.error('[StatsConsumer] Wallet error:', error.message);
-          }
-        }
+        // if (messageUpdateSuccess && walletOps.size > 0) {
+        //   const walletBulk = [];
+        //   for (const [userIdStr, ops] of walletOps.entries()) {
+        //     walletBulk.push({
+        //       updateOne: {
+        //         filter: { _id: userIdStr },
+        //         update: {
+        //           $inc: {
+        //             'wallet.blockedBalance': -(ops.delivered + ops.refund),
+        //             'wallet.balance': ops.refund
+        //           },
+        //           $set: { 'wallet.lastUpdated': new Date() }
+        //         }
+        //       }
+        //     });
+        //   }
+        //   try {
+        //     await User.bulkWrite(walletBulk, { ordered: false });
+        //     console.log(`[StatsConsumer] ✅ Updated ${walletOps.size} wallets`);
+        //   } catch (error) {
+        //     console.error('[StatsConsumer] Wallet error:', error.message);
+        //   }
+        // }
         
-        // Mark as processed ONLY AFTER successful updates
+        // 🔥 FIX #1: Mark as processed ONLY AFTER successful updates
+        let allSuccess = false;
+        
         if (messageUpdateSuccess) {
-          const markResult = await MessageLog.updateMany(
-            { _id: { $in: logs.map(l => l._id) }, processed: false },
-            { $set: { processed: true, processedAt: new Date() } }
-          );
-          console.log(`[StatsConsumer] Marked ${markResult.modifiedCount} logs as processed`);
+          try {
+            const markResult = await MessageLog.updateMany(
+              { _id: { $in: logs.map(l => l._id) }, processed: false },
+              { $set: { processed: true, processedAt: new Date() } }
+            );
+            console.log(`[StatsConsumer] Marked ${markResult.modifiedCount} logs as processed`);
+            allSuccess = true;
+          } catch (error) {
+            console.error('[StatsConsumer] ❌ Mark processed failed:', error.message);
+          }
         }
         
         const duration = Date.now() - startTime;
         console.log(`[StatsConsumer] Batch complete: ${logs.length} logs in ${duration}ms`);
         
-        for (const msg of messages) await resolveOffset(msg.offset);
+        // 🔥 FIX #1: ACK only if everything succeeded
+        if (allSuccess && messages.length > 0) {
+          await resolveOffset(messages[messages.length - 1].offset);
+        }
         await heartbeat();
       }
     });

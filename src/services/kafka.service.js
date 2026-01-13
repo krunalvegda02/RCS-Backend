@@ -10,8 +10,9 @@ const kafka = new Kafka({
 });
 
 const producer = kafka.producer({
-  allowAutoTopicCreation: true,
+  allowAutoTopicCreation: false,
   maxInFlightRequests: 5,
+  idempotent: true,
   retry: {
     retries: 2,
     initialRetryTime: 100
@@ -19,8 +20,9 @@ const producer = kafka.producer({
 });
 
 const statsProducer = kafka.producer({
-  allowAutoTopicCreation: true,
+  allowAutoTopicCreation: false,
   maxInFlightRequests: 5,
+  idempotent: true,
   retry: {
     retries: 2,
     initialRetryTime: 100
@@ -28,8 +30,9 @@ const statsProducer = kafka.producer({
 });
 
 const dbProducer = kafka.producer({
-  allowAutoTopicCreation: true,
+  allowAutoTopicCreation: false,
   maxInFlightRequests: 10,
+  idempotent: true,
   retry: {
     retries: 2,
     initialRetryTime: 100
@@ -37,7 +40,7 @@ const dbProducer = kafka.producer({
 });
 
 const consumer = kafka.consumer({
-  groupId: 'webhook-processors',
+  groupId: `webhook-processors-${process.env.NODE_ENV || 'dev'}`,
   sessionTimeout: 30000,
   heartbeatInterval: 3000
 });
@@ -48,6 +51,28 @@ let dbProducerConnected = false;
 let connectingPromise = null;
 let statsConnectingPromise = null;
 let dbConnectingPromise = null;
+
+// 🔥 FIX #2: Producer backpressure monitoring
+producer.on('producer.network.request_timeout', e => {
+  console.error('[Kafka] Producer timeout', e);
+});
+producer.on('producer.disconnect', () => {
+  console.error('[Kafka] Producer disconnected');
+});
+
+statsProducer.on('producer.network.request_timeout', e => {
+  console.error('[Kafka] Stats Producer timeout', e);
+});
+statsProducer.on('producer.disconnect', () => {
+  console.error('[Kafka] Stats Producer disconnected');
+});
+
+dbProducer.on('producer.network.request_timeout', e => {
+  console.error('[Kafka] DB Producer timeout', e);
+});
+dbProducer.on('producer.disconnect', () => {
+  console.error('[Kafka] DB Producer disconnected');
+});
 
 export async function connectProducer() {
   if (producerConnected) return;
@@ -85,7 +110,13 @@ export async function sendWebhookToKafka(webhookData) {
   }
 }
 
-export async function sendStatsToKafka(logData) {
+// 🔥 FIX #6: Batch message buffer for producer
+let messageBuffer = [];
+let bufferTimer = null;
+const BUFFER_SIZE = 100;
+const BUFFER_TIMEOUT = 50; // 50ms
+
+export async function sendStatsToKafka(data, isBatch = false) {
   try {
     if (!statsProducerConnected) {
       if (!statsConnectingPromise) {
@@ -98,17 +129,54 @@ export async function sendStatsToKafka(logData) {
       await statsConnectingPromise;
     }
     
-    statsProducer.send({
-      topic: 'message-log-processing',
-      messages: [{
-        key: logData.logId,
-        value: JSON.stringify(logData)
-      }]
-    }).catch(err => {
-      console.error('[Kafka] Stats send error:', err.message);
-    });
+    // 🔥 FIX #6: Use sendBatch for better performance
+    if (isBatch && Array.isArray(data)) {
+      await statsProducer.sendBatch({
+        topicMessages: [{
+          topic: 'message-log-processing',
+          messages: data
+        }]
+      });
+    } else {
+      // Single message - add to buffer
+      messageBuffer.push({
+        key: data.logId,
+        value: JSON.stringify(data)
+      });
+      
+      // Flush if buffer is full
+      if (messageBuffer.length >= BUFFER_SIZE) {
+        await flushStatsBuffer();
+      } else if (!bufferTimer) {
+        // Set timer to flush after timeout
+        bufferTimer = setTimeout(flushStatsBuffer, BUFFER_TIMEOUT);
+      }
+    }
   } catch (error) {
     console.error('[Kafka] Stats producer error:', error.message);
+  }
+}
+
+async function flushStatsBuffer() {
+  if (bufferTimer) {
+    clearTimeout(bufferTimer);
+    bufferTimer = null;
+  }
+  
+  if (messageBuffer.length === 0) return;
+  
+  const messages = [...messageBuffer];
+  messageBuffer = [];
+  
+  try {
+    await statsProducer.sendBatch({
+      topicMessages: [{
+        topic: 'message-log-processing',
+        messages
+      }]
+    });
+  } catch (error) {
+    console.error('[Kafka] Batch send error:', error.message);
   }
 }
 
@@ -121,22 +189,17 @@ export async function connectConsumer() {
 
 export async function sendBatchEntriesToKafka(batchData) {
   try {
-    // Validate required fields
-    if (!batchData || !batchData.masterCampaignId || !batchData.subCampaigns) {
+    if (!batchData || !batchData.campaignId || !batchData.phoneNumbers) {
       console.error('[Kafka] Invalid batchData:', batchData);
       return { success: false, error: 'Invalid batch data structure' };
     }
     
-    // Convert ObjectIds to strings
     const sanitizedData = {
-      ...batchData,
-      masterCampaignId: batchData.masterCampaignId?.toString ? batchData.masterCampaignId.toString() : batchData.masterCampaignId,
+      campaignId: batchData.campaignId?.toString ? batchData.campaignId.toString() : batchData.campaignId,
       templateId: batchData.templateId?.toString ? batchData.templateId.toString() : batchData.templateId,
       userId: batchData.userId?.toString ? batchData.userId.toString() : batchData.userId,
-      subCampaigns: batchData.subCampaigns.map(sc => ({
-        ...sc,
-        campaignId: sc.campaignId?.toString ? sc.campaignId.toString() : sc.campaignId
-      }))
+      phoneNumbers: batchData.phoneNumbers,
+      totalContacts: batchData.phoneNumbers.length
     };
     
     if (!dbProducerConnected) {
@@ -150,17 +213,16 @@ export async function sendBatchEntriesToKafka(batchData) {
       await dbConnectingPromise;
     }
     
-    // Send batch data to Kafka for processing
     await dbProducer.send({
       topic: 'campaign-batch-entries',
       messages: [{
-        key: sanitizedData.masterCampaignId,
+        key: sanitizedData.campaignId,
         value: JSON.stringify(sanitizedData),
         timestamp: Date.now()
       }]
     });
     
-    console.log(`[Kafka] Sent batch entries to Kafka: ${batchData.totalContacts} contacts`);
+    console.log(`[Kafka] Sent batch entries to Kafka: ${sanitizedData.totalContacts} contacts`);
     return { success: true };
   } catch (error) {
     console.error('[Kafka] Batch entries send error:', error.message);

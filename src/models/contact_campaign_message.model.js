@@ -79,8 +79,7 @@ const contactCampaignMessageSchema = new mongoose.Schema(
     recipientPhoneNumber: {
       type: String,
       required: true,
-      unique: true,
-      index: true,
+      index: true, // 🔥 Removed unique: true, using composite index instead
       match: /^[0-9]{10,15}$/,
     },
 
@@ -116,7 +115,10 @@ contactCampaignMessageSchema.index({ userId: 1, createdAt: -1 });
 contactCampaignMessageSchema.index({ "campaigns.campaignId": 1 });
 contactCampaignMessageSchema.index({ "campaigns.status": 1 });
 contactCampaignMessageSchema.index({ "campaigns.messageId": 1 });
-contactCampaignMessageSchema.index({ recipientPhoneNumber: 1, userId: 1 });
+contactCampaignMessageSchema.index(
+  { recipientPhoneNumber: 1, userId: 1 },
+  { unique: true }
+);
 
 export default mongoose.model(
   "ContactCampaignMessage",

@@ -9,11 +9,13 @@ const messageLogSchema = new mongoose.Schema(
       index: true,
     },
     campaignId: {
-      type: String, // Changed from ObjectId for Kafka compatibility
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Campaign',
       index: true,
     },
     userId: {
-      type: String, // Changed from ObjectId for Kafka compatibility
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
       required: true,
       index: true,
     },
@@ -121,12 +123,13 @@ messageLogSchema.index({ userId: 1, timestamp: -1 });
 messageLogSchema.index({ campaignId: 1, status: 1 });
 messageLogSchema.index({ status: 1, timestamp: -1 });
 messageLogSchema.index({ eventType: 1, timestamp: -1 });
-messageLogSchema.index({ processed: 1, timestamp: 1 });
+messageLogSchema.index({ processed: 1, _id: 1 });
 
-// CRITICAL: Unique index to prevent duplicates from Kafka retries/rebalancing
+// 🔥 BUG FIX: More lenient unique index to handle webhook retries
+// Use messageId + timestamp for uniqueness instead of messageId + eventType
 messageLogSchema.index(
-  { messageId: 1, eventType: 1 },
-  { unique: true }
+  { messageId: 1, timestamp: 1 },
+  { unique: true, sparse: true }
 );
 
 // TTL Index - auto-delete after 90 days
