@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { Kafka } from 'kafkajs';
 import connectDB from '../db/index.js';
+import ContactCampaignMessage from '../models/contact_campaign_message.model.js';
 
 process.env.WORKER_MODE = 'true';
 
@@ -55,9 +56,11 @@ async function startDBWriter() {
           if (bulkOps.length >= BATCH_SIZE || Date.now() - lastFlush >= FLUSH_INTERVAL) {
             if (bulkOps.length > 0) {
               try {
+                await heartbeat(); // Heartbeat BEFORE long operation
                 await ContactCampaignMessage.bulkWrite(bulkOps, { ordered: false });
                 totalWrites += bulkOps.length;
                 console.log(`[DBWriter] Flushed ${bulkOps.length} updates | Total: ${totalWrites}`);
+                await heartbeat(); // Heartbeat AFTER long operation
               } catch (err) {
                 console.error('[DBWriter] Bulk write error:', err.message);
               }

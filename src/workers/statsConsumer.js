@@ -56,21 +56,6 @@ async function startStatsConsumer() {
           return;
         }
         
-        // Mark as processed atomically
-        const markResult = await MessageLog.updateMany(
-          { _id: { $in: logs.map(l => l._id) }, processed: false },
-          { $set: { processed: true, processedAt: new Date() } }
-        );
-        
-        console.log(`[StatsConsumer] Marked ${markResult.modifiedCount} logs as processed`);
-        
-        if (markResult.modifiedCount === 0) {
-          console.log('[StatsConsumer] No logs marked (already processed), skipping');
-          for (const msg of messages) await resolveOffset(msg.offset);
-          await heartbeat();
-          return;
-        }
-        
         const bulkOps = [];
         const walletOps = new Map();
         
@@ -78,6 +63,10 @@ async function startStatsConsumer() {
           const { messageId, webhookData, campaignId, userId } = log;
           const eventType = webhookData?.eventType;
           const entity = webhookData?.rawPayload?.entity;
+          
+          // Convert ObjectIds to strings for Map keys
+          const userIdStr = userId?.toString ? userId.toString() : userId;
+          const campaignIdStr = campaignId?.toString ? campaignId.toString() : campaignId;
           
           const webhookTimestamp = entity?.sendTime || entity?.deliveryTime || 
                                    entity?.readTime || entity?.receiveTime || log.timestamp;
@@ -96,8 +85,8 @@ async function startStatsConsumer() {
             case 'MESSAGE_DELIVERED':
               newStatus = 'delivered';
               updateFields['campaigns.$.deliveredAt'] = timestamp;
-              if (!walletOps.has(userId)) walletOps.set(userId, { delivered: 0, refund: 0 });
-              walletOps.get(userId).delivered += 1;
+              if (!walletOps.has(userIdStr)) walletOps.set(userIdStr, { delivered: 0, refund: 0 });
+              walletOps.get(userIdStr).delivered += 1;
               break;
               
             case 'MESSAGE_READ':
@@ -112,8 +101,8 @@ async function startStatsConsumer() {
               updateFields['campaigns.$.failedAt'] = timestamp;
               updateFields['campaigns.$.errorCode'] = webhookData.rawPayload?.entity?.error?.code || 'UNKNOWN';
               updateFields['campaigns.$.errorMessage'] = webhookData.rawPayload?.entity?.error?.message || 'Failed';
-              if (!walletOps.has(userId)) walletOps.set(userId, { delivered: 0, refund: 0 });
-              walletOps.get(userId).refund += 1;
+              if (!walletOps.has(userIdStr)) walletOps.set(userIdStr, { delivered: 0, refund: 0 });
+              walletOps.get(userIdStr).refund += 1;
               break;
               
             case 'USER_MESSAGE':
@@ -135,7 +124,7 @@ async function startStatsConsumer() {
               updateOne: {
                 filter: {
                   'campaigns.messageId': messageId,
-                  'campaigns.campaignId': campaignId
+                  'campaigns.campaignId': campaignIdStr
                 },
                 update: {
                   $set: {
@@ -156,25 +145,28 @@ async function startStatsConsumer() {
         }
         
         // Bulk update messages
+        let messageUpdateSuccess = false;
         if (bulkOps.length > 0) {
           try {
             const result = await ContactCampaignMessage.bulkWrite(bulkOps, { ordered: false });
             totalProcessed += result.modifiedCount;
+            messageUpdateSuccess = true;
             console.log(`[StatsConsumer] ✅ Updated ${result.modifiedCount} messages | Total: ${totalProcessed}`);
           } catch (error) {
             console.error('[StatsConsumer] Bulk write error:', error.message);
           }
         } else {
           console.log('[StatsConsumer] No message updates needed');
+          messageUpdateSuccess = true; // No updates needed is success
         }
         
-        // Bulk update wallets
-        if (walletOps.size > 0) {
+        // Bulk update wallets (only if message updates succeeded)
+        if (messageUpdateSuccess && walletOps.size > 0) {
           const walletBulk = [];
-          for (const [userId, ops] of walletOps.entries()) {
+          for (const [userIdStr, ops] of walletOps.entries()) {
             walletBulk.push({
               updateOne: {
-                filter: { _id: userId },
+                filter: { _id: userIdStr },
                 update: {
                   $inc: {
                     'wallet.blockedBalance': -(ops.delivered + ops.refund),
@@ -191,6 +183,15 @@ async function startStatsConsumer() {
           } catch (error) {
             console.error('[StatsConsumer] Wallet error:', error.message);
           }
+        }
+        
+        // Mark as processed ONLY AFTER successful updates
+        if (messageUpdateSuccess) {
+          const markResult = await MessageLog.updateMany(
+            { _id: { $in: logs.map(l => l._id) }, processed: false },
+            { $set: { processed: true, processedAt: new Date() } }
+          );
+          console.log(`[StatsConsumer] Marked ${markResult.modifiedCount} logs as processed`);
         }
         
         const duration = Date.now() - startTime;

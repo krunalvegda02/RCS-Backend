@@ -76,6 +76,8 @@ console.log('🚀 Webhook counter initialized - tracking all incoming webhooks')
 app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
   // Increment counter
   webhookCount++;
+
+  
   
   // Log every 100 webhooks for visibility
   if (webhookCount % 100 === 0) {
@@ -84,10 +86,10 @@ app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
     console.log(`📊 WEBHOOK COUNT: ${webhookCount} | Rate: ${rate}/sec | Elapsed: ${elapsed.toFixed(1)}s`);
   }
   
-  // Respond immediately
+  // Respond immediately (no validation to avoid blocking)
   res.status(200).json({ success: true });
 
-  // Send to Kafka async (don't await)
+  // Send to Kafka async - validation happens in consumer
   sendWebhookToKafka({
     data: req.body,
     timestamp: Date.now(),

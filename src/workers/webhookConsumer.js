@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { connectConsumer, disconnectKafka } from '../services/kafka.service.js';
 import connectDB from '../db/index.js';
+import { LRUCache } from 'lru-cache';
 
 process.env.WORKER_MODE = 'true';
 
@@ -16,16 +17,20 @@ async function startKafkaConsumer() {
     let totalProcessed = 0;
     let totalSkipped = 0;
     
-    // 🔥 In-memory cache for messageId → userId/campaignId
-    const messageCache = new Map();
-    let lastCacheRefresh = Date.now();
+    // 🔥 LRU cache with max 200K entries and 30min TTL for high volume
+    const messageCache = new LRUCache({
+      max: 200000, // Increased for 4K+/sec throughput
+      ttl: 1000 * 60 * 30, // 30 minutes
+      updateAgeOnGet: true
+    });
     
     await consumer.run({
       partitionsConsumedConcurrently: 20,
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
         const startTime = Date.now();
-        const messages = batch.messages;
+        // Limit batch size to prevent memory issues at high volume
+        const messages = batch.messages.slice(0, 5000);
         
         const parsedData = [];
         for (const message of messages) {
@@ -34,7 +39,20 @@ async function startKafkaConsumer() {
           try {
             const webhookData = JSON.parse(message.value.toString());
             const data = webhookData.data;
+            
+            // Validate webhook data (non-blocking, happens in consumer)
+            if (!data) {
+              console.error('[Webhook] Invalid webhook: missing data');
+              await resolveOffset(message.offset);
+              continue;
+            }
+            
             const messageId = data?.entity?.messageId || data?.messageId;
+            if (!messageId) {
+              console.error('[Webhook] Invalid webhook: missing messageId');
+              await resolveOffset(message.offset);
+              continue;
+            }
             
             parsedData.push({
               offset: message.offset,
@@ -47,6 +65,7 @@ async function startKafkaConsumer() {
               timestamp: webhookData.timestamp
             });
           } catch (error) {
+            console.error('[Webhook] Parse error:', error.message);
             await resolveOffset(message.offset);
           }
         }
@@ -71,31 +90,42 @@ async function startKafkaConsumer() {
         
         // Query DB only for uncached IDs
         if (uncachedIds.length > 0) {
-          const messageDocs = await ContactCampaignMessage.find({
-            $or: [
-              { 'campaigns.messageId': { $in: uncachedIds } },
-              { 'campaigns.jioMessageId': { $in: uncachedIds } },
-              { 'campaigns.rcsMessageId': { $in: uncachedIds } }
-            ]
-          }, { userId: 1, campaigns: 1 }).lean();
-          
-          messageDocs.forEach(doc => {
-            doc.campaigns?.forEach(camp => {
-              const info = { userId: doc.userId, campaignId: camp.campaignId };
-              if (camp.messageId) {
-                messageMap[camp.messageId] = info;
-                messageCache.set(camp.messageId, info);
-              }
-              if (camp.jioMessageId) {
-                messageMap[camp.jioMessageId] = info;
-                messageCache.set(camp.jioMessageId, info);
-              }
-              if (camp.rcsMessageId) {
-                messageMap[camp.rcsMessageId] = info;
-                messageCache.set(camp.rcsMessageId, info);
-              }
+          try {
+            const messageDocs = await ContactCampaignMessage.find({
+              $or: [
+                { 'campaigns.messageId': { $in: uncachedIds } },
+                { 'campaigns.jioMessageId': { $in: uncachedIds } },
+                { 'campaigns.rcsMessageId': { $in: uncachedIds } }
+              ]
+            }, { userId: 1, campaigns: 1 }).lean();
+            
+            messageDocs.forEach(doc => {
+              doc.campaigns?.forEach(camp => {
+                const info = { userId: doc.userId, campaignId: camp.campaignId };
+                if (camp.messageId) {
+                  messageMap[camp.messageId] = info;
+                  messageCache.set(camp.messageId, info);
+                }
+                if (camp.jioMessageId) {
+                  messageMap[camp.jioMessageId] = info;
+                  messageCache.set(camp.jioMessageId, info);
+                }
+                if (camp.rcsMessageId) {
+                  messageMap[camp.rcsMessageId] = info;
+                  messageCache.set(camp.rcsMessageId, info);
+                }
+              });
             });
-          });
+          } catch (error) {
+            console.error('[Webhook] DB query error:', error.message);
+            // On error, skip this batch and continue
+            if (messages.length > 0) {
+              const highestOffset = messages[messages.length - 1].offset;
+              await resolveOffset(highestOffset);
+            }
+            await heartbeat();
+            return;
+          }
         }
         
         const logsToInsert = [];
@@ -104,10 +134,14 @@ async function startKafkaConsumer() {
         for (const parsed of parsedData) {
           const msgInfo = messageMap[parsed.messageId];
           if (msgInfo?.userId) {
+            // Convert ObjectIds to strings for schema compatibility
+            const userIdStr = msgInfo.userId?.toString ? msgInfo.userId.toString() : msgInfo.userId;
+            const campaignIdStr = msgInfo.campaignId?.toString ? msgInfo.campaignId.toString() : msgInfo.campaignId;
+            
             logsToInsert.push({
               messageId: parsed.messageId,
-              campaignId: msgInfo.campaignId,
-              userId: msgInfo.userId,
+              campaignId: campaignIdStr,
+              userId: userIdStr,
               eventType: parsed.entityType === 'USER_MESSAGE' ? 'user_interaction' : 'status_update',
               status: 'success',
               webhookData: {
@@ -132,30 +166,40 @@ async function startKafkaConsumer() {
         if (logsToInsert.length > 0) {
           try {
             await MessageLog.insertMany(logsToInsert, { ordered: false });
+            
+            // ✅ Resolve offset AFTER successful insert
+            if (messages.length > 0) {
+              const highestOffset = messages[messages.length - 1].offset;
+              await resolveOffset(highestOffset);
+            }
+            
             const duration = Date.now() - startTime;
             const rate = Math.round(logsToInsert.length / (duration / 1000));
             console.log(`[Webhook] ✅ ${logsToInsert.length} logs in ${duration}ms (${rate}/sec) | Total: ${totalProcessed}`);
           } catch (bulkError) {
-            if (!bulkError.message.includes('E11000')) {
-              console.error('[Webhook] Error:', bulkError.message);
+            // Only resolve offset for duplicate key errors (E11000)
+            if (bulkError.message.includes('E11000')) {
+              // Duplicates are expected, resolve offset
+              if (messages.length > 0) {
+                const highestOffset = messages[messages.length - 1].offset;
+                await resolveOffset(highestOffset);
+              }
+              console.log(`[Webhook] Skipped ${logsToInsert.length} duplicates`);
+            } else {
+              // Real error - DON'T resolve offset, let Kafka retry
+              console.error('[Webhook] Insert failed, will retry:', bulkError.message);
+              throw bulkError;
             }
           }
-        }
-        
-        if (messages.length > 0) {
-          const highestOffset = messages[messages.length - 1].offset;
-          await resolveOffset(highestOffset);
+        } else {
+          // No logs to insert, resolve offset
+          if (messages.length > 0) {
+            const highestOffset = messages[messages.length - 1].offset;
+            await resolveOffset(highestOffset);
+          }
         }
         
         await heartbeat();
-        
-        if (Date.now() - lastCacheRefresh > 60000) {
-          if (messageCache.size > 100000) {
-            messageCache.clear();
-            console.log('[Webhook] Cache cleared');
-          }
-          lastCacheRefresh = Date.now();
-        }
       }
     });
 

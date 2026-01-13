@@ -9,12 +9,11 @@ const messageLogSchema = new mongoose.Schema(
       index: true,
     },
     campaignId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Campaign',
+      type: String, // Changed from ObjectId for Kafka compatibility
+      index: true,
     },
     userId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
+      type: String, // Changed from ObjectId for Kafka compatibility
       required: true,
       index: true,
     },

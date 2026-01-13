@@ -121,6 +121,24 @@ export async function connectConsumer() {
 
 export async function sendBatchEntriesToKafka(batchData) {
   try {
+    // Validate required fields
+    if (!batchData || !batchData.masterCampaignId || !batchData.subCampaigns) {
+      console.error('[Kafka] Invalid batchData:', batchData);
+      return { success: false, error: 'Invalid batch data structure' };
+    }
+    
+    // Convert ObjectIds to strings
+    const sanitizedData = {
+      ...batchData,
+      masterCampaignId: batchData.masterCampaignId?.toString ? batchData.masterCampaignId.toString() : batchData.masterCampaignId,
+      templateId: batchData.templateId?.toString ? batchData.templateId.toString() : batchData.templateId,
+      userId: batchData.userId?.toString ? batchData.userId.toString() : batchData.userId,
+      subCampaigns: batchData.subCampaigns.map(sc => ({
+        ...sc,
+        campaignId: sc.campaignId?.toString ? sc.campaignId.toString() : sc.campaignId
+      }))
+    };
+    
     if (!dbProducerConnected) {
       if (!dbConnectingPromise) {
         dbConnectingPromise = dbProducer.connect().then(() => {
@@ -136,8 +154,8 @@ export async function sendBatchEntriesToKafka(batchData) {
     await dbProducer.send({
       topic: 'campaign-batch-entries',
       messages: [{
-        key: batchData.masterCampaignId,
-        value: JSON.stringify(batchData),
+        key: sanitizedData.masterCampaignId,
+        value: JSON.stringify(sanitizedData),
         timestamp: Date.now()
       }]
     });

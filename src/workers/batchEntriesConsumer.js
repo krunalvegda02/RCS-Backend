@@ -49,6 +49,10 @@ async function startBatchEntriesConsumer() {
             const batchData = JSON.parse(message.value.toString());
             const { subCampaigns, templateId, userId } = batchData;
             
+            // Convert ObjectIds to strings for consistency
+            const templateIdStr = templateId?.toString ? templateId.toString() : templateId;
+            const userIdStr = userId?.toString ? userId.toString() : userId;
+            
             console.log(`[BatchConsumer] Processing ${subCampaigns.length} sub-campaigns`);
             
             // Process sub-campaigns in parallel with concurrency limit
@@ -59,6 +63,9 @@ async function startBatchEntriesConsumer() {
               subCampaigns.map((subCampaign, index) =>
                 limit(async () => {
                   const { campaignId, phoneNumbers } = subCampaign;
+                  
+                  // Convert campaignId to string
+                  const campaignIdStr = campaignId?.toString ? campaignId.toString() : campaignId;
                   
                   // Split phone numbers into chunks for better performance
                   const chunks = [];
@@ -74,19 +81,19 @@ async function startBatchEntriesConsumer() {
                       const cleanPhone = phone.replace(/^\+?91/, '').replace(/\D/g, '');
                       return {
                         updateOne: {
-                          filter: { recipientPhoneNumber: cleanPhone, userId },
+                          filter: { recipientPhoneNumber: cleanPhone, userId: userIdStr },
                           update: {
-                            $setOnInsert: { recipientPhoneNumber: cleanPhone, userId },
+                            $setOnInsert: { recipientPhoneNumber: cleanPhone, userId: userIdStr },
                             $push: {
                               campaigns: {
-                                campaignId,
-                                templateId,
+                                campaignId: campaignIdStr,
+                                templateId: templateIdStr,
                                 messageId: uuidv4(),
                                 status: 'draft',
                                 queuedAt: new Date()
                               }
                             },
-                            $addToSet: { campaignIds: campaignId }
+                            $addToSet: { campaignIds: campaignIdStr }
                           },
                           upsert: true
                         }
