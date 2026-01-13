@@ -161,6 +161,23 @@ async function startKafkaConsumer() {
                 rcsMessageId: doc.campaigns?.[0]?.rcsMessageId
               }));
               console.log('[KafkaConsumer] Sample DB messageIds:', JSON.stringify(sampleDbIds, null, 2));
+            } else {
+              // No docs found - check if ANY campaigns exist in DB
+              const totalCampaigns = await ContactCampaignMessage.countDocuments();
+              console.log(`[KafkaConsumer] ⚠️ No matching docs found. Total campaigns in DB: ${totalCampaigns}`);
+              
+              if (totalCampaigns > 0) {
+                // Show sample of what's actually in DB
+                const sample = await ContactCampaignMessage.findOne({}, { userId: 1, campaigns: 1 }).lean();
+                if (sample?.campaigns?.[0]) {
+                  console.log('[KafkaConsumer] Sample campaign from DB:', JSON.stringify({
+                    messageId: sample.campaigns[0].messageId,
+                    jioMessageId: sample.campaigns[0].jioMessageId,
+                    rcsMessageId: sample.campaigns[0].rcsMessageId,
+                    status: sample.campaigns[0].status
+                  }, null, 2));
+                }
+              }
             }
           }
         } else {
