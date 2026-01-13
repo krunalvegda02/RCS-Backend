@@ -21,7 +21,7 @@ async function startStatsConsumer() {
     });
     
     await consumer.connect();
-    await consumer.subscribe({ topic: 'message-log-processing', fromBeginning: false });
+    await consumer.subscribe({ topic: 'message-log-processing', fromBeginning: true });
     console.log('✅ Stats Consumer subscribed to message-log-processing');
     
     const MessageLog = (await import('../models/messageLog.model.js')).default;

@@ -29,7 +29,9 @@ async function startKafkaConsumer() {
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
         const startTime = Date.now();
-        const messages = batch.messages; // 🔥 Process ALL messages
+        const messages = batch.messages;
+        
+        console.log(`[KafkaConsumer] Processing batch: ${messages.length} messages from partition ${batch.partition}`);
         
         // 🔥 FIX #1: Parse all webhooks WITHOUT ACKing on error
         const parsedData = [];
@@ -60,9 +62,12 @@ async function startKafkaConsumer() {
         
         const messageIds = parsedData.map(p => p.messageId).filter(Boolean);
         if (messageIds.length === 0) {
+          console.log(`[KafkaConsumer] No valid messageIds in batch, skipping`);
           await heartbeat();
           return;
         }
+        
+        console.log(`[KafkaConsumer] Found ${messageIds.length} valid messageIds to process`);
         
         // 🔥 STEP 2: Check cache first, only query DB for missing IDs
         const uncachedIds = [];
@@ -120,6 +125,8 @@ async function startKafkaConsumer() {
         const logsToInsert = [];
         let skippedCount = 0;
         
+        console.log(`[KafkaConsumer] Building logs from ${parsedData.length} parsed messages...`);
+        
         for (const parsed of parsedData) {
           const msgInfo = messageMap[parsed.messageId];
           if (msgInfo?.userId) {
@@ -152,9 +159,10 @@ async function startKafkaConsumer() {
           try {
             await MessageLog.insertMany(logsToInsert, { ordered: false });
             dbSuccess = true;
+            totalProcessed += logsToInsert.length;
             const duration = Date.now() - startTime;
             const rate = Math.round(logsToInsert.length / (duration / 1000));
-            console.log(`[KafkaConsumer] ✅ ${logsToInsert.length} logs in ${duration}ms (${rate}/sec) | Total: ${totalProcessed}`);
+            console.log(`[KafkaConsumer] ✅ ${logsToInsert.length} logs in ${duration}ms (${rate}/sec) | Skipped: ${skippedCount} | Total: ${totalProcessed}`);
           } catch (bulkError) {
             if (bulkError.message.includes('E11000')) {
               dbSuccess = true; // Duplicates are OK
@@ -164,14 +172,12 @@ async function startKafkaConsumer() {
           }
         } else {
           dbSuccess = true; // No data = success
+          console.log(`[KafkaConsumer] No logs to insert (all ${skippedCount} messages skipped - no matching messageIds in DB)`);
         }
         
-        // 🔥 BUG FIX #1: Resolve offsets sequentially in order
-        if (dbSuccess) {
-          // Resolve all message offsets in order
-          for (const message of messages) {
-            await resolveOffset(message.offset);
-          }
+        // 🔥 BUG FIX #1: Resolve last offset only (batch commit)
+        if (dbSuccess && messages.length > 0) {
+          await resolveOffset(messages[messages.length - 1].offset);
         }
         
         // 🔥 BUG FIX #2: Heartbeat to prevent session timeout

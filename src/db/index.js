@@ -22,7 +22,7 @@ const connectDB = async () => {
     mongoose.set('debug', false);
     mongoose.set('strictQuery', false);
     
-    app.on("error", () => {
+    app.on("error", (error) => {
       console.log("Express Error:", error);
     });
 
