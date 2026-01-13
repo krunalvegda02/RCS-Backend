@@ -43,7 +43,25 @@ async function startKafkaConsumer() {
           try {
             const webhookData = JSON.parse(message.value.toString());
             const data = webhookData.data;
-            const messageId = data?.entity?.messageId || data?.messageId;
+            
+            // 🔥 Extract messageId from all possible locations
+            const messageId = data?.entity?.messageId || 
+                            data?.messageId || 
+                            data?.entity?.rcsMessageId ||
+                            data?.rcsMessageId;
+            
+            // 🔥 DEBUG: Log webhook structure every 10 messages
+            if (parsedData.length % 10 === 0) {
+              console.log('[KafkaConsumer] Webhook structure:', JSON.stringify({
+                extractedMessageId: messageId,
+                'data.entity.messageId': data?.entity?.messageId,
+                'data.messageId': data?.messageId,
+                'data.entity.rcsMessageId': data?.entity?.rcsMessageId,
+                'data.rcsMessageId': data?.rcsMessageId,
+                eventType: data?.entity?.eventType || data?.eventType,
+                entityType: data?.entityType
+              }, null, 2));
+            }
             
             parsedData.push({
               offset: message.offset,
@@ -130,10 +148,20 @@ async function startKafkaConsumer() {
           
           console.log(`[KafkaConsumer] Matched ${matchedCount} messageIds from DB query`);
           
-          // 🔥 DEBUG: Log first 3 unmatched IDs
+          // 🔥 DEBUG: Log first 3 unmatched IDs with sample DB data
           const unmatchedIds = uncachedIds.filter(id => !messageMap[id]);
           if (unmatchedIds.length > 0) {
             console.log(`[KafkaConsumer] ⚠️ ${unmatchedIds.length} messageIds NOT found in DB. Examples: ${unmatchedIds.slice(0, 3).join(', ')}`);
+            
+            // Show what messageIds ARE in the DB for comparison
+            if (messageDocs.length > 0) {
+              const sampleDbIds = messageDocs.slice(0, 2).map(doc => ({
+                messageId: doc.campaigns?.[0]?.messageId,
+                jioMessageId: doc.campaigns?.[0]?.jioMessageId,
+                rcsMessageId: doc.campaigns?.[0]?.rcsMessageId
+              }));
+              console.log('[KafkaConsumer] Sample DB messageIds:', JSON.stringify(sampleDbIds, null, 2));
+            }
           }
         } else {
           console.log(`[KafkaConsumer] All ${messageIds.length} messageIds found in cache`);
@@ -189,7 +217,7 @@ async function startKafkaConsumer() {
             }
           }
         } else {
-          dbSuccess = true; // No data = success
+          dbSuccess = true;
           console.log(`[KafkaConsumer] No logs to insert (all ${skippedCount} messages skipped - no matching messageIds in DB)`);
         }
         
