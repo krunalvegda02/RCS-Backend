@@ -42,7 +42,9 @@ const dbProducer = kafka.producer({
 const consumer = kafka.consumer({
   groupId: `webhook-processors-${process.env.NODE_ENV || 'dev'}`,
   sessionTimeout: 30000,
-  heartbeatInterval: 3000
+  heartbeatInterval: 3000,
+  maxBytesPerPartition: 1048576,
+  maxWaitTimeInMs: 100
 });
 
 let producerConnected = false;
@@ -180,7 +182,10 @@ async function flushStatsBuffer() {
 
 export async function connectConsumer() {
   await consumer.connect();
-  await consumer.subscribe({ topic: 'rcs-webhooks', fromBeginning: true });
+  await consumer.subscribe({ 
+    topic: 'rcs-webhooks', 
+    fromBeginning: true 
+  });
   console.log('✅ Kafka Consumer connected and subscribed');
   return consumer;
 }

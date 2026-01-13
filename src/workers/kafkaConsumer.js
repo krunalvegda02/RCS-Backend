@@ -25,7 +25,7 @@ async function startKafkaConsumer() {
     const getCacheKey = (type, id) => `${type}:${id}`;
     
     await consumer.run({
-      partitionsConsumedConcurrently: 4, // 🔥 FIX #3: Reduced from 20 to prevent rebalancing
+      partitionsConsumedConcurrently: 4,
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
         const startTime = Date.now();

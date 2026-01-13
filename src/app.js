@@ -67,76 +67,23 @@ import { sendWebhookToKafka } from "./services/kafka.service.js";
 app.use("/api/v1", router);
 app.use("/api/realtime", authenticateToken, realtimeRoutes);
 
-// Webhook counter with event type tracking
+// Webhook counter
 let webhookCount = 0;
-let webhooksByType = {};
-let uniqueMessageIds = new Set();
-let droppedRequests = 0;
-let errorCount = 0;
-let startTime = Date.now();
-let lastLogTime = Date.now();
-console.log('🚀 Webhook counter initialized - tracking all incoming webhooks');
 
-// Track all requests to webhook endpoint
-app.use('/api/v1/jio/rcs/webhooks', (req, res, next) => {
-  const requestStart = Date.now();
-  
-  // Track response
-  const originalSend = res.send;
-  res.send = function(data) {
-    const duration = Date.now() - requestStart;
-    if (duration > 5000) {
-      console.warn(`⚠️ Slow webhook response: ${duration}ms`);
-    }
-    return originalSend.call(this, data);
-  };
-  
-  // Track if request times out
-  req.on('timeout', () => {
-    droppedRequests++;
-    console.error(`❌ REQUEST TIMEOUT - Total dropped: ${droppedRequests}`);
-  });
-  
-  next();
-});
-
-// Jio RCS Webhook Endpoint
+// Jio RCS Webhook Endpoint - Ultra lightweight
 app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
-  try {
-    const messageId = req.body?.entity?.messageId || req.body?.messageId;
-    const eventType = req.body?.entity?.eventType || req.body?.eventType;
-    
-    // Respond immediately (BEFORE processing)
-    res.status(200).json({ success: true });
-    
-    // Increment counters
-    webhookCount++;
-    webhooksByType[eventType] = (webhooksByType[eventType] || 0) + 1;
-    if (messageId) uniqueMessageIds.add(messageId);
+  res.status(200).json({ success: true });
 
-    // Log every 100 webhooks OR every 10 seconds
-    const now = Date.now();
-    if (webhookCount % 100 === 0 || (now - lastLogTime) > 10000) {
-      const elapsed = (now - startTime) / 1000;
-      const rate = (webhookCount / elapsed).toFixed(2);
-      console.log(`📊 WEBHOOK STATS: Total=${webhookCount} | Unique=${uniqueMessageIds.size} | Dropped=${droppedRequests} | Errors=${errorCount} | Rate=${rate}/sec`);
-      console.log(`📊 Event Breakdown:`, webhooksByType);
-      lastLogTime = now;
-    }
+  webhookCount++;
+  console.log(`[Webhook] #${webhookCount}`);
+  console.log(`[Webhook] #${req.body}`);
 
-    // Send to Kafka async (non-blocking)
-    sendWebhookToKafka({
-      data: req.body,
-      timestamp: Date.now(),
-      messageId
-    }).catch(err => {
-      errorCount++;
-      console.error(`[Webhook] ❌ Kafka error for ${messageId}:`, err.message);
-    });
-  } catch (error) {
-    errorCount++;
-    console.error(`[Webhook] ❌ Processing error:`, error.message);
-  }
+
+  // sendWebhookToKafka({
+  //   data: req.body,
+  //   timestamp: Date.now(),
+  //   messageId: req.body?.entity?.messageId || req.body?.messageId
+  // });
 });
 
 
