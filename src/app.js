@@ -74,7 +74,7 @@ console.log('🚀 Webhook counter initialized - tracking all incoming webhooks')
 
 // Jio RCS Webhook Endpoint (fire-and-forget to Kafka)
 app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
-  console.log(`[Webhook] Received: ${req.data}, eventType = ${req.body?.entity?.eventType || req.body?.eventType}`);
+  console.log(`[Webhook] Received: ${req.body?.entity?.messageId || req.body?.messageId}, eventType = ${req.body?.entity?.eventType || req.body?.eventType}`);
   // Increment counter
   webhookCount++;
 

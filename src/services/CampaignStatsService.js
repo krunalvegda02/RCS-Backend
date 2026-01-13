@@ -9,6 +9,7 @@ try {
   redisClient = createClient({
     url: `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || 6379}`,
     socket: {
+      connectTimeout: 30000,
       reconnectStrategy: (retries) => Math.min(retries * 50, 500)
     }
   });
