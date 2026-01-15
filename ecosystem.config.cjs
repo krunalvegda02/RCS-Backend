@@ -85,6 +85,18 @@ module.exports = {
       min_uptime: '30s',
       max_restarts: 5,
       kill_timeout: 5000
+    },
+    {
+      name: 'expire-pending-cron',
+      script: 'scripts/expirePendingMessages.js',
+      instances: 1,
+      exec_mode: 'fork',
+      cron_restart: '*/5 * * * *',
+      autorestart: false,
+      env: {
+        NODE_ENV: 'production',
+        MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority'
+      }
     }
   ]
 };

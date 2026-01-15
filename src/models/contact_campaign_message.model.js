@@ -40,6 +40,7 @@ const campaignStateSchema = new mongoose.Schema(
         "bounced",
         "read",
         "replied",
+        "expired",
       ],
       default: "pending",
     },
