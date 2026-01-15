@@ -2,6 +2,32 @@ import Campaign from '../models/campaign.model.js';
 import Template from '../models/template.model.js';
 import { sendBatchEntriesToKafka } from '../services/kafka.service.js';
 
+export const updateCampaignStatus = async (req, res) => {
+  try {
+    const { campaignId } = req.body;
+    const userId = req.user._id;
+
+    const campaign = await Campaign.findOne({ _id: campaignId, userId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, message: 'Campaign not found' });
+    }
+
+    campaign.status = 'pending';
+    await campaign.save();
+
+    console.log(`[Campaign] Status updated to pending for campaign ${campaignId}`);
+
+    res.json({
+      success: true,
+      message: 'Campaign status updated to pending',
+      data: { campaignId, status: 'pending' }
+    });
+  } catch (error) {
+    console.error('[Campaign] Update status error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 export const createMasterCampaign = async (req, res) => {
   try {
     const { name, templateId, phoneNumbers } = req.body;

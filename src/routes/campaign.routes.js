@@ -25,6 +25,7 @@ router.post('/create-entries', CampaignController.createCampaignEntries);
 
 // Create master campaign with sub-campaigns
 router.post('/master', SubCampaignController.createMasterCampaign);
+router.post('/update-status', SubCampaignController.updateCampaignStatus);
 
 // Send campaign messages to Kafka
 router.post('/send', CampaignController.sendCampaign);
