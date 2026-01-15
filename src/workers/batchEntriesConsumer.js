@@ -31,7 +31,7 @@ async function startBatchEntriesConsumer() {
     const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
     
     let totalProcessed = 0;
-    const campaignChunksProcessed = new Map();
+    const campaignChunks = new Map(); // Track: campaignId -> { total, completed: Set() }
     
     await consumer.run({
       partitionsConsumedConcurrently: 4,
@@ -98,22 +98,24 @@ async function startBatchEntriesConsumer() {
             const { offset, campaignId, totalChunks, chunkIndex } = result;
             
             const campaignKey = campaignId.toString();
-            if (!campaignChunksProcessed.has(campaignKey)) {
-              campaignChunksProcessed.set(campaignKey, { processed: new Set(), total: totalChunks });
+            if (!campaignChunks.has(campaignKey)) {
+              campaignChunks.set(campaignKey, { total: totalChunks, completed: new Set() });
             }
-            campaignChunksProcessed.get(campaignKey).processed.add(chunkIndex);
+            campaignChunks.get(campaignKey).completed.add(chunkIndex);
+            
+            console.log(`[BatchConsumer] Campaign ${campaignKey}: Chunk ${chunkIndex + 1}/${totalChunks} tracked. Completed: ${campaignChunks.get(campaignKey).completed.size}`);
             
             await resolveOffset(offset);
           }
         }
         
         // Check if any campaign completed all chunks
-        for (const [campaignKey, progress] of campaignChunksProcessed.entries()) {
-          if (progress.processed.size === progress.total) {
+        for (const [campaignKey, progress] of campaignChunks.entries()) {
+          if (progress.completed.size === progress.total) {
             const Campaign = (await import('../models/campaign.model.js')).default;
             await Campaign.findByIdAndUpdate(campaignKey, { status: 'pending' });
-            console.log(`[BatchConsumer] ✅ Campaign ${campaignKey} ALL ${progress.total} chunks completed - status updated to 'pending'`);
-            campaignChunksProcessed.delete(campaignKey);
+            console.log(`[BatchConsumer] ✅✅✅ Campaign ${campaignKey} ALL ${progress.total} chunks completed - STATUS UPDATED TO PENDING ✅✅✅`);
+            campaignChunks.delete(campaignKey);
           }
         }
         
