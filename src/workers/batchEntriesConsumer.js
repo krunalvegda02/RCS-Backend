@@ -31,6 +31,7 @@ async function startBatchEntriesConsumer() {
     const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
     
     let totalProcessed = 0;
+    let campaignStatusUpdated = new Set();
     
     await consumer.run({
       partitionsConsumedConcurrently: 4,
@@ -46,7 +47,7 @@ async function startBatchEntriesConsumer() {
           
           try {
             const batchData = JSON.parse(message.value.toString());
-            const { campaignId, templateId, userId, phoneNumbers } = batchData;
+            const { campaignId, templateId, userId, phoneNumbers, totalChunks, chunkIndex } = batchData;
             
             console.log(`[BatchConsumer] Processing ${phoneNumbers.length} contacts for campaign ${campaignId}`);
             
@@ -81,6 +82,14 @@ async function startBatchEntriesConsumer() {
             totalProcessed += phoneNumbers.length;
             const duration = Date.now() - startTime;
             console.log(`[BatchConsumer] ✅ Campaign ${campaignId}: ${phoneNumbers.length} contacts in ${duration}ms | Total: ${totalProcessed}`);
+            
+            // Update campaign status to 'pending' after last chunk completes
+            if (chunkIndex === totalChunks - 1 && !campaignStatusUpdated.has(campaignId.toString())) {
+              const Campaign = (await import('../models/campaign.model.js')).default;
+              await Campaign.findByIdAndUpdate(campaignId, { status: 'pending' });
+              campaignStatusUpdated.add(campaignId.toString());
+              console.log(`[BatchConsumer] ✅ Campaign ${campaignId} status updated to 'pending'`);
+            }
             
             return message.offset;
           } catch (error) {

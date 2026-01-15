@@ -56,16 +56,16 @@ export const createMasterCampaign = async (req, res) => {
             filter: { recipientPhoneNumber: cleanPhone, userId },
             update: {
               $setOnInsert: { recipientPhoneNumber: cleanPhone, userId },
-              $push: {
+              $addToSet: { 
                 campaigns: {
                   campaignId: campaign._id,
                   templateId,
                   messageId: uuidv4(),
                   status: 'draft',
                   queuedAt: new Date()
-                }
-              },
-              $addToSet: { campaignIds: campaign._id }
+                },
+                campaignIds: campaign._id
+              }
             },
             upsert: true
           }
@@ -73,10 +73,11 @@ export const createMasterCampaign = async (req, res) => {
       });
 
       await ContactCampaignMessage.bulkWrite(bulkOps, { ordered: false });
+      await Campaign.findByIdAndUpdate(campaign._id, { status: 'pending' });
     }
 
-    // Update campaign status to pending after successful bulk entry creation
-    await Campaign.findByIdAndUpdate(campaign._id, { status: 'pending' });
+    // Note: Status remains 'draft' when using Kafka
+    // Consumer will update to 'pending' after processing completes
 
     console.log(`[Campaign] ✅ Created campaign with ${phoneNumbers.length} contacts on ${botId}`);
 
