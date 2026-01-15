@@ -40,7 +40,7 @@ const campaignSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: ['draft', 'pending', 'processing', 'running', 'completed', 'failed'],
-      default: 'pending',
+      default: 'draft',
       index: true,
     },
 
