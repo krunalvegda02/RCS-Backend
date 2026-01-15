@@ -31,7 +31,7 @@ const campaignStateSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: [
-        "draft",
+        "pending",
         "queued",
         "processing",
         "sent",
@@ -41,7 +41,7 @@ const campaignStateSchema = new mongoose.Schema(
         "read",
         "replied",
       ],
-      default: "draft",
+      default: "pending",
     },
 
     /* -------- TIMESTAMPS -------- */
