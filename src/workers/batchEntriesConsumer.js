@@ -31,7 +31,7 @@ async function startBatchEntriesConsumer() {
     const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
     
     let totalProcessed = 0;
-    let campaignStatusUpdated = new Set();
+    const campaignChunksProcessed = new Map();
     
     await consumer.run({
       partitionsConsumedConcurrently: 4,
@@ -49,7 +49,7 @@ async function startBatchEntriesConsumer() {
             const batchData = JSON.parse(message.value.toString());
             const { campaignId, templateId, userId, phoneNumbers, totalChunks, chunkIndex } = batchData;
             
-            console.log(`[BatchConsumer] Processing ${phoneNumbers.length} contacts for campaign ${campaignId}`);
+            console.log(`[BatchConsumer] Processing chunk ${chunkIndex + 1}/${totalChunks} (${phoneNumbers.length} contacts) for campaign ${campaignId}`);
             
             const bulkOps = phoneNumbers.map(phone => {
               const cleanPhone = phone.replace(/^\+?91/, '').replace(/\D/g, '');
@@ -81,14 +81,22 @@ async function startBatchEntriesConsumer() {
             
             totalProcessed += phoneNumbers.length;
             const duration = Date.now() - startTime;
-            console.log(`[BatchConsumer] ✅ Campaign ${campaignId}: ${phoneNumbers.length} contacts in ${duration}ms | Total: ${totalProcessed}`);
+            console.log(`[BatchConsumer] ✅ Chunk ${chunkIndex + 1}/${totalChunks} completed: ${phoneNumbers.length} contacts in ${duration}ms | Total: ${totalProcessed}`);
             
-            // Update campaign status to 'pending' after last chunk completes
-            if (chunkIndex === totalChunks - 1 && !campaignStatusUpdated.has(campaignId.toString())) {
+            // Track processed chunks per campaign
+            const campaignKey = campaignId.toString();
+            if (!campaignChunksProcessed.has(campaignKey)) {
+              campaignChunksProcessed.set(campaignKey, { processed: new Set(), total: totalChunks });
+            }
+            campaignChunksProcessed.get(campaignKey).processed.add(chunkIndex);
+            
+            // Check if all chunks for this campaign are processed
+            const campaignProgress = campaignChunksProcessed.get(campaignKey);
+            if (campaignProgress.processed.size === campaignProgress.total) {
               const Campaign = (await import('../models/campaign.model.js')).default;
               await Campaign.findByIdAndUpdate(campaignId, { status: 'pending' });
-              campaignStatusUpdated.add(campaignId.toString());
-              console.log(`[BatchConsumer] ✅ Campaign ${campaignId} status updated to 'pending'`);
+              console.log(`[BatchConsumer] ✅ Campaign ${campaignId} ALL ${campaignProgress.total} chunks completed - status updated to 'pending'`);
+              campaignChunksProcessed.delete(campaignKey);
             }
             
             return message.offset;
