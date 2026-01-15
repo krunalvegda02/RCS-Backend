@@ -83,35 +83,37 @@ async function startBatchEntriesConsumer() {
             const duration = Date.now() - startTime;
             console.log(`[BatchConsumer] ✅ Chunk ${chunkIndex + 1}/${totalChunks} completed: ${phoneNumbers.length} contacts in ${duration}ms | Total: ${totalProcessed}`);
             
-            // Track processed chunks per campaign
-            const campaignKey = campaignId.toString();
-            if (!campaignChunksProcessed.has(campaignKey)) {
-              campaignChunksProcessed.set(campaignKey, { processed: new Set(), total: totalChunks });
-            }
-            campaignChunksProcessed.get(campaignKey).processed.add(chunkIndex);
-            
-            // Check if all chunks for this campaign are processed
-            const campaignProgress = campaignChunksProcessed.get(campaignKey);
-            if (campaignProgress.processed.size === campaignProgress.total) {
-              const Campaign = (await import('../models/campaign.model.js')).default;
-              await Campaign.findByIdAndUpdate(campaignId, { status: 'pending' });
-              console.log(`[BatchConsumer] ✅ Campaign ${campaignId} ALL ${campaignProgress.total} chunks completed - status updated to 'pending'`);
-              campaignChunksProcessed.delete(campaignKey);
-            }
-            
-            return message.offset;
+            return { offset: message.offset, campaignId, totalChunks, chunkIndex };
           } catch (error) {
             console.error('[BatchConsumer] ❌ Processing error:', error.message);
             return null;
           }
         });
         
-        const offsets = await Promise.all(processPromises);
+        const results = await Promise.all(processPromises);
         
-        // Commit all successful offsets
-        for (let i = 0; i < offsets.length; i++) {
-          if (offsets[i] !== null) {
-            await resolveOffset(offsets[i]);
+        // Track chunks and update status after all messages in batch are processed
+        for (const result of results) {
+          if (result) {
+            const { offset, campaignId, totalChunks, chunkIndex } = result;
+            
+            const campaignKey = campaignId.toString();
+            if (!campaignChunksProcessed.has(campaignKey)) {
+              campaignChunksProcessed.set(campaignKey, { processed: new Set(), total: totalChunks });
+            }
+            campaignChunksProcessed.get(campaignKey).processed.add(chunkIndex);
+            
+            await resolveOffset(offset);
+          }
+        }
+        
+        // Check if any campaign completed all chunks
+        for (const [campaignKey, progress] of campaignChunksProcessed.entries()) {
+          if (progress.processed.size === progress.total) {
+            const Campaign = (await import('../models/campaign.model.js')).default;
+            await Campaign.findByIdAndUpdate(campaignKey, { status: 'pending' });
+            console.log(`[BatchConsumer] ✅ Campaign ${campaignKey} ALL ${progress.total} chunks completed - status updated to 'pending'`);
+            campaignChunksProcessed.delete(campaignKey);
           }
         }
         
