@@ -76,14 +76,14 @@ app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
 
   webhookCount++;
   console.log(`[Webhook] #${webhookCount}`);
-  console.log(`[Webhook] #${req.body.data}`);
+  console.log(`[Webhook] #${req.body.entity}`);
 
 
-  // sendWebhookToKafka({
-  //   data: req.body,
-  //   timestamp: Date.now(),
-  //   messageId: req.body?.entity?.messageId || req.body?.messageId
-  // });
+  sendWebhookToKafka({
+    data: req.body,
+    timestamp: Date.now(),
+    messageId: req.body?.entity?.messageId || req.body?.messageId
+  });
 });
 
 
