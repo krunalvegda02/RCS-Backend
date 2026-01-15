@@ -23,7 +23,7 @@ export const createMasterCampaign = async (req, res) => {
       userId,
       templateId,
       botId,
-      status: 'pending',
+      status: 'draft', // Start as draft, will change to pending after bulk entries
       payload: JSON.stringify(template.generatePayload()),
       stats: {
         total: phoneNumbers.length,
@@ -74,6 +74,9 @@ export const createMasterCampaign = async (req, res) => {
 
       await ContactCampaignMessage.bulkWrite(bulkOps, { ordered: false });
     }
+
+    // Update campaign status to pending after successful bulk entry creation
+    await Campaign.findByIdAndUpdate(campaign._id, { status: 'pending' });
 
     console.log(`[Campaign] ✅ Created campaign with ${phoneNumbers.length} contacts on ${botId}`);
 
