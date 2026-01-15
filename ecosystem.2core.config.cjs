@@ -1,3 +1,4 @@
+// Optimized for 2 CPU cores (current)
 module.exports = {
   apps: [
     {
@@ -24,9 +25,7 @@ module.exports = {
         JIO_SECRET_KEY: 'f6a4d066-d976-4143-b8e4-cebf24d981b6',
         JIO_SECRET_ID: '6927fac2a34077bfc4bd45a2',
         JIO_ASSISTANT_ID: '6927fac2a34077bfc4bd45a2'
-      },
-      wait_ready: true,
-      listen_timeout: 10000
+      }
     },
     {
       name: 'kafka-consumer',

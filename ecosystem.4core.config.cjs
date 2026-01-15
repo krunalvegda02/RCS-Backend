@@ -1,9 +1,10 @@
+// Optimized for 4+ CPU cores
 module.exports = {
   apps: [
     {
       name: 'api',
       script: 'src/index.js',
-      instances: 1,
+      instances: 2,
       exec_mode: 'cluster',
       env: {
         NODE_ENV: 'production',
@@ -24,14 +25,12 @@ module.exports = {
         JIO_SECRET_KEY: 'f6a4d066-d976-4143-b8e4-cebf24d981b6',
         JIO_SECRET_ID: '6927fac2a34077bfc4bd45a2',
         JIO_ASSISTANT_ID: '6927fac2a34077bfc4bd45a2'
-      },
-      wait_ready: true,
-      listen_timeout: 10000
+      }
     },
     {
       name: 'kafka-consumer',
       script: 'src/workers/kafkaConsumer.js',
-      instances: 1,
+      instances: 2,
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
@@ -44,7 +43,7 @@ module.exports = {
     {
       name: 'stats-consumer',
       script: 'src/workers/statsConsumer.js',
-      instances: 1,
+      instances: 2,
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',

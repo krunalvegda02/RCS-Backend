@@ -76,7 +76,7 @@ app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
 
   webhookCount++;
   console.log(`[Webhook] #${webhookCount}`);
-  console.log(`[Webhook] #${req.body}`);
+  console.log(`[Webhook] #${req.body.data}`);
 
 
   // sendWebhookToKafka({
