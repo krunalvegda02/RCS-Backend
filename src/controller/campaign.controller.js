@@ -157,7 +157,7 @@ export const createCampaignEntries = async (req, res) => {
                       campaignId,
                       templateId,
                       messageId: uuidv4(),
-                      status: "draft",
+                      status: "pending",
                       queuedAt: new Date(),
                     },
                   },
