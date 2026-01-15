@@ -54,28 +54,6 @@ let connectingPromise = null;
 let statsConnectingPromise = null;
 let dbConnectingPromise = null;
 
-// 🔥 FIX #2: Producer backpressure monitoring
-producer.on('producer.network.request_timeout', e => {
-  console.error('[Kafka] Producer timeout', e);
-});
-producer.on('producer.disconnect', () => {
-  console.error('[Kafka] Producer disconnected');
-});
-
-statsProducer.on('producer.network.request_timeout', e => {
-  console.error('[Kafka] Stats Producer timeout', e);
-});
-statsProducer.on('producer.disconnect', () => {
-  console.error('[Kafka] Stats Producer disconnected');
-});
-
-dbProducer.on('producer.network.request_timeout', e => {
-  console.error('[Kafka] DB Producer timeout', e);
-});
-dbProducer.on('producer.disconnect', () => {
-  console.error('[Kafka] DB Producer disconnected');
-});
-
 export async function connectProducer() {
   if (producerConnected) return;
   if (connectingPromise) return connectingPromise;
@@ -197,13 +175,10 @@ export async function sendBatchEntriesToKafka(batchData) {
       return { success: false, error: 'Invalid batch data structure' };
     }
     
-    const sanitizedData = {
-      campaignId: batchData.campaignId?.toString ? batchData.campaignId.toString() : batchData.campaignId,
-      templateId: batchData.templateId?.toString ? batchData.templateId.toString() : batchData.templateId,
-      userId: batchData.userId?.toString ? batchData.userId.toString() : batchData.userId,
-      phoneNumbers: batchData.phoneNumbers,
-      totalContacts: batchData.phoneNumbers.length
-    };
+    const campaignId = batchData.campaignId?.toString ? batchData.campaignId.toString() : batchData.campaignId;
+    const templateId = batchData.templateId?.toString ? batchData.templateId.toString() : batchData.templateId;
+    const userId = batchData.userId?.toString ? batchData.userId.toString() : batchData.userId;
+    const phoneNumbers = batchData.phoneNumbers;
     
     if (!dbProducerConnected) {
       if (!dbConnectingPromise) {
@@ -216,44 +191,41 @@ export async function sendBatchEntriesToKafka(batchData) {
       await dbConnectingPromise;
     }
     
-    await dbProducer.send({
-      topic: 'campaign-batch-entries',
-      messages: [{
-        key: sanitizedData.campaignId,
-        value: JSON.stringify(sanitizedData),
-        timestamp: Date.now()
+    // Split into 5K chunks for fast parallel processing
+    const CHUNK_SIZE = 5000;
+    const chunks = [];
+    for (let i = 0; i < phoneNumbers.length; i += CHUNK_SIZE) {
+      chunks.push(phoneNumbers.slice(i, i + CHUNK_SIZE));
+    }
+    
+    // Send all chunks in parallel using sendBatch
+    const messages = chunks.map((chunk, index) => ({
+      key: `${campaignId}-${index}`,
+      value: JSON.stringify({
+        campaignId,
+        templateId,
+        userId,
+        phoneNumbers: chunk,
+        totalContacts: chunk.length,
+        chunkIndex: index,
+        totalChunks: chunks.length
+      }),
+      timestamp: Date.now()
+    }));
+    
+    await dbProducer.sendBatch({
+      topicMessages: [{
+        topic: 'campaign-batch-entries',
+        messages
       }]
     });
     
-    console.log(`[Kafka] Sent batch entries to Kafka: ${sanitizedData.totalContacts} contacts`);
-    return { success: true };
+    console.log(`[Kafka] ✅ Sent ${phoneNumbers.length} contacts in ${chunks.length} chunks`);
+    return { success: true, chunks: chunks.length };
   } catch (error) {
     console.error('[Kafka] Batch entries send error:', error.message);
     return { success: false, error: error.message };
   }
-}
-
-export async function sendDBUpdateToKafka(updateData) {
-  try {
-    if (!dbProducerConnected) {
-      if (!dbConnectingPromise) {
-        dbConnectingPromise = dbProducer.connect().then(() => {
-          dbProducerConnected = true;
-          dbConnectingPromise = null;
-          console.log('✅ Kafka DB Producer connected');
-        });
-      }
-      await dbConnectingPromise;
-    }
-    
-    dbProducer.send({
-      topic: 'rcs-db-updates',
-      messages: [{
-        key: updateData.messageId,
-        value: JSON.stringify(updateData)
-      }]
-    }).catch(() => {});
-  } catch (error) {}
 }
 
 export async function disconnectKafka() {
@@ -263,7 +235,5 @@ export async function disconnectKafka() {
   await consumer.disconnect();
   console.log('🛑 Kafka disconnected');
 }
-
-
 
 export { kafka, producer, consumer };
