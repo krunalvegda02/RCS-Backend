@@ -68,24 +68,18 @@ export async function connectProducer() {
 }
 
 export async function sendWebhookToKafka(webhookData) {
-  try {
-    await connectProducer();
-    
-    // 🔥 FIX: Await the send to catch errors properly
-    await producer.send({
-      topic: 'rcs-webhooks',
-      messages: [{
-        key: webhookData.messageId || Date.now().toString(),
-        value: JSON.stringify(webhookData),
-        timestamp: Date.now()
-      }]
-    });
-    
-    return { success: true };
-  } catch (error) {
-    console.error('[Kafka] Producer error:', error.message);
-    return { success: false };
-  }
+  await connectProducer();
+  
+  await producer.send({
+    topic: 'rcs-webhooks',
+    messages: [{
+      key: webhookData.messageId || Date.now().toString(),
+      value: JSON.stringify(webhookData),
+      timestamp: Date.now()
+    }]
+  });
+  
+  return { success: true };
 }
 
 // 🔥 FIX #6: Batch message buffer for producer
@@ -159,13 +153,36 @@ async function flushStatsBuffer() {
 }
 
 export async function connectConsumer() {
-  await consumer.connect();
-  await consumer.subscribe({ 
-    topic: 'rcs-webhooks', 
-    fromBeginning: true 
-  });
-  console.log('✅ Kafka Consumer connected and subscribed');
-  return consumer;
+  try {
+    console.log('[Consumer] Attempting to connect to Kafka...');
+    await consumer.connect();
+    console.log('[Consumer] Connected successfully');
+    
+    console.log('[Consumer] Subscribing to rcs-webhooks topic...');
+    await consumer.subscribe({ 
+      topic: 'rcs-webhooks', 
+      fromBeginning: true 
+    });
+    console.log('✅ Kafka Consumer connected and subscribed');
+    return consumer;
+  } catch (error) {
+    console.error('❌ Consumer connection failed:');
+    console.error('Error type:', error.constructor.name);
+    console.error('Error message:', error.message);
+    console.error('Error code:', error.code);
+    console.error('Kafka broker:', process.env.KAFKA_BROKER || 'localhost:9092');
+    
+    if (error.message.includes('ECONNREFUSED')) {
+      console.error('🔴 Kafka broker is not running on localhost:9092');
+      console.error('💡 Start Kafka with: docker-compose -f docker-compose.kafka.prod.yml up -d');
+    } else if (error.message.includes('timeout')) {
+      console.error('🔴 Connection timeout - Kafka may be starting up');
+    } else if (error.message.includes('topic')) {
+      console.error('🔴 Topic rcs-webhooks may not exist');
+    }
+    
+    throw error;
+  }
 }
 
 export async function sendBatchEntriesToKafka(batchData) {

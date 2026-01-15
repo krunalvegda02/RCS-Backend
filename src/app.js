@@ -75,14 +75,15 @@ app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
   res.status(200).json({ success: true });
 
   webhookCount++;
-  console.log(`[Webhook] #${webhookCount}`);
-  console.log(`[Webhook] #${req.body.entity}`);
-
+  const entityType = req.body?.entityType || req.body?.entity?.eventType || 'unknown';
+  const messageId = req.body?.entity?.messageId || req.body?.messageId || 'no-id';
+  
+  console.log(`[Webhook] #${webhookCount} - ${entityType} - ${messageId}`);
 
   sendWebhookToKafka({
     data: req.body,
     timestamp: Date.now(),
-    messageId: req.body?.entity?.messageId || req.body?.messageId
+    messageId
   });
 });
 

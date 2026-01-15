@@ -6,10 +6,15 @@ process.env.WORKER_MODE = 'true';
 
 async function startWebhookConsumer() {
   try {
+    console.log('[WebhookConsumer] Starting up...');
+    
     await connectDB();
     console.log('✅ Webhook Consumer connected to MongoDB');
     
+    console.log('[WebhookConsumer] Connecting to Kafka...');
     const consumer = await connectConsumer();
+    console.log('[WebhookConsumer] Kafka connection successful');
+    
     const MessageLog = (await import('../models/messageLog.model.js')).default;
     const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
     
@@ -148,11 +153,17 @@ async function startWebhookConsumer() {
         
         if (logsToInsert.length > 0) {
           try {
-            await MessageLog.insertMany(logsToInsert, { ordered: false });
+            const insertedLogs = await MessageLog.insertMany(logsToInsert, { ordered: false });
             dbSuccess = true;
             totalProcessed += logsToInsert.length;
             const duration = Date.now() - startTime;
             console.log(`[WebhookConsumer] ✅ ${logsToInsert.length} logs processed in ${duration}ms | Total: ${totalProcessed}`);
+            
+            // Send log IDs to stats processing topic
+            const { sendStatsToKafka } = await import('../services/kafka.service.js');
+            for (const log of insertedLogs) {
+              await sendStatsToKafka({ logId: log._id.toString() });
+            }
           } catch (bulkError) {
             if (bulkError.message.includes('E11000')) {
               dbSuccess = true; // Duplicates are OK
