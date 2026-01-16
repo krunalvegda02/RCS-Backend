@@ -165,7 +165,6 @@ campaignSchema.methods.completeCampaign = async function() {
   session.startTransaction();
   
   try {
-    // Get user
     const User = mongoose.model('User');
     const user = await User.findById(this.userId).session(session);
     
@@ -173,7 +172,6 @@ campaignSchema.methods.completeCampaign = async function() {
       throw new Error('User not found');
     }
 
-    // Get actual delivery stats from ContactCampaignMessage
     if (!ContactCampaignMessage) {
       ContactCampaignMessage = mongoose.model('ContactCampaignMessage');
     }
@@ -200,24 +198,22 @@ campaignSchema.methods.completeCampaign = async function() {
             $sum: {
               $cond: [{ $in: ['$campaigns.status', ['pending', 'queued', 'sent']] }, 1, 0]
             }
-          },
-          totalCost: { $sum: { $ifNull: ['$campaigns.cost', 0] } }
+          }
         }
       }
     ]).session(session);
 
-    const deliveryStats = stats[0] || { total: 0, delivered: 0, failed: 0, expired: 0, totalCost: 0 };
+    const deliveryStats = stats[0] || { total: 0, delivered: 0, failed: 0, expired: 0 };
     
-    // Calculate costs
-    // - Charge only for delivered messages
-    // - Refund failed + expired messages
-    const actualCost = deliveryStats.delivered * 1; // ₹1 per delivered
-    const blockedAmount = this.blockedAmount || 0;
+    // Calculate actual cost (only delivered messages)
+    const actualCost = deliveryStats.delivered * 1;
+    const blockedAmount = this.blockedAmount || this.estimatedCost || deliveryStats.total;
     const refundAmount = Math.max(0, blockedAmount - actualCost);
 
     // Update campaign
     this.actualCost = actualCost;
     this.refundedAmount = refundAmount;
+    this.blockedAmount = blockedAmount;
     this.status = 'completed';
     this.completedAt = new Date();
     this.stats = {
@@ -231,21 +227,23 @@ campaignSchema.methods.completeCampaign = async function() {
     };
     await this.save({ session });
 
-    // Settle wallet atomically
+    // Wallet settlement:
+    // 1. Deduct actual cost from balance
+    // 2. Unblock the blocked amount
     const walletUpdate = {
       $inc: {
-        'wallet.balance': refundAmount, // Add refund back to balance
-        'wallet.blockedBalance': -blockedAmount // Remove from blocked
+        'wallet.balance': -actualCost, // Deduct actual cost
+        'wallet.blockedBalance': -blockedAmount // Unblock
       },
       $set: {
         'wallet.lastUpdated': new Date()
       },
       $push: {
         'wallet.transactions': {
-          type: 'credit',
-          amount: refundAmount,
-          balanceAfter: user.wallet.balance + refundAmount,
-          description: `Campaign "${this.name}" completed. Charged ₹${actualCost} for ${deliveryStats.delivered} delivered. Refunded ₹${refundAmount} for ${deliveryStats.failed} failed + ${deliveryStats.expired} expired.`,
+          type: 'debit',
+          amount: actualCost,
+          balanceAfter: user.wallet.balance - actualCost,
+          description: `Campaign "${this.name}" completed. Charged ₹${actualCost} for ${deliveryStats.delivered} delivered. ${deliveryStats.failed} failed + ${deliveryStats.expired} expired not charged.`,
           createdAt: new Date()
         }
       }
