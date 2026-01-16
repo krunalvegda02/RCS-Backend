@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
+import User from '../src/models/user.model.js';
 import Campaign from '../src/models/campaign.model.js';
 import ContactCampaignMessage from '../src/models/contact_campaign_message.model.js';
 
@@ -9,6 +10,11 @@ async function autoCleanupCampaigns() {
   try {
     await mongoose.connect(process.env.MONGODB_URI);
     console.log('[AutoCleanup] Starting campaign cleanup...');
+    
+    // Ensure models are loaded
+    mongoose.model('User', User.schema);
+    mongoose.model('Campaign', Campaign.schema);
+    mongoose.model('ContactCampaignMessage', ContactCampaignMessage.schema);
     
     // Find campaigns that should be completed
     const stuckCampaigns = await Campaign.find({
