@@ -147,10 +147,8 @@ class CampaignStatsService {
       if (totalMessages >= totalRecipients && pendingMessages === 0 && processedMessages >= totalRecipients) {
         console.log(`[Stats] Campaign ${campaignId} ready for completion - Total: ${totalRecipients}, Processed: ${processedMessages}`);
         
-        // Update campaign status to completed
-        campaign.status = 'completed';
-        campaign.completedAt = new Date();
-        await campaign.save();
+        // Call completeCampaign method to handle wallet adjustment
+        await campaign.completeCampaign();
         
         // Emit socket event for real-time update
         if (global.io) {
@@ -169,7 +167,7 @@ class CampaignStatsService {
           });
         }
         
-        console.log(`[Stats] ✅ Campaign ${campaignId} marked as completed`);
+        console.log(`[Stats] ✅ Campaign ${campaignId} marked as completed with wallet adjustment`);
       }
     } catch (error) {
       console.error(`Error checking campaign completion for ${campaignId}:`, error);
