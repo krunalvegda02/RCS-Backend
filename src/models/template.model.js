@@ -398,32 +398,41 @@ templateSchema.methods.generatePayload = function () {
     throw new Error('Template content is required');
   }
 
-  // --- helpers ---
+  // =========================
+  // Helpers (Jio-safe)
+  // =========================
   const toBase64 = (val) =>
     Buffer.from(String(val), 'utf8').toString('base64');
 
   const sanitizeLabel = (label) =>
-    String(label).trim().slice(0, 25); // Jio limit: 25 chars
+    String(label).trim().slice(0, 25); // Jio max 25 chars
 
   const ensureHttps = (url) =>
     url.startsWith('http') ? url : `https://${url}`;
 
+  // =========================
+  // Suggestion Builder
+  // =========================
   const buildSuggestion = (action = {}) => {
     const label = sanitizeLabel(action.label);
     const value = action.uri || action.value;
 
     if (!label || !value) return null;
 
+    // SuggestedAction → openUrl
     if (action.actionType === 'openUri') {
       return {
         action: {
           plainText: label,
           postback: { data: toBase64(value) },
-          openUrl: { url: ensureHttps(value) },
+          openUrl: {
+            url: ensureHttps(value),
+          },
         },
       };
     }
 
+    // SuggestedAction → dialerAction
     if (action.actionType === 'dialPhone') {
       return {
         action: {
@@ -436,10 +445,10 @@ templateSchema.methods.generatePayload = function () {
       };
     }
 
-    // default: reply
+    // SuggestedReply (⚠️ plaintext, NOT plainText)
     return {
       reply: {
-        plainText: label,
+        plaintext: label,
         postback: { data: toBase64(value) },
       },
     };
@@ -447,8 +456,11 @@ templateSchema.methods.generatePayload = function () {
 
   let jioContent;
 
-  // --- template handling ---
+  // =========================
+  // Template Types
+  // =========================
   switch (templateType) {
+    // -------- Rich Card --------
     case 'richCard': {
       if (!content.title || !content.imageUrl) {
         throw new Error('Rich card requires title and imageUrl');
@@ -457,11 +469,15 @@ templateSchema.methods.generatePayload = function () {
       const cardContent = {
         cardTitle: content.title.trim(),
         ...(content.description || content.subtitle
-          ? { cardDescription: (content.description || content.subtitle).trim() }
+          ? {
+              cardDescription: (content.description || content.subtitle).trim(),
+            }
           : {}),
         cardMedia: {
           mediaHeight: 'TALL',
-          contentInfo: { fileUrl: ensureHttps(content.imageUrl) },
+          contentInfo: {
+            fileUrl: ensureHttps(content.imageUrl),
+          },
         },
       };
 
@@ -483,6 +499,7 @@ templateSchema.methods.generatePayload = function () {
       break;
     }
 
+    // -------- Carousel --------
     case 'carousel': {
       if (!Array.isArray(content.cards) || content.cards.length === 0) {
         throw new Error('Carousel requires at least one card');
@@ -495,11 +512,15 @@ templateSchema.methods.generatePayload = function () {
           const c = {
             cardTitle: card.title.trim(),
             ...(card.description || card.subtitle
-              ? { cardDescription: (card.description || card.subtitle).trim() }
+              ? {
+                  cardDescription: (card.description || card.subtitle).trim(),
+                }
               : {}),
             cardMedia: {
               mediaHeight: 'MEDIUM',
-              contentInfo: { fileUrl: ensureHttps(card.imageUrl) },
+              contentInfo: {
+                fileUrl: ensureHttps(card.imageUrl),
+              },
             },
           };
 
@@ -522,7 +543,7 @@ templateSchema.methods.generatePayload = function () {
       jioContent = {
         richCardDetails: {
           carousel: {
-            cardWidth: 'MEDIUM_WIDTH',
+            cardWidth: 'MEDIUM_WIDTH', // ✅ Correct per Jio PDF
             contents: cards,
           },
         },
@@ -530,9 +551,10 @@ templateSchema.methods.generatePayload = function () {
       break;
     }
 
+    // -------- Text with Action --------
     case 'textWithAction': {
       if (!content.text) {
-        throw new Error('Text message requires text');
+        throw new Error('TextWithAction requires text');
       }
 
       const suggestions = (content.buttons || [])
@@ -547,9 +569,10 @@ templateSchema.methods.generatePayload = function () {
       break;
     }
 
+    // -------- Plain Text --------
     case 'plainText': {
       if (!content.body) {
-        throw new Error('Plain text requires body');
+        throw new Error('PlainText requires body');
       }
 
       jioContent = {
@@ -562,8 +585,14 @@ templateSchema.methods.generatePayload = function () {
       throw new Error(`Unsupported template type: ${templateType}`);
   }
 
-  return { content: jioContent };
+  // =========================
+  // Final payload
+  // =========================
+  return {
+    content: jioContent,
+  };
 };
+
 
 
 

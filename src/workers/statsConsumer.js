@@ -32,6 +32,40 @@ async function startStatsConsumer() {
     let totalProcessed = 0;
     const campaignsToCheck = new Set(); // Track campaigns that need completion check
 
+    // ========================================================================================
+    // CRITICAL: Proactive Polling for Stuck Campaigns
+    // This runs independently of Kafka messages to catch campaigns updated by external scripts
+    // ========================================================================================
+    setInterval(async () => {
+      try {
+        console.log('[StatsConsumer] 🔍 Proactive Polling: Checking for stuck campaigns...');
+
+        // Find campaigns that are 'completed' but still have blockedAmount > 0
+        const stuckCampaigns = await Campaign.find({
+          status: 'completed',
+          blockedAmount: { $gt: 0 }
+        });
+
+        if (stuckCampaigns.length > 0) {
+          console.log(`[StatsConsumer] ⚠️ Found ${stuckCampaigns.length} stuck campaigns. Fixing...`);
+
+          for (const campaign of stuckCampaigns) {
+            try {
+              console.log(`[StatsConsumer] 🛠 Fixing stuck campaign ${campaign._id} (Blocked: ₹${campaign.blockedAmount})`);
+              await campaign.completeCampaign();
+              console.log(`[StatsConsumer] ✅ Fixed campaign ${campaign._id}`);
+            } catch (err) {
+              console.error(`[StatsConsumer] ❌ Failed to fix campaign ${campaign._id}:`, err.message);
+            }
+          }
+        } else {
+          console.log('[StatsConsumer] ✅ Polling: No stuck campaigns found');
+        }
+      } catch (error) {
+        console.error('[StatsConsumer] ❌ Polling Error:', error.message);
+      }
+    }, 60000); // Check every 60 seconds
+
     await consumer.run({
       partitionsConsumedConcurrently: 10,
       eachBatchAutoResolve: false,
