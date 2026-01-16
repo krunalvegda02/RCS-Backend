@@ -8,13 +8,14 @@ async function expirePendingMessages() {
 
     const ContactCampaignMessage = (await import('../src/models/contact_campaign_message.model.js')).default;
 
-    // Find messages that are pending OR sent for more than 5 minutes without response
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+// Find messages that are pending OR sent for more than 48 hours without response
+const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+
 
     // 1. Identify affected campaigns FIRST (before updating)
     const affectedCampaignIds = await ContactCampaignMessage.distinct('campaigns.campaignId', {
       'campaigns.status': { $in: ['pending', 'sent', 'draft'] },
-      'createdAt': { $lt: fiveMinutesAgo }
+      'createdAt': { $lt: fortyEightHoursAgo }
     });
 
     console.log(`found ${affectedCampaignIds.length} campaigns with stale messages`);
@@ -23,7 +24,7 @@ async function expirePendingMessages() {
     const result = await ContactCampaignMessage.updateMany(
       {
         'campaigns.status': { $in: ['pending', 'sent', 'draft'] },
-        'createdAt': { $lt: fiveMinutesAgo }
+        'createdAt': { $lt: fortyEightHoursAgo }
       },
       {
         $set: {
