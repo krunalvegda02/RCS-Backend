@@ -75,7 +75,12 @@ app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
 
   webhookCount++;
   const entityType = req.body?.entityType || req.body?.entity?.eventType || 'unknown';
-  const messageId = req.body?.entity?.messageId || req.body?.messageId || 'no-id';
+  
+  // For USER_MESSAGE: use orgMsgId (original message ID)
+  // For STATUS_EVENT: use entity.messageId (the message being tracked)
+  const messageId = entityType === 'USER_MESSAGE' 
+    ? req.body?.metaData?.orgMsgId || 'no-id'
+    : req.body?.entity?.messageId || req.body?.messageId || 'no-id';
 
   console.log(`\n========== WEBHOOK #${webhookCount} ==========`);
   console.log('Entity Type:', entityType);
