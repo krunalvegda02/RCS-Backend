@@ -262,7 +262,7 @@ campaignSchema.methods.syncStats = async function () {
 
 // Find available bot (bot1-bot50)
 campaignSchema.statics.findAvailableBot = async function () {
-  for (let i = 1; i <= 50; i++) {
+  for (let i = 1; i <= 2; i++) {
     const botId = `bot${i}`;
     const runningCampaign = await this.findOne({
       botId,
