@@ -497,7 +497,7 @@ userSchema.methods.blockBalanceForCampaign = async function (amount, campaignId)
           'wallet.lastUpdated': new Date()
         }
       },
-      { new: true, session }
+      { new: true, session, runValidators: true }
     );
 
     await session.commitTransaction();
@@ -537,7 +537,7 @@ userSchema.methods.unblockBalanceForCampaign = async function (blockedAmount, ac
           'wallet.lastUpdated': new Date()
         }
       },
-      { new: true, session }
+      { new: true, session, runValidators: true }
     );
 
     await session.commitTransaction();
@@ -554,6 +554,51 @@ userSchema.methods.unblockBalanceForCampaign = async function (blockedAmount, ac
       newBlockedBalance: this.wallet.blockedBalance,
       refundAmount
     };
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+};
+
+// Unblock wallet balance (simple)
+userSchema.methods.unblockBalance = async function (amount) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    // Validate amount
+    if (amount <= 0) {
+      throw new Error('Amount to unblock must be positive');
+    }
+
+    // Update wallet atomically
+    const result = await this.constructor.findByIdAndUpdate(
+      this._id,
+      {
+        $inc: {
+          'wallet.blockedBalance': -amount
+        },
+        $set: {
+          'wallet.lastUpdated': new Date()
+        }
+      },
+      { new: true, session, runValidators: true } // runValidators ensures blockedBalance doesn't go below 0
+    );
+
+    // If result is null (user not found) or validation failed (would go negative)
+    // Actually, findByIdAndUpdate with runValidators will throw if schema min:0 is violated
+
+    await session.commitTransaction();
+
+    // Update current instance
+    this.wallet.blockedBalance = result.wallet.blockedBalance;
+    this.wallet.lastUpdated = result.wallet.lastUpdated;
+
+    console.log(`✅ Unblocked ₹${amount}. New blocked balance: ₹${this.wallet.blockedBalance}`);
+
+    return this.wallet.blockedBalance;
   } catch (error) {
     await session.abortTransaction();
     throw error;

@@ -26,14 +26,14 @@ app.use(
 
 // High-performance middleware for large payloads
 app.use(express.json({
-  limit: '100mb',
-  parameterLimit: 500000,
+  limit: '10000mb',
+  parameterLimit: 5000000,
   extended: true
 }));
 app.use(express.urlencoded({
-  limit: '100mb',
+  limit: '10000mb',
   extended: true,
-  parameterLimit: 500000
+  parameterLimit: 5000000
 }));
 // Increase timeout for large requests
 app.use((req, res, next) => {
@@ -75,7 +75,7 @@ app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
 
   webhookCount++;
   const entityType = req.body?.entityType || req.body?.entity?.eventType || 'unknown';
-  
+
   // Determine message ID based on webhook type:
   // USER_MESSAGE: use orgMsgId (original message user is responding to)
   // STATUS_EVENT & USER_EVENT: use entity.messageId (message being tracked)
@@ -97,7 +97,7 @@ app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
     timestamp: Date.now(),
     messageId
   };
-  
+
   console.log('📤 Sending to Kafka with messageId:', messageId);
   sendWebhookToKafka(kafkaPayload);
 });

@@ -24,7 +24,7 @@ const storage = multer.diskStorage({
 export const uploadImage = multer({
   storage,
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB
+    fileSize: 10000 * 1024 * 1024, // 10GB
   },
   fileFilter: (req, file, cb) => {
     const allowedTypes = /jpeg|jpg|png|webp|gif/;
@@ -41,12 +41,12 @@ export const uploadImage = multer({
 export const uploadChatMedia = multer({
   storage,
   limits: {
-    fileSize: 50 * 1024 * 1024, // 50MB for videos
+    fileSize: 10000 * 1024 * 1024, // 10GB
   },
   fileFilter: (req, file, cb) => {
     const allowedTypes = /jpeg|jpg|png|webp|gif|mp4|mov|avi|mkv|pdf|doc|docx|txt|zip|rar|webm|mp3|wav|ogg|m4a/;
     const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-    
+
     if (extname) {
       return cb(null, true);
     }
