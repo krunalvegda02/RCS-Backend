@@ -52,6 +52,8 @@ async function startWebhookConsumer() {
                             data?.entity?.rcsMessageId ||
                             data?.rcsMessageId;
             
+            console.log(`[WebhookConsumer] 🔍 Parsed messageId: ${messageId}, entityType: ${data?.entityType}`);
+            
             parsedData.push({
               offset: message.offset,
               messageId,
@@ -96,6 +98,8 @@ async function startWebhookConsumer() {
         
         // Query DB for uncached messageIds
         if (uncachedIds.length > 0) {
+          console.log(`[WebhookConsumer] 🔍 Querying DB for ${uncachedIds.length} uncached IDs:`, uncachedIds);
+          
           const messageDocs = await ContactCampaignMessage.find({
             $or: [
               { 'campaigns.messageId': { $in: uncachedIds } },
@@ -103,6 +107,8 @@ async function startWebhookConsumer() {
               { 'campaigns.rcsMessageId': { $in: uncachedIds } }
             ]
           }, { userId: 1, campaigns: 1 }).lean();
+          
+          console.log(`[WebhookConsumer] 🔍 Found ${messageDocs.length} matching documents`);
           
           await heartbeat();
           
@@ -128,8 +134,12 @@ async function startWebhookConsumer() {
         // Build logs array
         const logsToInsert = [];
         
+        console.log(`[WebhookConsumer] 🔍 Building logs for ${parsedData.length} parsed items`);
+        
         for (const parsed of parsedData) {
           const msgInfo = messageMap[parsed.messageId];
+          console.log(`[WebhookConsumer] 🔍 MessageId: ${parsed.messageId}, Found info:`, msgInfo ? 'YES' : 'NO');
+          
           if (msgInfo?.userId) {
             logsToInsert.push({
               messageId: parsed.messageId,
