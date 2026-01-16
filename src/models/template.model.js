@@ -391,4 +391,5 @@ templateSchema.methods.generatePayload = function () {
   return { content: jioContent };
 };
 
+
 export default mongoose.model('Template', templateSchema);
