@@ -85,9 +85,9 @@ export const createCampaignEntries = async (req, res) => {
     const { campaignId, templateId, phoneNumbers, createSubCampaigns = false, subCampaignSize = 200 } = req.body;
     const userId = req.user?._id;
 
-    console.log('[Campaign] createCampaignEntries request:', { 
-      campaignId, 
-      templateId, 
+    console.log('[Campaign] createCampaignEntries request:', {
+      campaignId,
+      templateId,
       phoneNumbersCount: phoneNumbers?.length,
       userId,
       hasUser: !!req.user,
@@ -178,7 +178,7 @@ export const createCampaignEntries = async (req, res) => {
     );
 
     // Set campaign status to pending (ready for Python bot)
-    await Campaign.findByIdAndUpdate(campaignId, { 
+    await Campaign.findByIdAndUpdate(campaignId, {
       status: "pending",
       stats: {
         total: phoneNumbers.length,
@@ -196,9 +196,9 @@ export const createCampaignEntries = async (req, res) => {
     res.json({
       success: true,
       message: "Campaign entries created and ready for processing",
-      data: { 
-        total: phoneNumbers.length, 
-        inserted: totalInserted, 
+      data: {
+        total: phoneNumbers.length,
+        inserted: totalInserted,
         modified: totalModified,
         status: "pending"
       },
@@ -512,7 +512,7 @@ export const create = async (req, res) => {
 
     // Block wallet balance for this campaign
     if (autoStart && actualCost > 0) {
-      await req.user.blockBalance(actualCost, campaign._id);
+      await req.user.blockBalanceForCampaign(actualCost, campaign._id);
       campaign.blockedAmount = actualCost;
       await campaign.save();
       console.log(`[Campaign] Blocked ₹${actualCost} from user wallet`);
@@ -576,13 +576,13 @@ export const getAll = async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
 
     // Only show master campaigns or standalone campaigns (not sub-campaigns)
-    let query = { 
-      userId, 
+    let query = {
+      userId,
       $or: [
-        { isMaster: true }, 
-        { isMaster: { $exists: false } }, 
+        { isMaster: true },
+        { isMaster: { $exists: false } },
         { masterCampaignId: { $exists: false } }
-      ] 
+      ]
     };
     if (status) query.status = status;
 
@@ -807,13 +807,13 @@ export const getUserCampaignReports = async (req, res) => {
     const { search, status, type, campaign, startDate, endDate, sort = 'newest' } = req.query;
 
     // Build query - only show master campaigns or standalone campaigns (hide sub-campaigns)
-    let query = { 
-      userId, 
+    let query = {
+      userId,
       $or: [
-        { isMaster: true }, 
-        { isMaster: { $exists: false } }, 
+        { isMaster: true },
+        { isMaster: { $exists: false } },
         { masterCampaignId: { $exists: false } }
-      ] 
+      ]
     };
 
     // Status filter
@@ -890,7 +890,7 @@ export const getUserCampaignReports = async (req, res) => {
       }
       return Promise.resolve();
     }));
-    
+
     // Convert to plain objects after syncing
     const campaignsLean = campaigns.map(c => c.toObject ? c.toObject() : c);
 
@@ -917,7 +917,7 @@ export const getUserCampaignReports = async (req, res) => {
     // Debug: Check if there are any messages for this user
     const totalMessages = await ContactCampaignMessage.countDocuments({ userId: userObjectId });
     console.log(`[Campaign] Total messages for user: ${totalMessages}`);
-    
+
     // Debug: Check sample message
     const sampleMessage = await ContactCampaignMessage.findOne({ userId: userObjectId }).lean();
     if (sampleMessage) {
@@ -948,7 +948,7 @@ export const getUserCampaignReports = async (req, res) => {
     // Create a map for quick lookup and aggregate sub-campaign stats to master
     const interactionMap = {};
     const subCampaignMap = {}; // Map sub-campaign stats to master
-    
+
     // First pass: collect all stats
     interactionStats.forEach(stat => {
       interactionMap[stat._id.toString()] = {
@@ -962,7 +962,7 @@ export const getUserCampaignReports = async (req, res) => {
         failed: stat.totalFailed || 0
       };
     });
-    
+
     // Second pass: aggregate sub-campaign stats to master campaigns
     for (const campaign of campaignsLean) {
       if (campaign.isMaster) {
@@ -977,7 +977,7 @@ export const getUserCampaignReports = async (req, res) => {
           replied: 0,
           failed: 0
         };
-        
+
         subCampaigns.forEach(sub => {
           const subStats = interactionMap[sub._id.toString()];
           if (subStats) {
@@ -991,16 +991,16 @@ export const getUserCampaignReports = async (req, res) => {
             masterStats.failed += subStats.failed;
           }
         });
-        
+
         interactionMap[campaign._id.toString()] = masterStats;
       }
     }
 
     // Transform campaigns to match frontend expectations
     const reports = campaignsLean.map(campaign => {
-      const stats = interactionMap[campaign._id.toString()] || { 
+      const stats = interactionMap[campaign._id.toString()] || {
         totalRecipients: 0,
-        interactions: 0, 
+        interactions: 0,
         replies: 0,
         sent: 0,
         delivered: 0,
@@ -1035,7 +1035,7 @@ export const getUserCampaignReports = async (req, res) => {
 
     // Calculate aggregate stats for all campaigns (not just current page) - exclude archived
     const userObjectIdForStats = typeof userId === 'string' ? new mongoose.Types.ObjectId(userId) : userId;
-    
+
     const sentStats = await ContactCampaignMessage.aggregate([
       { $match: { userId: userObjectIdForStats } },
       { $unwind: '$campaigns' },
@@ -1048,7 +1048,7 @@ export const getUserCampaignReports = async (req, res) => {
         }
       }
     ]);
-    
+
     const aggregateStats = sentStats[0] || { totalSent: 0, totalDelivered: 0, totalFailed: 0 };
 
     res.json({
@@ -1087,12 +1087,12 @@ export const getAllForAdmin = async (req, res) => {
     }
 
     // Only show master campaigns or standalone campaigns (hide sub-campaigns)
-    let query = { 
+    let query = {
       $or: [
-        { isMaster: true }, 
-        { isMaster: { $exists: false } }, 
+        { isMaster: true },
+        { isMaster: { $exists: false } },
         { masterCampaignId: { $exists: false } }
-      ] 
+      ]
     };
     if (status) query.status = status;
 
@@ -1173,7 +1173,7 @@ export const getAllForAdmin = async (req, res) => {
     const campaignIds = paginatedCampaigns.map(c => c._id);
 
     // Get ContactCampaignMessage model and aggregate stats
-    
+
     // Aggregate stats for paginated campaigns
     const campaignStatsAgg = await ContactCampaignMessage.aggregate([
       { $match: { 'campaigns.campaignId': { $in: campaignIds } } },
@@ -1209,7 +1209,7 @@ export const getAllForAdmin = async (req, res) => {
         }
       }
     ]);
-    
+
     const universalStats = universalStatsResult[0] || { totalSent: 0, totalDelivered: 0, totalFailed: 0 };
     universalStats.totalCampaigns = total;
 
@@ -1385,11 +1385,11 @@ export const getAllCampaignMessagesForExport = async (req, res) => {
 
     // Optimized aggregation with index hints and limited projection
     const messages = await ContactCampaignMessage.aggregate([
-      { 
-        $match: { 
-          userId: campaign.userId, 
-          'campaigns.campaignId': { $in: campaignIds } 
-        } 
+      {
+        $match: {
+          userId: campaign.userId,
+          'campaigns.campaignId': { $in: campaignIds }
+        }
       },
       { $unwind: '$campaigns' },
       { $match: { 'campaigns.campaignId': { $in: campaignIds } } },
@@ -1442,14 +1442,14 @@ export const getAllCampaignsForExport = async (req, res) => {
     }
 
     // Only show master campaigns or standalone campaigns (hide sub-campaigns)
-    let query = { 
+    let query = {
       $or: [
-        { isMaster: true }, 
-        { isMaster: { $exists: false } }, 
+        { isMaster: true },
+        { isMaster: { $exists: false } },
         { masterCampaignId: { $exists: false } }
-      ] 
+      ]
     };
-    
+
     // If not admin or userId is provided, filter by userId
     if (!isAdmin) {
       query.userId = requestUserId;
@@ -1457,7 +1457,7 @@ export const getAllCampaignsForExport = async (req, res) => {
       query.userId = userId;
     }
     // If admin and no userId or userId is 'all', don't filter by userId (get all campaigns)
-    
+
     if (status) query.status = status;
 
     // Date range filter
@@ -1918,21 +1918,21 @@ export const sendCampaign = async (req, res) => {
   try {
     const { campaignId } = req.body;
     const userId = req.user._id;
-    
+
     console.log(`[Campaign] Marking campaign as ready: ${campaignId}`);
-    
+
     const campaign = await Campaign.findOne({ _id: campaignId, userId });
     if (!campaign) {
       return res.status(404).json({ success: false, message: 'Campaign not found' });
     }
-    
+
     // Update campaign status to running (ready for Python bot)
     campaign.status = 'running';
     campaign.startedAt = new Date();
     await campaign.save();
-    
+
     console.log(`[Campaign] Campaign ${campaignId} marked as running for Python bot`);
-    
+
     res.json({
       success: true,
       message: 'Campaign marked as ready for Python bot processing'
@@ -2025,7 +2025,7 @@ export const completeCampaign = async (req, res) => {
     const userId = req.user._id;
 
     const campaign = await Campaign.findOne({ _id: id, userId });
-    
+
     if (!campaign) {
       return res.status(404).json({
         success: false,
