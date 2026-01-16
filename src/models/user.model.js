@@ -263,7 +263,7 @@ userSchema.pre('save', async function (next) {
 userSchema.pre('save', function (next) {
   if (this.isModified('jioConfig')) {
     this.jioConfig.isConfigured = !!(
-      this.jioConfig.clientId && 
+      this.jioConfig.clientId &&
       this.jioConfig.clientSecret
     );
   }
@@ -276,32 +276,32 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
     console.log('[comparePassword] No password stored for user');
     return false;
   }
-  
+
   // Try AES decryption first (new method)
   console.log('[comparePassword] Attempting AES decryption');
   console.log('[comparePassword] ENCRYPTION_KEY:', ENCRYPTION_KEY);
   const decrypted = decryptPassword(this.password);
   console.log('[comparePassword] Decrypted:', decrypted ? 'SUCCESS' : 'FAILED');
-  
+
   if (decrypted) {
     const match = decrypted === candidatePassword;
     console.log('[comparePassword] Password match:', match, 'Expected:', candidatePassword, 'Got:', decrypted);
     return match;
   }
-  
+
   // Fallback to bcrypt (old method)
-//   console.log('[comparePassword] AES failed, trying bcrypt fallback');
+  //   console.log('[comparePassword] AES failed, trying bcrypt fallback');
   try {
     const bcryptMatch = await bcrypt.compare(candidatePassword, this.password);
     // console.log('[comparePassword] Bcrypt match:', bcryptMatch);
-    
+
     // If bcrypt works, re-encrypt with AES for future logins
     if (bcryptMatch) {
-    //   console.log('[comparePassword] Migrating password from bcrypt to AES');
+      //   console.log('[comparePassword] Migrating password from bcrypt to AES');
       this.password = candidatePassword; // Will be encrypted by pre-save hook
       await this.save();
     }
-    
+
     return bcryptMatch;
   } catch (bcryptError) {
     console.log('[comparePassword] Bcrypt also failed:', bcryptError.message);
@@ -343,7 +343,7 @@ userSchema.methods.resetLoginAttempts = async function () {
 userSchema.methods.updateWallet = async function (amount, operation = 'add', description = '', processedBy = null) {
   const currentBalance = this.wallet.balance || 0;
   let newBalance;
-  
+
   if (operation === 'add') {
     newBalance = currentBalance + Math.abs(amount);
   } else if (operation === 'subtract') {
@@ -352,7 +352,7 @@ userSchema.methods.updateWallet = async function (amount, operation = 'add', des
     }
     newBalance = currentBalance - Math.abs(amount);
   }
-  
+
   // Add transaction record
   const transaction = {
     type: operation === 'add' ? 'credit' : 'debit',
@@ -362,11 +362,11 @@ userSchema.methods.updateWallet = async function (amount, operation = 'add', des
     processedBy: processedBy,
     createdAt: new Date(),
   };
-  
+
   this.wallet.transactions.push(transaction);
   this.wallet.balance = newBalance;
   this.wallet.lastUpdated = new Date();
-  
+
   await this.save();
   return this.wallet.balance;
 };
@@ -380,7 +380,7 @@ userSchema.methods.addTransactionRecord = async function (type, amount, descript
     processedBy: processedBy,
     createdAt: new Date(),
   };
-  
+
   this.wallet.transactions.push(transaction);
   await this.save();
   return transaction;
@@ -389,29 +389,29 @@ userSchema.methods.addTransactionRecord = async function (type, amount, descript
 userSchema.methods.recalculateStatsOnCampaignCompletion = async function (campaignId) {
   const Campaign = mongoose.model('Campaign');
   // const Message = mongoose.model('Message');
-  
+
   // Get campaign data
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) return;
-  
+
   // Message stats disabled - Message model removed
   const messageStats = [{ totalSent: 0, delivered: 0, failed: 0, read: 0, replied: 0 }];
-  
+
   const stats = messageStats[0] || { totalSent: 0, delivered: 0, failed: 0, read: 0, replied: 0 };
-  
+
   // Update user stats with accurate data
   this.stats.totalMessagesSent += stats.totalSent;
   this.stats.totalMessagesDelivered = (this.stats.totalMessagesDelivered || 0) + stats.delivered;
   this.stats.totalSpent += campaign.actualCost || 0;
   this.stats.lastCampaignAt = new Date();
-  
+
   // Recalculate overall success rate
   if (this.stats.totalMessagesSent > 0) {
     this.stats.successRate = Math.round((this.stats.totalMessagesDelivered / this.stats.totalMessagesSent) * 100);
   }
-  
+
   await this.save();
-  
+
   return {
     campaignStats: stats,
     userStats: this.stats
@@ -423,43 +423,43 @@ userSchema.methods.updateMessageStats = async function (deliveredCount = 0, fail
   if (deliveredCount > 0) {
     this.stats.totalMessagesDelivered = (this.stats.totalMessagesDelivered || 0) + deliveredCount;
   }
-  
+
   // Recalculate success rate
   if (this.stats.totalMessagesSent > 0) {
     this.stats.successRate = Math.round((this.stats.totalMessagesDelivered / this.stats.totalMessagesSent) * 100);
   }
-  
+
   await this.save();
 };
 
 userSchema.methods.updateStats = async function (campaignData) {
   // Increment campaign count
   this.stats.totalCampaigns += 1;
-  
+
   // Update message counts
   const messagesSent = campaignData.messagesSent || campaignData.totalMessages || 0;
   const messagesDelivered = campaignData.messagesDelivered || campaignData.successCount || 0;
   const messagesFailed = campaignData.messagesFailed || campaignData.failedCount || 0;
-  
+
   this.stats.totalMessagesSent += messagesSent;
   this.stats.totalSpent += campaignData.cost || campaignData.actualCost || 0;
   this.stats.lastCampaignAt = new Date();
-  
+
   // Calculate overall success rate based on total delivered vs total sent
   if (this.stats.totalMessagesSent > 0) {
     // Get total delivered messages across all campaigns
     const totalDelivered = this.stats.totalMessagesDelivered || 0;
     const newTotalDelivered = totalDelivered + messagesDelivered;
-    
+
     // Store total delivered for future calculations
     this.stats.totalMessagesDelivered = newTotalDelivered;
-    
+
     // Calculate success rate as percentage
     this.stats.successRate = Math.round((newTotalDelivered / this.stats.totalMessagesSent) * 100);
   } else {
     this.stats.successRate = 0;
   }
-  
+
   await this.save();
 };
 
@@ -477,15 +477,15 @@ userSchema.methods.incrementUsage = async function (type = 'messages', count = 1
 userSchema.methods.blockBalanceForCampaign = async function (amount, campaignId) {
   const session = await mongoose.startSession();
   session.startTransaction();
-  
+
   try {
     // Check available balance
     const availableBalance = this.wallet.balance - (this.wallet.blockedBalance || 0);
-    
+
     if (availableBalance < amount) {
       throw new Error(`Insufficient balance. Available: ₹${availableBalance}, Required: ₹${amount}`);
     }
-    
+
     // Update wallet atomically
     const result = await this.constructor.findByIdAndUpdate(
       this._id,
@@ -495,28 +495,19 @@ userSchema.methods.blockBalanceForCampaign = async function (amount, campaignId)
         },
         $set: {
           'wallet.lastUpdated': new Date()
-        },
-        $push: {
-          'wallet.transactions': {
-            type: 'debit',
-            amount: amount,
-            balanceAfter: this.wallet.balance,
-            description: `Blocked ₹${amount} for campaign`,
-            createdAt: new Date()
-          }
         }
       },
       { new: true, session }
     );
-    
+
     await session.commitTransaction();
-    
+
     // Update current instance
     this.wallet.blockedBalance = result.wallet.blockedBalance;
     this.wallet.lastUpdated = result.wallet.lastUpdated;
-    
+
     console.log(`✅ Blocked ₹${amount} for campaign. New blocked balance: ₹${this.wallet.blockedBalance}`);
-    
+
     return this.wallet.blockedBalance;
   } catch (error) {
     await session.abortTransaction();
@@ -530,10 +521,10 @@ userSchema.methods.blockBalanceForCampaign = async function (amount, campaignId)
 userSchema.methods.unblockBalanceForCampaign = async function (blockedAmount, actualCost) {
   const session = await mongoose.startSession();
   session.startTransaction();
-  
+
   try {
     const refundAmount = Math.max(0, blockedAmount - actualCost);
-    
+
     // Update wallet atomically
     const result = await this.constructor.findByIdAndUpdate(
       this._id,
@@ -548,16 +539,16 @@ userSchema.methods.unblockBalanceForCampaign = async function (blockedAmount, ac
       },
       { new: true, session }
     );
-    
+
     await session.commitTransaction();
-    
+
     // Update current instance
     this.wallet.balance = result.wallet.balance;
     this.wallet.blockedBalance = result.wallet.blockedBalance;
     this.wallet.lastUpdated = result.wallet.lastUpdated;
-    
+
     console.log(`✅ Unblocked ₹${blockedAmount}, charged ₹${actualCost}, refunded ₹${refundAmount}`);
-    
+
     return {
       newBalance: this.wallet.balance,
       newBlockedBalance: this.wallet.blockedBalance,
@@ -581,16 +572,16 @@ userSchema.methods.getAvailableBalance = function () {
 // Cleanup stuck blocked balance for completed/failed campaigns
 userSchema.methods.cleanupBlockedBalance = async function () {
   const Campaign = mongoose.model('Campaign');
-  
+
   // Find all completed/failed campaigns for this user
   const campaigns = await Campaign.find({
     userId: this._id,
     status: { $in: ['completed', 'failed'] },
     blockedAmount: { $gt: 0 }
   });
-  
+
   let totalToUnblock = 0;
-  
+
   for (const campaign of campaigns) {
     const remainingBlocked = campaign.blockedAmount - (campaign.actualCost || 0);
     if (remainingBlocked > 0) {
@@ -598,12 +589,12 @@ userSchema.methods.cleanupBlockedBalance = async function () {
       console.log(`[Cleanup] Campaign ${campaign._id}: Blocked ₹${campaign.blockedAmount}, Actual ₹${campaign.actualCost}, To unblock ₹${remainingBlocked}`);
     }
   }
-  
+
   if (totalToUnblock > 0) {
     await this.unblockBalance(totalToUnblock);
     console.log(`[Cleanup] Total unblocked for user ${this._id}: ₹${totalToUnblock}`);
   }
-  
+
   return {
     campaignsChecked: campaigns.length,
     amountUnblocked: totalToUnblock,
@@ -615,7 +606,7 @@ userSchema.methods.cleanupBlockedBalance = async function () {
 userSchema.statics.cleanupAllBlockedBalances = async function () {
   const users = await this.find({ 'wallet.blockedBalance': { $gt: 0 } });
   const results = [];
-  
+
   for (const user of users) {
     try {
       const result = await user.cleanupBlockedBalance();
@@ -630,7 +621,7 @@ userSchema.statics.cleanupAllBlockedBalances = async function () {
       console.error(`Error cleaning up user ${user._id}:`, error);
     }
   }
-  
+
   return results;
 };
 
@@ -647,14 +638,14 @@ userSchema.statics.findByEmailOrPhone = function (identifier) {
 userSchema.statics.createUser = async function (userData) {
   const user = new this(userData);
   await user.save();
-  
+
   // Remove password from returned object
   const userObject = user.toObject();
   delete userObject.password;
   if (userObject.jioConfig) {
     delete userObject.jioConfig.clientSecret;
   }
-  
+
   return userObject;
 };
 

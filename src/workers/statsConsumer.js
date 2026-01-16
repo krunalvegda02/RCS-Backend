@@ -239,7 +239,41 @@ async function startStatsConsumer() {
 
               // Skip campaigns already properly completed
               if (campaign.status === 'completed' && campaign.blockedAmount === 0) {
-                console.log(`[StatsConsumer] Campaign ${campaignId} already completed properly, skipping`);
+                // IMPORTANT: Even for completed campaigns, check if we need to charge more
+                // (in case more messages became 'delivered' after initial completion)
+                const stats = await ContactCampaignMessage.aggregate([
+                  { $match: { userId: campaign.userId } },
+                  { $unwind: '$campaigns' },
+                  { $match: { 'campaigns.campaignId': campaign._id } },
+                  {
+                    $group: {
+                      _id: null,
+                      delivered: { $sum: { $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0] } }
+                    }
+                  }
+                ]);
+
+                const currentDelivered = stats[0]?.delivered || 0;
+                const expectedCost = currentDelivered * 1; // ₹1 per delivered
+                const chargedCost = campaign.actualCost || 0;
+
+                if (expectedCost > chargedCost) {
+                  const additionalCharge = expectedCost - chargedCost;
+                  console.log(`[StatsConsumer] 📊 Campaign ${campaignId} has more delivered messages: ${currentDelivered}`);
+                  console.log(`[StatsConsumer] 💰 Charging additional ₹${additionalCharge} (was ₹${chargedCost}, now ₹${expectedCost})`);
+
+                  // Charge the additional amount (no transaction record - only wallet transfers are recorded)
+                  await User.findByIdAndUpdate(campaign.userId, {
+                    $inc: { 'wallet.balance': -additionalCharge },
+                    $set: { 'wallet.lastUpdated': new Date() }
+                  });
+
+                  // Update campaign actualCost
+                  await Campaign.findByIdAndUpdate(campaignId, { actualCost: expectedCost });
+                  console.log(`[StatsConsumer] ✅ Additional charge complete for campaign ${campaignId}`);
+                } else {
+                  console.log(`[StatsConsumer] Campaign ${campaignId} already completed properly, skipping`);
+                }
                 continue;
               }
 

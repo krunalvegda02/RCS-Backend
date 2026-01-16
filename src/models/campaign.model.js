@@ -79,7 +79,7 @@ const campaignSchema = new mongoose.Schema(
     },
 
     payload: {
-      type: String, 
+      type: String,
     },
 
     // Budget/Rate Limit
@@ -112,12 +112,129 @@ campaignSchema.index({ templateId: 1 });
 campaignSchema.index({ createdAt: -1 });
 campaignSchema.index({ botId: 1, status: 1 });
 
+// ========================================================================================
+// CRITICAL: Pre-save middleware to automatically adjust wallet when status changes to 'completed'
+// This ensures wallet is ALWAYS adjusted regardless of how the status was changed
+// ========================================================================================
+campaignSchema.pre('save', async function (next) {
+  // Only trigger if status is changing to 'completed' AND we haven't already adjusted wallet
+  if (this.isModified('status') && this.status === 'completed' && this.blockedAmount > 0) {
+    console.log(`[Campaign.PreSave] Status changed to 'completed' for campaign ${this._id}`);
+    console.log(`[Campaign.PreSave] blockedAmount=${this.blockedAmount}, will adjust wallet...`);
+
+    try {
+      const User = mongoose.model('User');
+
+      // Try to get ContactCampaignMessage model
+      let ContactCampaignMessageModel;
+      try {
+        ContactCampaignMessageModel = mongoose.model('ContactCampaignMessage');
+      } catch {
+        // Model not registered yet, skip detailed stats
+      }
+
+      // Calculate actual cost from delivered messages
+      let actualCost = 0;
+      let deliveredCount = 0;
+      let failedCount = 0;
+
+      if (ContactCampaignMessageModel) {
+        const stats = await ContactCampaignMessageModel.aggregate([
+          { $match: { userId: this.userId } },
+          { $unwind: '$campaigns' },
+          { $match: { 'campaigns.campaignId': this._id } },
+          {
+            $group: {
+              _id: null,
+              delivered: {
+                $sum: {
+                  $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0]
+                }
+              },
+              failed: {
+                $sum: {
+                  $cond: [{ $in: ['$campaigns.status', ['failed', 'bounced', 'expired']] }, 1, 0]
+                }
+              }
+            }
+          }
+        ]);
+
+        if (stats.length > 0) {
+          deliveredCount = stats[0].delivered;
+          failedCount = stats[0].failed;
+          actualCost = deliveredCount * 1; // ₹1 per delivered message
+        }
+      }
+
+      console.log(`[Campaign.PreSave] Delivered=${deliveredCount}, Failed=${failedCount}, ActualCost=₹${actualCost}`);
+
+      // Adjust wallet: deduct actual cost, release blocked balance
+      const user = await User.findById(this.userId);
+      if (user) {
+        const blockedToRelease = this.blockedAmount;
+        const refundAmount = Math.max(0, blockedToRelease - actualCost);
+
+        await User.findByIdAndUpdate(this.userId, {
+          $inc: {
+            'wallet.balance': -actualCost,           // Deduct cost for delivered
+            'wallet.blockedBalance': -blockedToRelease  // Release ALL blocked
+          },
+          $set: {
+            'wallet.lastUpdated': new Date()
+          }
+        });
+
+        console.log(`[Campaign.PreSave] ✅ Wallet adjusted: charged ₹${actualCost}, released ₹${blockedToRelease} blocked`);
+      }
+
+      // Update campaign fields
+      this.actualCost = actualCost;
+      this.refundedAmount = Math.max(0, this.blockedAmount - actualCost);
+      this.blockedAmount = 0;
+      this.completedAt = new Date();
+
+      console.log(`[Campaign.PreSave] ✅ Campaign ${this._id} wallet adjustment complete`);
+    } catch (error) {
+      console.error(`[Campaign.PreSave] ❌ Wallet adjustment failed:`, error.message);
+      // Don't block the save, but log the error
+      // The cleanup script can fix this later
+    }
+  }
+
+  next();
+});
+
+
+// ========================================================================================
+// CRITICAL: Post-update middleware for findByIdAndUpdate/findOneAndUpdate/updateOne
+// This catches status changes made via update queries (not save())
+// ========================================================================================
+campaignSchema.post('findOneAndUpdate', async function (doc) {
+  if (!doc) return;
+
+  // Check if we just set status to 'completed' and still have blocked amount
+  if (doc.status === 'completed' && doc.blockedAmount > 0) {
+    console.log(`[Campaign.PostUpdate] Campaign ${doc._id} was updated to 'completed' with blockedAmount=${doc.blockedAmount}`);
+    console.log(`[Campaign.PostUpdate] Triggering wallet adjustment...`);
+
+    try {
+      // Call completeCampaign to properly adjust wallet
+      await doc.completeCampaign();
+      console.log(`[Campaign.PostUpdate] ✅ Wallet adjustment complete for campaign ${doc._id}`);
+    } catch (error) {
+      console.error(`[Campaign.PostUpdate] ❌ Wallet adjustment failed:`, error.message);
+    }
+  }
+});
+
+
 // Sync stats from ContactCampaignMessage
 campaignSchema.methods.syncStats = async function () {
   if (!ContactCampaignMessage) {
     ContactCampaignMessage = mongoose.model('ContactCampaignMessage');
   }
-  
+
   const stats = await ContactCampaignMessage.aggregate([
     { $match: { userId: this.userId, 'campaigns.campaignId': this._id } },
     { $unwind: '$campaigns' },
@@ -144,14 +261,14 @@ campaignSchema.methods.syncStats = async function () {
 };
 
 // Find available bot (bot1-bot50)
-campaignSchema.statics.findAvailableBot = async function() {
+campaignSchema.statics.findAvailableBot = async function () {
   for (let i = 1; i <= 50; i++) {
     const botId = `bot${i}`;
-    const runningCampaign = await this.findOne({ 
-      botId, 
-      status: { $in: ['pending', 'processing', 'running'] } 
+    const runningCampaign = await this.findOne({
+      botId,
+      status: { $in: ['pending', 'processing', 'running'] }
     });
-    
+
     if (!runningCampaign) {
       return botId;
     }
@@ -160,19 +277,19 @@ campaignSchema.statics.findAvailableBot = async function() {
 };
 
 // Complete campaign and settle wallet
-campaignSchema.methods.completeCampaign = async function() {
+campaignSchema.methods.completeCampaign = async function () {
   console.log(`\n========================================`);
   console.log(`[CompleteCampaign] START for campaign ${this._id}`);
   console.log(`[CompleteCampaign] Current status: ${this.status}, blockedAmount: ${this.blockedAmount}`);
-  
+
   const session = await mongoose.startSession();
   session.startTransaction();
   console.log(`[CompleteCampaign] Transaction started`);
-  
+
   try {
     const User = mongoose.model('User');
     const Campaign = mongoose.model('Campaign');
-    
+
     // Get fresh campaign data within transaction
     console.log(`[CompleteCampaign] Fetching fresh campaign data...`);
     const campaign = await Campaign.findById(this._id).session(session);
@@ -180,7 +297,7 @@ campaignSchema.methods.completeCampaign = async function() {
       throw new Error('Campaign not found');
     }
     console.log(`[CompleteCampaign] Fresh data: status=${campaign.status}, blockedAmount=${campaign.blockedAmount}`);
-    
+
     // If already completed with blockedAmount = 0, skip
     if (campaign.status === 'completed' && campaign.blockedAmount === 0) {
       await session.abortTransaction();
@@ -188,7 +305,7 @@ campaignSchema.methods.completeCampaign = async function() {
       console.log(`========================================\n`);
       return;
     }
-    
+
     console.log(`[CompleteCampaign] Fetching user data...`);
     const user = await User.findById(campaign.userId).session(session);
     if (!user) {
@@ -199,7 +316,7 @@ campaignSchema.methods.completeCampaign = async function() {
     if (!ContactCampaignMessage) {
       ContactCampaignMessage = mongoose.model('ContactCampaignMessage');
     }
-    
+
     console.log(`[CompleteCampaign] Aggregating message stats...`);
     const stats = await ContactCampaignMessage.aggregate([
       { $match: { userId: campaign.userId } },
@@ -230,7 +347,7 @@ campaignSchema.methods.completeCampaign = async function() {
 
     const deliveryStats = stats[0] || { total: 0, delivered: 0, failed: 0, expired: 0 };
     console.log(`[CompleteCampaign] Message stats:`, deliveryStats);
-    
+
     // Calculate actual cost (only delivered messages)
     const actualCost = deliveryStats.delivered * 1;
     const blockedAmount = campaign.blockedAmount || campaign.estimatedCost || deliveryStats.total;
@@ -248,15 +365,6 @@ campaignSchema.methods.completeCampaign = async function() {
         },
         $set: {
           'wallet.lastUpdated': new Date()
-        },
-        $push: {
-          'wallet.transactions': {
-            type: 'debit',
-            amount: actualCost,
-            balanceAfter: user.wallet.balance - actualCost,
-            description: `Campaign "${campaign.name}" completed. Charged ₹${actualCost} for ${deliveryStats.delivered} delivered. ${deliveryStats.failed} failed + ${deliveryStats.expired} expired not charged.`,
-            createdAt: new Date()
-          }
         }
       };
 
@@ -290,7 +398,7 @@ campaignSchema.methods.completeCampaign = async function() {
     );
 
     console.log(`[CompleteCampaign] Campaign update result: matched=${updateResult.matchedCount}, modified=${updateResult.modifiedCount}`);
-    
+
     if (updateResult.matchedCount === 0) {
       throw new Error('Campaign not found during update');
     }
@@ -301,22 +409,22 @@ campaignSchema.methods.completeCampaign = async function() {
     console.log(`[CompleteCampaign] Committing transaction...`);
     await session.commitTransaction();
     console.log(`[CompleteCampaign] Transaction committed successfully`);
-    
+
     // Verify the update
     const verifyResult = await Campaign.findById(campaign._id).select('blockedAmount status');
     console.log(`[CompleteCampaign] Verification: blockedAmount=${verifyResult.blockedAmount}, status=${verifyResult.status}`);
-    
+
     console.log(`✅ Campaign ${campaign._id} completed successfully`);
     console.log(`   Delivered: ${deliveryStats.delivered}, Failed: ${deliveryStats.failed}, Expired: ${deliveryStats.expired}`);
     console.log(`========================================\n`);
-    
+
     // Update local instance
     this.actualCost = actualCost;
     this.refundedAmount = refundAmount;
     this.blockedAmount = 0;
     this.status = 'completed';
     this.completedAt = new Date();
-    
+
     return {
       actualCost,
       refundAmount,

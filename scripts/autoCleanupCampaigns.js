@@ -10,20 +10,20 @@ async function autoCleanupCampaigns() {
   try {
     await mongoose.connect(process.env.MONGODB_URI);
     console.log('[AutoCleanup] Starting campaign cleanup...');
-    
+
     // Ensure models are loaded
     mongoose.model('User', User.schema);
     mongoose.model('Campaign', Campaign.schema);
     mongoose.model('ContactCampaignMessage', ContactCampaignMessage.schema);
-    
+
     // Find campaigns that should be completed
     const stuckCampaigns = await Campaign.find({
       status: { $in: ['running', 'processing'] },
       createdAt: { $lt: new Date(Date.now() - 10 * 60 * 1000) } // Older than 10 minutes
     });
-    
+
     console.log(`[AutoCleanup] Found ${stuckCampaigns.length} potentially stuck campaigns`);
-    
+
     for (const campaign of stuckCampaigns) {
       try {
         // Check message stats
@@ -35,21 +35,21 @@ async function autoCleanupCampaigns() {
             $group: {
               _id: null,
               total: { $sum: 1 },
-              pending: { 
-                $sum: { 
+              pending: {
+                $sum: {
                   $cond: [
-                    { $in: ['$campaigns.status', ['draft', 'queued', 'pending', 'sent']] }, 
-                    1, 
-                    0 
-                  ] 
-                } 
+                    { $in: ['$campaigns.status', ['draft', 'queued', 'pending']] },
+                    1,
+                    0
+                  ]
+                }
               }
             }
           }
         ]);
-        
+
         const { total = 0, pending = 0 } = stats[0] || {};
-        
+
         if (total > 0 && pending === 0) {
           console.log(`[AutoCleanup] Completing campaign ${campaign._id.toString().slice(-6)}`);
           await campaign.completeCampaign();
@@ -61,16 +61,16 @@ async function autoCleanupCampaigns() {
         console.error(`[AutoCleanup] Error processing campaign ${campaign._id}:`, error.message);
       }
     }
-    
+
     // Also fix completed campaigns with blocked amounts
     const completedWithBlocked = await Campaign.find({
       status: 'completed',
       blockedAmount: { $gt: 0 }
     });
-    
+
     if (completedWithBlocked.length > 0) {
       console.log(`[AutoCleanup] Found ${completedWithBlocked.length} completed campaigns with blocked amounts`);
-      
+
       for (const campaign of completedWithBlocked) {
         try {
           console.log(`[AutoCleanup] Re-completing campaign ${campaign._id.toString().slice(-6)}`);
@@ -81,7 +81,7 @@ async function autoCleanupCampaigns() {
         }
       }
     }
-    
+
     console.log('[AutoCleanup] Cleanup complete');
     await mongoose.disconnect();
     process.exit(0);
