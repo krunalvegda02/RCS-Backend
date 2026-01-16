@@ -2017,3 +2017,49 @@ export const deleteContactFromBatch = async (req, res) => {
     });
   }
 };
+
+// Complete campaign and settle wallet
+export const completeCampaign = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+
+    const campaign = await Campaign.findOne({ _id: id, userId });
+    
+    if (!campaign) {
+      return res.status(404).json({
+        success: false,
+        message: 'Campaign not found'
+      });
+    }
+
+    if (campaign.status === 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Campaign already completed'
+      });
+    }
+
+    // Complete campaign and settle wallet
+    const result = await campaign.completeCampaign();
+
+    res.json({
+      success: true,
+      message: 'Campaign completed and wallet settled',
+      data: {
+        campaignId: campaign._id,
+        status: 'completed',
+        actualCost: result.actualCost,
+        refundAmount: result.refundAmount,
+        delivered: result.delivered,
+        failed: result.failed
+      }
+    });
+  } catch (error) {
+    console.error('[Campaign] Complete campaign error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};

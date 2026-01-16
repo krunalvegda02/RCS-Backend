@@ -473,32 +473,109 @@ userSchema.methods.incrementUsage = async function (type = 'messages', count = 1
   return;
 };
 
-// Block wallet balance for campaign (deduct from wallet and track as blocked)
-userSchema.methods.blockBalance = async function (amount, campaignId) {
-  if (this.wallet.balance < amount) {
-    throw new Error('Insufficient wallet balance');
+// Block wallet balance for campaign (atomic operation)
+userSchema.methods.blockBalanceForCampaign = async function (amount, campaignId) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    // Check available balance
+    const availableBalance = this.wallet.balance - (this.wallet.blockedBalance || 0);
+    
+    if (availableBalance < amount) {
+      throw new Error(`Insufficient balance. Available: ₹${availableBalance}, Required: ₹${amount}`);
+    }
+    
+    // Update wallet atomically
+    const result = await this.constructor.findByIdAndUpdate(
+      this._id,
+      {
+        $inc: {
+          'wallet.blockedBalance': amount
+        },
+        $set: {
+          'wallet.lastUpdated': new Date()
+        },
+        $push: {
+          'wallet.transactions': {
+            type: 'debit',
+            amount: amount,
+            balanceAfter: this.wallet.balance,
+            description: `Blocked ₹${amount} for campaign`,
+            createdAt: new Date()
+          }
+        }
+      },
+      { new: true, session }
+    );
+    
+    await session.commitTransaction();
+    
+    // Update current instance
+    this.wallet.blockedBalance = result.wallet.blockedBalance;
+    this.wallet.lastUpdated = result.wallet.lastUpdated;
+    
+    console.log(`✅ Blocked ₹${amount} for campaign. New blocked balance: ₹${this.wallet.blockedBalance}`);
+    
+    return this.wallet.blockedBalance;
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
   }
-  
-  this.wallet.balance -= amount;
-  this.wallet.blockedBalance = (this.wallet.blockedBalance || 0) + amount;
-  this.wallet.lastUpdated = new Date();
-  
-  await this.save();
-  return this.wallet.blockedBalance;
 };
 
-// Unblock wallet balance (on campaign completion or failure)
-userSchema.methods.unblockBalance = async function (amount) {
-  this.wallet.blockedBalance = Math.max(0, (this.wallet.blockedBalance || 0) - amount);
-  this.wallet.lastUpdated = new Date();
+// Unblock wallet balance (atomic operation - on campaign completion)
+userSchema.methods.unblockBalanceForCampaign = async function (blockedAmount, actualCost) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
   
-  await this.save();
-  return this.wallet.blockedBalance;
+  try {
+    const refundAmount = Math.max(0, blockedAmount - actualCost);
+    
+    // Update wallet atomically
+    const result = await this.constructor.findByIdAndUpdate(
+      this._id,
+      {
+        $inc: {
+          'wallet.balance': refundAmount - blockedAmount, // Deduct actual cost, refund the rest
+          'wallet.blockedBalance': -blockedAmount // Remove from blocked
+        },
+        $set: {
+          'wallet.lastUpdated': new Date()
+        }
+      },
+      { new: true, session }
+    );
+    
+    await session.commitTransaction();
+    
+    // Update current instance
+    this.wallet.balance = result.wallet.balance;
+    this.wallet.blockedBalance = result.wallet.blockedBalance;
+    this.wallet.lastUpdated = result.wallet.lastUpdated;
+    
+    console.log(`✅ Unblocked ₹${blockedAmount}, charged ₹${actualCost}, refunded ₹${refundAmount}`);
+    
+    return {
+      newBalance: this.wallet.balance,
+      newBlockedBalance: this.wallet.blockedBalance,
+      refundAmount
+    };
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
 };
 
 // Get available balance (total - blocked)
 userSchema.methods.getAvailableBalance = function () {
-  return this.wallet.balance - (this.wallet.blockedBalance || 0);
+  const totalBalance = this.wallet.balance || 0;
+  const blockedBalance = this.wallet.blockedBalance || 0;
+  return Math.max(0, totalBalance - blockedBalance);
 };
 
 // Cleanup stuck blocked balance for completed/failed campaigns

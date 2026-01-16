@@ -1,8 +1,10 @@
+import mongoose from 'mongoose';
 import User from '../models/user.model.js';
 import Campaign from '../models/campaign.model.js';
 import Template from '../models/template.model.js';
 import MessageLog from '../models/messageLog.model.js';
 import WalletRequest from '../models/walletRequest.model.js';
+import ContactCampaignMessage from '../models/contact_campaign_message.model.js';
 import statsService from '../services/CampaignStatsService.js';
 
 // Get complete admin dashboard data
@@ -106,25 +108,56 @@ export const getUserDashboardStats = async (req, res) => {
   try {
     const { userId } = req.params;
 
-    const [campaigns, templates, user] = await Promise.all([
-      Campaign.find({ userId }).lean(),
+    const [campaigns, templates, messageStats] = await Promise.all([
+      Campaign.countDocuments({ userId }),
       Template.countDocuments({ userId, isActive: true }),
-      User.findById(userId).lean()
+      ContactCampaignMessage.aggregate([
+        { $match: { userId: new mongoose.Types.ObjectId(userId) } },
+        { $unwind: '$campaigns' },
+        {
+          $group: {
+            _id: null,
+            totalMessages: { $sum: 1 },
+            totalSent: {
+              $sum: {
+                $cond: [{ $in: ['$campaigns.status', ['sent', 'delivered', 'read', 'replied']] }, 1, 0]
+              }
+            },
+            totalDelivered: {
+              $sum: {
+                $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0]
+              }
+            },
+            totalFailed: {
+              $sum: {
+                $cond: [{ $in: ['$campaigns.status', ['failed', 'bounced']] }, 1, 0]
+              }
+            },
+            totalCost: { $sum: { $ifNull: ['$campaigns.cost', 0] } }
+          }
+        }
+      ])
     ]);
 
-    // Calculate stats from campaigns
-    const stats = {
-      totalCampaigns: campaigns.length,
-      sendtoteltemplet: templates,
-      totalMessages: campaigns.reduce((sum, c) => sum + (c.stats?.total || 0), 0),
-      totalSuccessCount: campaigns.reduce((sum, c) => sum + (c.stats?.sent || 0), 0),
-      totalFailedCount: campaigns.reduce((sum, c) => sum + (c.stats?.failed || 0), 0),
-      totalCost: campaigns.reduce((sum, c) => sum + (c.actualCost || 0), 0)
+    const stats = messageStats[0] || {
+      totalMessages: 0,
+      totalSent: 0,
+      totalDelivered: 0,
+      totalFailed: 0,
+      totalCost: 0
     };
 
     res.json({
       success: true,
-      data: stats
+      data: {
+        totalCampaigns: campaigns,
+        sendtoteltemplet: templates,
+        totalMessages: stats.totalMessages,
+        totalSuccessCount: stats.totalSent,
+        totalDelivered: stats.totalDelivered,
+        totalFailedCount: stats.totalFailed,
+        totalCost: stats.totalCost
+      }
     });
   } catch (error) {
     res.status(500).json({
@@ -147,18 +180,56 @@ export const getUserRecentCampaigns = async (req, res) => {
       .limit(limit)
       .lean();
 
-    // Transform to match frontend expectations
-    const transformedCampaigns = campaigns.map(campaign => ({
-      _id: campaign._id,
-      CampaignName: campaign.name,
-      type: campaign.templateId?.templateType || 'plainText',
-      cost: campaign.stats?.total || 0,
-      successCount: campaign.stats?.sent || 0,
-      failedCount: campaign.stats?.failed || 0,
-      totalDelivered: campaign.stats?.delivered || campaign.stats?.sent || 0,
-      status: campaign.status,
-      createdAt: campaign.createdAt
-    }));
+    // Get real-time stats for each campaign from ContactCampaignMessage
+    const campaignIds = campaigns.map(c => c._id);
+    const campaignStats = await ContactCampaignMessage.aggregate([
+      { $match: { userId: new mongoose.Types.ObjectId(userId) } },
+      { $unwind: '$campaigns' },
+      { $match: { 'campaigns.campaignId': { $in: campaignIds } } },
+      {
+        $group: {
+          _id: '$campaigns.campaignId',
+          total: { $sum: 1 },
+          sent: {
+            $sum: {
+              $cond: [{ $in: ['$campaigns.status', ['sent', 'delivered', 'read', 'replied']] }, 1, 0]
+            }
+          },
+          delivered: {
+            $sum: {
+              $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0]
+            }
+          },
+          failed: {
+            $sum: {
+              $cond: [{ $in: ['$campaigns.status', ['failed', 'bounced']] }, 1, 0]
+            }
+          }
+        }
+      }
+    ]);
+
+    // Create a map for quick lookup
+    const statsMap = {};
+    campaignStats.forEach(stat => {
+      statsMap[stat._id.toString()] = stat;
+    });
+
+    // Transform campaigns with real-time stats
+    const transformedCampaigns = campaigns.map(campaign => {
+      const stats = statsMap[campaign._id.toString()] || { total: 0, sent: 0, delivered: 0, failed: 0 };
+      return {
+        _id: campaign._id,
+        CampaignName: campaign.name,
+        type: campaign.templateId?.templateType || 'plainText',
+        cost: stats.total,
+        successCount: stats.sent,
+        failedCount: stats.failed,
+        totalDelivered: stats.delivered,
+        status: campaign.status,
+        createdAt: campaign.createdAt
+      };
+    });
 
     res.json({
       success: true,

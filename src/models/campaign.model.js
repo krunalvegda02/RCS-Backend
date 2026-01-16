@@ -91,6 +91,14 @@ const campaignSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    blockedAmount: {
+      type: Number,
+      default: 0,
+    },
+    refundedAmount: {
+      type: Number,
+      default: 0,
+    },
   },
   {
     timestamps: true,
@@ -149,6 +157,122 @@ campaignSchema.statics.findAvailableBot = async function() {
     }
   }
   throw new Error('All bots are currently assigned to running campaigns');
+};
+
+// Complete campaign and settle wallet
+campaignSchema.methods.completeCampaign = async function() {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    // Get user
+    const User = mongoose.model('User');
+    const user = await User.findById(this.userId).session(session);
+    
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    // Get actual delivery stats from ContactCampaignMessage
+    if (!ContactCampaignMessage) {
+      ContactCampaignMessage = mongoose.model('ContactCampaignMessage');
+    }
+    
+    const stats = await ContactCampaignMessage.aggregate([
+      { $match: { userId: this.userId } },
+      { $unwind: '$campaigns' },
+      { $match: { 'campaigns.campaignId': this._id } },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: 1 },
+          delivered: {
+            $sum: {
+              $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0]
+            }
+          },
+          failed: {
+            $sum: {
+              $cond: [{ $in: ['$campaigns.status', ['failed', 'bounced']] }, 1, 0]
+            }
+          },
+          expired: {
+            $sum: {
+              $cond: [{ $in: ['$campaigns.status', ['pending', 'queued', 'sent']] }, 1, 0]
+            }
+          },
+          totalCost: { $sum: { $ifNull: ['$campaigns.cost', 0] } }
+        }
+      }
+    ]).session(session);
+
+    const deliveryStats = stats[0] || { total: 0, delivered: 0, failed: 0, expired: 0, totalCost: 0 };
+    
+    // Calculate costs
+    // - Charge only for delivered messages
+    // - Refund failed + expired messages
+    const actualCost = deliveryStats.delivered * 1; // ₹1 per delivered
+    const blockedAmount = this.blockedAmount || 0;
+    const refundAmount = Math.max(0, blockedAmount - actualCost);
+
+    // Update campaign
+    this.actualCost = actualCost;
+    this.refundedAmount = refundAmount;
+    this.status = 'completed';
+    this.completedAt = new Date();
+    this.stats = {
+      total: deliveryStats.total,
+      sent: deliveryStats.delivered + deliveryStats.failed + deliveryStats.expired,
+      delivered: deliveryStats.delivered,
+      failed: deliveryStats.failed,
+      read: 0,
+      replied: 0,
+      bounced: 0
+    };
+    await this.save({ session });
+
+    // Settle wallet atomically
+    const walletUpdate = {
+      $inc: {
+        'wallet.balance': refundAmount, // Add refund back to balance
+        'wallet.blockedBalance': -blockedAmount // Remove from blocked
+      },
+      $set: {
+        'wallet.lastUpdated': new Date()
+      },
+      $push: {
+        'wallet.transactions': {
+          type: 'credit',
+          amount: refundAmount,
+          balanceAfter: user.wallet.balance + refundAmount,
+          description: `Campaign "${this.name}" completed. Charged ₹${actualCost} for ${deliveryStats.delivered} delivered. Refunded ₹${refundAmount} for ${deliveryStats.failed} failed + ${deliveryStats.expired} expired.`,
+          createdAt: new Date()
+        }
+      }
+    };
+
+    await User.findByIdAndUpdate(this.userId, walletUpdate, { session });
+
+    await session.commitTransaction();
+    
+    console.log(`✅ Campaign ${this._id} completed:`);
+    console.log(`   Blocked: ₹${blockedAmount}, Actual: ₹${actualCost}, Refund: ₹${refundAmount}`);
+    console.log(`   Delivered: ${deliveryStats.delivered}, Failed: ${deliveryStats.failed}, Expired: ${deliveryStats.expired}`);
+    
+    return {
+      actualCost,
+      refundAmount,
+      delivered: deliveryStats.delivered,
+      failed: deliveryStats.failed,
+      expired: deliveryStats.expired
+    };
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Campaign completion failed:', error);
+    throw error;
+  } finally {
+    session.endSession();
+  }
 };
 
 export default mongoose.model('Campaign', campaignSchema);
