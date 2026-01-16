@@ -221,30 +221,40 @@ async function startStatsConsumer() {
           for (const campaignId of campaignsToCheck) {
             try {
               const campaign = await Campaign.findById(campaignId);
-              if (campaign && campaign.status === 'pending') {
-                // Check if all messages are processed
-                const stats = await ContactCampaignMessage.aggregate([
-                  { $match: { userId: campaign.userId } },
-                  { $unwind: '$campaigns' },
-                  { $match: { 'campaigns.campaignId': campaign._id } },
-                  {
-                    $group: {
-                      _id: null,
-                      total: { $sum: 1 },
-                      pending: { $sum: { $cond: [{ $in: ['$campaigns.status', ['draft', 'queued', 'pending']] }, 1, 0] } },
-                      processed: { $sum: { $cond: [{ $in: ['$campaigns.status', ['sent', 'delivered', 'read', 'replied', 'failed']] }, 1, 0] } }
-                    }
+              
+              // Only check campaigns that are not already completed
+              if (!campaign || campaign.status === 'completed') {
+                continue;
+              }
+              
+              console.log(`[StatsConsumer] Campaign ${campaignId} status: ${campaign.status}`);
+              
+              // Check if all messages are processed
+              const stats = await ContactCampaignMessage.aggregate([
+                { $match: { userId: campaign.userId } },
+                { $unwind: '$campaigns' },
+                { $match: { 'campaigns.campaignId': campaign._id } },
+                {
+                  $group: {
+                    _id: null,
+                    total: { $sum: 1 },
+                    pending: { $sum: { $cond: [{ $in: ['$campaigns.status', ['draft', 'queued', 'pending', 'sent']] }, 1, 0] } },
+                    processed: { $sum: { $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied', 'failed', 'expired']] }, 1, 0] } }
                   }
-                ]);
-                
-                const { total = 0, pending = 0, processed = 0 } = stats[0] || {};
-                
-                // If all messages are processed (no pending), complete the campaign
-                if (total > 0 && pending === 0 && processed >= total) {
-                  console.log(`[StatsConsumer] 🏁 Campaign ${campaignId} ready for completion: ${processed}/${total} processed`);
-                  await campaign.completeCampaign();
-                  console.log(`[StatsConsumer] ✅ Campaign ${campaignId} completed with wallet adjustment`);
                 }
+              ]);
+              
+              const { total = 0, pending = 0, processed = 0 } = stats[0] || {};
+              
+              console.log(`[StatsConsumer] Campaign ${campaignId}: total=${total}, pending=${pending}, processed=${processed}`);
+              
+              // If all messages are processed (no pending), complete the campaign
+              if (total > 0 && pending === 0 && processed >= total) {
+                console.log(`[StatsConsumer] 🏁 Completing campaign ${campaignId}: ${processed}/${total} processed`);
+                await campaign.completeCampaign();
+                console.log(`[StatsConsumer] ✅ Campaign ${campaignId} completed with wallet adjustment`);
+              } else {
+                console.log(`[StatsConsumer] Campaign ${campaignId} not ready: ${pending} still pending`);
               }
             } catch (error) {
               console.error(`[StatsConsumer] Error checking campaign ${campaignId}:`, error.message);
