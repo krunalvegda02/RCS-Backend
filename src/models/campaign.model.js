@@ -161,12 +161,6 @@ campaignSchema.statics.findAvailableBot = async function() {
 
 // Complete campaign and settle wallet
 campaignSchema.methods.completeCampaign = async function() {
-  // Prevent double completion
-  if (this.status === 'completed' && this.blockedAmount === 0) {
-    console.log(`Campaign ${this._id} already completed properly`);
-    return;
-  }
-  
   const session = await mongoose.startSession();
   session.startTransaction();
   
@@ -178,6 +172,13 @@ campaignSchema.methods.completeCampaign = async function() {
     const campaign = await Campaign.findById(this._id).session(session);
     if (!campaign) {
       throw new Error('Campaign not found');
+    }
+    
+    // If already completed with blockedAmount = 0, skip
+    if (campaign.status === 'completed' && campaign.blockedAmount === 0) {
+      await session.abortTransaction();
+      console.log(`[CompleteCampaign] ${campaign._id} already completed properly`);
+      return;
     }
     
     const user = await User.findById(campaign.userId).session(session);
@@ -225,31 +226,33 @@ campaignSchema.methods.completeCampaign = async function() {
 
     console.log(`[CompleteCampaign] ${campaign._id}: Blocked=₹${blockedAmount}, Actual=₹${actualCost}, Refund=₹${refundAmount}`);
 
-    // Wallet settlement FIRST (before updating campaign)
-    const walletUpdate = {
-      $inc: {
-        'wallet.balance': -actualCost,
-        'wallet.blockedBalance': -blockedAmount
-      },
-      $set: {
-        'wallet.lastUpdated': new Date()
-      },
-      $push: {
-        'wallet.transactions': {
-          type: 'debit',
-          amount: actualCost,
-          balanceAfter: user.wallet.balance - actualCost,
-          description: `Campaign "${campaign.name}" completed. Charged ₹${actualCost} for ${deliveryStats.delivered} delivered. ${deliveryStats.failed} failed + ${deliveryStats.expired} expired not charged.`,
-          createdAt: new Date()
+    // Only adjust wallet if there's a blocked amount to unblock
+    if (blockedAmount > 0) {
+      const walletUpdate = {
+        $inc: {
+          'wallet.balance': -actualCost,
+          'wallet.blockedBalance': -blockedAmount
+        },
+        $set: {
+          'wallet.lastUpdated': new Date()
+        },
+        $push: {
+          'wallet.transactions': {
+            type: 'debit',
+            amount: actualCost,
+            balanceAfter: user.wallet.balance - actualCost,
+            description: `Campaign "${campaign.name}" completed. Charged ₹${actualCost} for ${deliveryStats.delivered} delivered. ${deliveryStats.failed} failed + ${deliveryStats.expired} expired not charged.`,
+            createdAt: new Date()
+          }
         }
-      }
-    };
+      };
 
-    await User.findByIdAndUpdate(campaign.userId, walletUpdate, { session });
+      await User.findByIdAndUpdate(campaign.userId, walletUpdate, { session });
+    }
 
-    // Update campaign AFTER wallet is updated - CRITICAL: Use findByIdAndUpdate
-    await Campaign.findByIdAndUpdate(
-      campaign._id,
+    // CRITICAL: Update campaign with explicit $set to ensure blockedAmount becomes 0
+    const updateResult = await Campaign.updateOne(
+      { _id: campaign._id },
       {
         $set: {
           actualCost,
@@ -268,6 +271,8 @@ campaignSchema.methods.completeCampaign = async function() {
       },
       { session }
     );
+
+    console.log(`[CompleteCampaign] Update result: matched=${updateResult.matchedCount}, modified=${updateResult.modifiedCount}`);
 
     await session.commitTransaction();
     
