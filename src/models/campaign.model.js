@@ -261,19 +261,33 @@ campaignSchema.methods.syncStats = async function () {
 };
 
 // Find available bot (bot1-bot50)
+// Find available bot (bot1-bot50) with Load Balancing
 campaignSchema.statics.findAvailableBot = async function () {
-  for (let i = 1; i <= 2; i++) {
+  const TOTAL_BOTS = 2;
+  const botLoads = [];
+
+  // 1. Check load for all bots
+  for (let i = 1; i <= TOTAL_BOTS; i++) {
     const botId = `bot${i}`;
-    const runningCampaign = await this.findOne({
+    const activeCampaignsCount = await this.countDocuments({
       botId,
       status: { $in: ['pending', 'processing', 'running'] }
     });
 
-    if (!runningCampaign) {
+    // If completely free, return immediately
+    if (activeCampaignsCount === 0) {
       return botId;
     }
+
+    botLoads.push({ botId, count: activeCampaignsCount });
   }
-  throw new Error('All bots are currently assigned to running campaigns');
+
+  // 2. If all busy, find the one with MINIMUM load
+  botLoads.sort((a, b) => a.count - b.count);
+  const bestBot = botLoads[0];
+
+  console.log(`[BotAssignment] All bots busy. Assigning to ${bestBot.botId} (Queue size: ${bestBot.count})`);
+  return bestBot.botId;
 };
 
 // Complete campaign and settle wallet
