@@ -27,8 +27,10 @@ async function startStatsConsumer() {
     const MessageLog = (await import('../models/messageLog.model.js')).default;
     const User = (await import('../models/user.model.js')).default;
     const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
+    const Campaign = (await import('../models/campaign.model.js')).default;
     
     let totalProcessed = 0;
+    const campaignsToCheck = new Set(); // Track campaigns that need completion check
     
     await consumer.run({
       partitionsConsumedConcurrently: 10,
@@ -59,12 +61,18 @@ async function startStatsConsumer() {
         
         const bulkOps = [];
         const walletOps = new Map();
+        campaignsToCheck.clear(); // Clear before processing batch
         
         for (const log of logs) {
           const { messageId, webhookData, campaignId, userId, eventType: logEventType } = log;
           const eventType = webhookData?.eventType;
           const entity = webhookData?.rawPayload?.entity;
           const entityType = webhookData?.rawPayload?.entityType;
+          
+          // Track campaign for completion check
+          if (campaignId) {
+            campaignsToCheck.add(campaignId.toString());
+          }
           
           // Convert ObjectIds to strings for Map keys
           const userIdStr = userId?.toString ? userId.toString() : userId;
@@ -206,6 +214,43 @@ async function startStatsConsumer() {
         
         const duration = Date.now() - startTime;
         console.log(`[StatsConsumer] Batch complete: ${logs.length} logs in ${duration}ms`);
+        
+        // Check campaign completion for all affected campaigns
+        if (allSuccess && campaignsToCheck.size > 0) {
+          console.log(`[StatsConsumer] Checking completion for ${campaignsToCheck.size} campaigns`);
+          for (const campaignId of campaignsToCheck) {
+            try {
+              const campaign = await Campaign.findById(campaignId);
+              if (campaign && campaign.status === 'pending') {
+                // Check if all messages are processed
+                const stats = await ContactCampaignMessage.aggregate([
+                  { $match: { userId: campaign.userId } },
+                  { $unwind: '$campaigns' },
+                  { $match: { 'campaigns.campaignId': campaign._id } },
+                  {
+                    $group: {
+                      _id: null,
+                      total: { $sum: 1 },
+                      pending: { $sum: { $cond: [{ $in: ['$campaigns.status', ['draft', 'queued', 'pending']] }, 1, 0] } },
+                      processed: { $sum: { $cond: [{ $in: ['$campaigns.status', ['sent', 'delivered', 'read', 'replied', 'failed']] }, 1, 0] } }
+                    }
+                  }
+                ]);
+                
+                const { total = 0, pending = 0, processed = 0 } = stats[0] || {};
+                
+                // If all messages are processed (no pending), complete the campaign
+                if (total > 0 && pending === 0 && processed >= total) {
+                  console.log(`[StatsConsumer] 🏁 Campaign ${campaignId} ready for completion: ${processed}/${total} processed`);
+                  await campaign.completeCampaign();
+                  console.log(`[StatsConsumer] ✅ Campaign ${campaignId} completed with wallet adjustment`);
+                }
+              }
+            } catch (error) {
+              console.error(`[StatsConsumer] Error checking campaign ${campaignId}:`, error.message);
+            }
+          }
+        }
         
         // 🔥 FIX #1: ACK only if everything succeeded
         if (allSuccess && messages.length > 0) {
