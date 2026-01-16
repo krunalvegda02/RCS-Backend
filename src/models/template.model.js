@@ -208,181 +208,355 @@ templateSchema.methods.incrementUsage = async function () {
 };
 
 // Method to generate RCS payload
+// templateSchema.methods.generatePayload = function () {
+//   const { templateType, content } = this;
+//   let jioContent;
+
+//   switch (templateType) {
+//     case 'richCard': {
+//       const cardContent = {};
+      
+//       if (content.title?.trim()) {
+//         cardContent.cardTitle = content.title.trim();
+//       }
+      
+//       if ((content.description || content.subtitle)?.trim()) {
+//         cardContent.cardDescription = (content.description || content.subtitle).trim();
+//       }
+      
+//       if (content.imageUrl?.trim()) {
+//         cardContent.cardMedia = {
+//           mediaHeight: 'TALL',
+//           contentInfo: { fileUrl: content.imageUrl.trim() }
+//         };
+//       }
+      
+//       if (content.actions?.length > 0) {
+//         cardContent.suggestions = content.actions
+//           .filter(action => action.label && action.uri)
+//           .map(action => {
+//             const label = action.label;
+//             const uri = action.uri;
+            
+//             if (action.actionType === 'openUri' || uri.startsWith('http')) {
+//               return {
+//                 action: {
+//                   plainText: label,
+//                   postBack: { data: uri },
+//                   openUrl: { url: uri.startsWith('http') ? uri : `https://${uri}` }
+//                 }
+//               };
+//             }
+            
+//             if (action.actionType === 'dialPhone' || uri.startsWith('+')) {
+//               return {
+//                 action: {
+//                   plainText: label,
+//                   postBack: { data: uri },
+//                   dialerAction: { phoneNumber: uri.startsWith('+') ? uri : `+91${uri}` }
+//                 }
+//               };
+//             }
+            
+//             return {
+//               reply: {
+//                 plainText: label,
+//                 postBack: { data: uri }
+//               }
+//             };
+//           });
+//       }
+      
+//       jioContent = {
+//         richCardDetails: {
+//           standalone: {
+//             cardOrientation: 'VERTICAL',
+//             content: cardContent
+//           }
+//         }
+//       };
+//       break;
+//     }
+
+//     case 'carousel': {
+//       const validCards = (content.cards || []).map(card => {
+//         if (!card.title?.trim() || !(card.description || card.subtitle)?.trim() || !card.imageUrl?.trim()) {
+//           return null;
+//         }
+        
+//         const cardContent = {
+//           cardTitle: card.title.trim(),
+//           cardDescription: (card.description || card.subtitle).trim(),
+//           cardMedia: {
+//             contentInfo: { fileUrl: card.imageUrl.trim() },
+//             mediaHeight: 'MEDIUM'
+//           }
+//         };
+        
+//         if (card.actions?.length > 0) {
+//           cardContent.suggestions = card.actions
+//             .filter(action => action.label && action.uri)
+//             .map(action => {
+//               if (action.actionType === 'openUri') {
+//                 return {
+//                   action: {
+//                     plainText: action.label,
+//                     postBack: { data: 'carousel_action' },
+//                     openUrl: { url: action.uri }
+//                   }
+//                 };
+//               }
+//               if (action.actionType === 'dialPhone') {
+//                 return {
+//                   action: {
+//                     plainText: action.label,
+//                     postBack: { data: 'carousel_action' },
+//                     dialerAction: { phoneNumber: action.uri.startsWith('+') ? action.uri : `+91${action.uri}` }
+//                   }
+//                 };
+//               }
+//               return {
+//                 reply: {
+//                   plainText: action.label,
+//                   postBack: { data: action.uri }
+//                 }
+//               };
+//             });
+//         }
+        
+//         return cardContent;
+//       }).filter(Boolean);
+      
+//       jioContent = {
+//         richCardDetails: {
+//           carousel: {
+//             cardWidth: 'MEDIUM_WIDTH',
+//             contents: validCards
+//           }
+//         }
+//       };
+//       break;
+//     }
+
+//     case 'textWithAction': {
+//       const textSuggestions = (content.buttons || []).map(btn => {
+//         const label = btn.label || btn.text || 'Action';
+//         const value = btn.value || btn.uri || '';
+        
+//         if (!label || !value) return null;
+        
+//         if (btn.actionType === 'dialPhone') {
+//           return {
+//             action: {
+//               plainText: label,
+//               postBack: { data: value },
+//               dialerAction: { phoneNumber: value.startsWith('+') ? value : `+91${value}` }
+//             }
+//           };
+//         }
+        
+//         if (btn.actionType === 'openUri') {
+//           return {
+//             action: {
+//               plainText: label,
+//               postBack: { data: value },
+//               openUrl: { url: value.startsWith('http') ? value : `https://${value}` }
+//             }
+//           };
+//         }
+        
+//         return {
+//           reply: {
+//             plainText: label,
+//             postBack: { data: value }
+//           }
+//         };
+//       }).filter(Boolean);
+      
+//       jioContent = {
+//         plainText: content.text,
+//         ...(textSuggestions.length > 0 ? { suggestions: textSuggestions } : {})
+//       };
+//       break;
+//     }
+
+//     case 'plainText':
+//       jioContent = { plainText: content.body };
+//       break;
+
+//     default:
+//       throw new Error(`Unsupported template type: ${templateType}`);
+//   }
+
+//   return { content: jioContent };
+// };
+
 templateSchema.methods.generatePayload = function () {
   const { templateType, content } = this;
+
+  if (!content) {
+    throw new Error('Template content is required');
+  }
+
+  // --- helpers ---
+  const toBase64 = (val) =>
+    Buffer.from(String(val), 'utf8').toString('base64');
+
+  const sanitizeLabel = (label) =>
+    String(label).trim().slice(0, 25); // Jio limit: 25 chars
+
+  const ensureHttps = (url) =>
+    url.startsWith('http') ? url : `https://${url}`;
+
+  const buildSuggestion = (action = {}) => {
+    const label = sanitizeLabel(action.label);
+    const value = action.uri || action.value;
+
+    if (!label || !value) return null;
+
+    if (action.actionType === 'openUri') {
+      return {
+        action: {
+          plainText: label,
+          postback: { data: toBase64(value) },
+          openUrl: { url: ensureHttps(value) },
+        },
+      };
+    }
+
+    if (action.actionType === 'dialPhone') {
+      return {
+        action: {
+          plainText: label,
+          postback: { data: toBase64(value) },
+          dialerAction: {
+            phoneNumber: value.startsWith('+') ? value : `+91${value}`,
+          },
+        },
+      };
+    }
+
+    // default: reply
+    return {
+      reply: {
+        plainText: label,
+        postback: { data: toBase64(value) },
+      },
+    };
+  };
+
   let jioContent;
 
+  // --- template handling ---
   switch (templateType) {
     case 'richCard': {
-      const cardContent = {};
-      
-      if (content.title?.trim()) {
-        cardContent.cardTitle = content.title.trim();
+      if (!content.title || !content.imageUrl) {
+        throw new Error('Rich card requires title and imageUrl');
       }
-      
-      if ((content.description || content.subtitle)?.trim()) {
-        cardContent.cardDescription = (content.description || content.subtitle).trim();
-      }
-      
-      if (content.imageUrl?.trim()) {
-        cardContent.cardMedia = {
+
+      const cardContent = {
+        cardTitle: content.title.trim(),
+        ...(content.description || content.subtitle
+          ? { cardDescription: (content.description || content.subtitle).trim() }
+          : {}),
+        cardMedia: {
           mediaHeight: 'TALL',
-          contentInfo: { fileUrl: content.imageUrl.trim() }
-        };
-      }
-      
-      if (content.actions?.length > 0) {
+          contentInfo: { fileUrl: ensureHttps(content.imageUrl) },
+        },
+      };
+
+      if (Array.isArray(content.actions) && content.actions.length) {
         cardContent.suggestions = content.actions
-          .filter(action => action.label && action.uri)
-          .map(action => {
-            const label = action.label;
-            const uri = action.uri;
-            
-            if (action.actionType === 'openUri' || uri.startsWith('http')) {
-              return {
-                action: {
-                  plainText: label,
-                  postBack: { data: uri },
-                  openUrl: { url: uri.startsWith('http') ? uri : `https://${uri}` }
-                }
-              };
-            }
-            
-            if (action.actionType === 'dialPhone' || uri.startsWith('+')) {
-              return {
-                action: {
-                  plainText: label,
-                  postBack: { data: uri },
-                  dialerAction: { phoneNumber: uri.startsWith('+') ? uri : `+91${uri}` }
-                }
-              };
-            }
-            
-            return {
-              reply: {
-                plainText: label,
-                postBack: { data: uri }
-              }
-            };
-          });
+          .map(buildSuggestion)
+          .filter(Boolean)
+          .slice(0, 4);
       }
-      
+
       jioContent = {
         richCardDetails: {
           standalone: {
             cardOrientation: 'VERTICAL',
-            content: cardContent
-          }
-        }
+            content: cardContent,
+          },
+        },
       };
       break;
     }
 
     case 'carousel': {
-      const validCards = (content.cards || []).map(card => {
-        if (!card.title?.trim() || !(card.description || card.subtitle)?.trim() || !card.imageUrl?.trim()) {
-          return null;
-        }
-        
-        const cardContent = {
-          cardTitle: card.title.trim(),
-          cardDescription: (card.description || card.subtitle).trim(),
-          cardMedia: {
-            contentInfo: { fileUrl: card.imageUrl.trim() },
-            mediaHeight: 'MEDIUM'
+      if (!Array.isArray(content.cards) || content.cards.length === 0) {
+        throw new Error('Carousel requires at least one card');
+      }
+
+      const cards = content.cards
+        .map((card) => {
+          if (!card.title || !card.imageUrl) return null;
+
+          const c = {
+            cardTitle: card.title.trim(),
+            ...(card.description || card.subtitle
+              ? { cardDescription: (card.description || card.subtitle).trim() }
+              : {}),
+            cardMedia: {
+              mediaHeight: 'MEDIUM',
+              contentInfo: { fileUrl: ensureHttps(card.imageUrl) },
+            },
+          };
+
+          if (Array.isArray(card.actions) && card.actions.length) {
+            c.suggestions = card.actions
+              .map(buildSuggestion)
+              .filter(Boolean)
+              .slice(0, 4);
           }
-        };
-        
-        if (card.actions?.length > 0) {
-          cardContent.suggestions = card.actions
-            .filter(action => action.label && action.uri)
-            .map(action => {
-              if (action.actionType === 'openUri') {
-                return {
-                  action: {
-                    plainText: action.label,
-                    postBack: { data: 'carousel_action' },
-                    openUrl: { url: action.uri }
-                  }
-                };
-              }
-              if (action.actionType === 'dialPhone') {
-                return {
-                  action: {
-                    plainText: action.label,
-                    postBack: { data: 'carousel_action' },
-                    dialerAction: { phoneNumber: action.uri.startsWith('+') ? action.uri : `+91${action.uri}` }
-                  }
-                };
-              }
-              return {
-                reply: {
-                  plainText: action.label,
-                  postBack: { data: action.uri }
-                }
-              };
-            });
-        }
-        
-        return cardContent;
-      }).filter(Boolean);
-      
+
+          return c;
+        })
+        .filter(Boolean)
+        .slice(0, 10); // Jio max 10 cards
+
+      if (!cards.length) {
+        throw new Error('Carousel has no valid cards');
+      }
+
       jioContent = {
         richCardDetails: {
           carousel: {
             cardWidth: 'MEDIUM_WIDTH',
-            contents: validCards
-          }
-        }
+            contents: cards,
+          },
+        },
       };
       break;
     }
 
     case 'textWithAction': {
-      const textSuggestions = (content.buttons || []).map(btn => {
-        const label = btn.label || btn.text || 'Action';
-        const value = btn.value || btn.uri || '';
-        
-        if (!label || !value) return null;
-        
-        if (btn.actionType === 'dialPhone') {
-          return {
-            action: {
-              plainText: label,
-              postBack: { data: value },
-              dialerAction: { phoneNumber: value.startsWith('+') ? value : `+91${value}` }
-            }
-          };
-        }
-        
-        if (btn.actionType === 'openUri') {
-          return {
-            action: {
-              plainText: label,
-              postBack: { data: value },
-              openUrl: { url: value.startsWith('http') ? value : `https://${value}` }
-            }
-          };
-        }
-        
-        return {
-          reply: {
-            plainText: label,
-            postBack: { data: value }
-          }
-        };
-      }).filter(Boolean);
-      
+      if (!content.text) {
+        throw new Error('Text message requires text');
+      }
+
+      const suggestions = (content.buttons || [])
+        .map(buildSuggestion)
+        .filter(Boolean)
+        .slice(0, 4);
+
       jioContent = {
         plainText: content.text,
-        ...(textSuggestions.length > 0 ? { suggestions: textSuggestions } : {})
+        ...(suggestions.length ? { suggestions } : {}),
       };
       break;
     }
 
-    case 'plainText':
-      jioContent = { plainText: content.body };
+    case 'plainText': {
+      if (!content.body) {
+        throw new Error('Plain text requires body');
+      }
+
+      jioContent = {
+        plainText: content.body,
+      };
       break;
+    }
 
     default:
       throw new Error(`Unsupported template type: ${templateType}`);
@@ -390,6 +564,7 @@ templateSchema.methods.generatePayload = function () {
 
   return { content: jioContent };
 };
+
 
 
 export default mongoose.model('Template', templateSchema);

@@ -210,30 +210,11 @@ campaignSchema.methods.completeCampaign = async function() {
     const blockedAmount = this.blockedAmount || this.estimatedCost || deliveryStats.total;
     const refundAmount = Math.max(0, blockedAmount - actualCost);
 
-    // Update campaign - clear blocked amount after completion
-    this.actualCost = actualCost;
-    this.refundedAmount = refundAmount;
-    this.blockedAmount = 0; // Clear blocked amount
-    this.status = 'completed';
-    this.completedAt = new Date();
-    this.stats = {
-      total: deliveryStats.total,
-      sent: deliveryStats.delivered + deliveryStats.failed + deliveryStats.expired,
-      delivered: deliveryStats.delivered,
-      failed: deliveryStats.failed,
-      read: 0,
-      replied: 0,
-      bounced: 0
-    };
-    await this.save({ session });
-
-    // Wallet settlement:
-    // 1. Deduct actual cost from balance
-    // 2. Unblock the blocked amount
+    // Wallet settlement FIRST (before updating campaign)
     const walletUpdate = {
       $inc: {
-        'wallet.balance': -actualCost, // Deduct actual cost
-        'wallet.blockedBalance': -blockedAmount // Unblock
+        'wallet.balance': -actualCost,
+        'wallet.blockedBalance': -blockedAmount
       },
       $set: {
         'wallet.lastUpdated': new Date()
@@ -250,6 +231,23 @@ campaignSchema.methods.completeCampaign = async function() {
     };
 
     await User.findByIdAndUpdate(this.userId, walletUpdate, { session });
+
+    // Update campaign AFTER wallet is updated
+    this.actualCost = actualCost;
+    this.refundedAmount = refundAmount;
+    this.blockedAmount = 0;
+    this.status = 'completed';
+    this.completedAt = new Date();
+    this.stats = {
+      total: deliveryStats.total,
+      sent: deliveryStats.delivered + deliveryStats.failed + deliveryStats.expired,
+      delivered: deliveryStats.delivered,
+      failed: deliveryStats.failed,
+      read: 0,
+      replied: 0,
+      bounced: 0
+    };
+    await this.save({ session });
 
     await session.commitTransaction();
     
