@@ -92,11 +92,14 @@ app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
   console.log('Complete Webhook Data:', JSON.stringify(req.body, null, 2));
   console.log('==========================================\n');
 
-  sendWebhookToKafka({
+  const kafkaPayload = {
     data: req.body,
     timestamp: Date.now(),
     messageId
-  });
+  };
+  
+  console.log('📤 Sending to Kafka with messageId:', messageId);
+  sendWebhookToKafka(kafkaPayload);
 });
 
 
