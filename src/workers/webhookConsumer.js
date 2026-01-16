@@ -45,7 +45,9 @@ async function startWebhookConsumer() {
             const webhookData = JSON.parse(message.value.toString());
             const data = webhookData.data;
             
-            const messageId = data?.entity?.messageId || 
+            // Use the messageId from the webhook payload (already processed in app.js)
+            const messageId = webhookData.messageId || 
+                            data?.entity?.messageId || 
                             data?.messageId || 
                             data?.entity?.rcsMessageId ||
                             data?.rcsMessageId;
