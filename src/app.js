@@ -26,20 +26,20 @@ app.use(
 
 // High-performance middleware for large payloads
 app.use(express.json({
-  limit: '1gb',
-  parameterLimit: 130000,
+  limit: '100mb',
+  parameterLimit: 500000,
   extended: true
 }));
 app.use(express.urlencoded({
-  limit: '1gb',
+  limit: '100mb',
   extended: true,
-  parameterLimit: 130000
+  parameterLimit: 500000
 }));
 // Increase timeout for large requests
 app.use((req, res, next) => {
   if (req.path.includes('/campaigns') || req.path.includes('/check-capability')) {
-    req.setTimeout(300000); // 5 minutes
-    res.setTimeout(300000);
+    req.setTimeout(600000); // 10 minutes
+    res.setTimeout(600000);
   }
   next();
 });

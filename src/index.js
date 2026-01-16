@@ -52,6 +52,11 @@ if (cluster.isPrimary) {
       await connectDB();
 
       const server = createServer(app);
+      
+      // Increase server timeout for large requests
+      server.timeout = 600000; // 10 minutes
+      server.keepAliveTimeout = 610000; // 10 minutes + 10 seconds
+      server.headersTimeout = 620000; // 10 minutes + 20 seconds
 
       server.listen(PORT, () => {
         console.log(`✅ Worker ${process.pid} listening on port ${PORT}`);
