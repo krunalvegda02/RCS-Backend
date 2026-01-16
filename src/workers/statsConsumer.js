@@ -61,9 +61,10 @@ async function startStatsConsumer() {
         const walletOps = new Map();
         
         for (const log of logs) {
-          const { messageId, webhookData, campaignId, userId } = log;
+          const { messageId, webhookData, campaignId, userId, eventType: logEventType } = log;
           const eventType = webhookData?.eventType;
           const entity = webhookData?.rawPayload?.entity;
+          const entityType = webhookData?.rawPayload?.entityType;
           
           // Convert ObjectIds to strings for Map keys
           const userIdStr = userId?.toString ? userId.toString() : userId;
@@ -76,7 +77,22 @@ async function startStatsConsumer() {
           let newStatus = null;
           let updateFields = {};
           
-          switch (eventType) {
+          // Check if this is a user interaction (click or reply)
+          const isUserInteraction = logEventType === 'user_interaction' || entityType === 'USER_MESSAGE';
+          
+          if (isUserInteraction) {
+            newStatus = 'replied';
+            updateFields['campaigns.$.lastInteractionAt'] = timestamp;
+            if (webhookData.suggestionResponse) {
+              updateFields['campaigns.$.suggestionResponse'] = webhookData.suggestionResponse;
+              updateFields['campaigns.$.clickedAt'] = timestamp;
+              updateFields['campaigns.$.clickedAction'] = webhookData.suggestionResponse.plainText;
+            }
+            if (webhookData.rawPayload?.entity?.text) {
+              updateFields['campaigns.$.userText'] = webhookData.rawPayload.entity.text;
+            }
+          } else {
+            switch (eventType) {
             case 'MESSAGE_SENT':
             case 'SEND_MESSAGE_SUCCESS':
               newStatus = 'sent';
@@ -105,19 +121,7 @@ async function startStatsConsumer() {
               if (!walletOps.has(userIdStr)) walletOps.set(userIdStr, { delivered: 0, refund: 0 });
               walletOps.get(userIdStr).refund += 1;
               break;
-              
-            case 'USER_MESSAGE':
-              newStatus = 'replied';
-              updateFields['campaigns.$.lastInteractionAt'] = timestamp;
-              if (webhookData.suggestionResponse) {
-                updateFields['campaigns.$.suggestionResponse'] = webhookData.suggestionResponse;
-                updateFields['campaigns.$.clickedAt'] = timestamp;
-                updateFields['campaigns.$.clickedAction'] = webhookData.suggestionResponse.plainText;
-              }
-              if (webhookData.rawPayload?.entity?.text) {
-                updateFields['campaigns.$.userText'] = webhookData.rawPayload.entity.text;
-              }
-              break;
+            }
           }
           
           if (newStatus) {
@@ -133,12 +137,10 @@ async function startStatsConsumer() {
                     'campaigns.$.lastWebhookAt': timestamp,
                     ...updateFields
                   },
-                  ...(webhookData.suggestionResponse && {
-                    $inc: { 'campaigns.$.userClickCount': 1 }
-                  }),
-                  ...(webhookData.rawPayload?.entity?.text && {
-                    $inc: { 'campaigns.$.userReplyCount': 1 }
-                  })
+                  $inc: {
+                    ...(webhookData.suggestionResponse && { 'campaigns.$.userClickCount': 1 }),
+                    ...(webhookData.rawPayload?.entity?.text && { 'campaigns.$.userReplyCount': 1 })
+                  }
                 }
               }
             });
