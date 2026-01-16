@@ -161,35 +161,46 @@ campaignSchema.statics.findAvailableBot = async function() {
 
 // Complete campaign and settle wallet
 campaignSchema.methods.completeCampaign = async function() {
+  console.log(`\n========================================`);
+  console.log(`[CompleteCampaign] START for campaign ${this._id}`);
+  console.log(`[CompleteCampaign] Current status: ${this.status}, blockedAmount: ${this.blockedAmount}`);
+  
   const session = await mongoose.startSession();
   session.startTransaction();
+  console.log(`[CompleteCampaign] Transaction started`);
   
   try {
     const User = mongoose.model('User');
     const Campaign = mongoose.model('Campaign');
     
     // Get fresh campaign data within transaction
+    console.log(`[CompleteCampaign] Fetching fresh campaign data...`);
     const campaign = await Campaign.findById(this._id).session(session);
     if (!campaign) {
       throw new Error('Campaign not found');
     }
+    console.log(`[CompleteCampaign] Fresh data: status=${campaign.status}, blockedAmount=${campaign.blockedAmount}`);
     
     // If already completed with blockedAmount = 0, skip
     if (campaign.status === 'completed' && campaign.blockedAmount === 0) {
       await session.abortTransaction();
-      console.log(`[CompleteCampaign] ${campaign._id} already completed properly`);
+      console.log(`[CompleteCampaign] ✅ Already completed properly, skipping`);
+      console.log(`========================================\n`);
       return;
     }
     
+    console.log(`[CompleteCampaign] Fetching user data...`);
     const user = await User.findById(campaign.userId).session(session);
     if (!user) {
       throw new Error('User not found');
     }
+    console.log(`[CompleteCampaign] User wallet: balance=${user.wallet.balance}, blocked=${user.wallet.blockedBalance}`);
 
     if (!ContactCampaignMessage) {
       ContactCampaignMessage = mongoose.model('ContactCampaignMessage');
     }
     
+    console.log(`[CompleteCampaign] Aggregating message stats...`);
     const stats = await ContactCampaignMessage.aggregate([
       { $match: { userId: campaign.userId } },
       { $unwind: '$campaigns' },
@@ -218,16 +229,18 @@ campaignSchema.methods.completeCampaign = async function() {
     ]).session(session);
 
     const deliveryStats = stats[0] || { total: 0, delivered: 0, failed: 0, expired: 0 };
+    console.log(`[CompleteCampaign] Message stats:`, deliveryStats);
     
     // Calculate actual cost (only delivered messages)
     const actualCost = deliveryStats.delivered * 1;
     const blockedAmount = campaign.blockedAmount || campaign.estimatedCost || deliveryStats.total;
     const refundAmount = Math.max(0, blockedAmount - actualCost);
 
-    console.log(`[CompleteCampaign] ${campaign._id}: Blocked=₹${blockedAmount}, Actual=₹${actualCost}, Refund=₹${refundAmount}`);
+    console.log(`[CompleteCampaign] Calculations: Blocked=₹${blockedAmount}, Actual=₹${actualCost}, Refund=₹${refundAmount}`);
 
     // Only adjust wallet if there's a blocked amount to unblock
     if (blockedAmount > 0) {
+      console.log(`[CompleteCampaign] Updating wallet...`);
       const walletUpdate = {
         $inc: {
           'wallet.balance': -actualCost,
@@ -247,10 +260,14 @@ campaignSchema.methods.completeCampaign = async function() {
         }
       };
 
-      await User.findByIdAndUpdate(campaign.userId, walletUpdate, { session });
+      const walletResult = await User.findByIdAndUpdate(campaign.userId, walletUpdate, { session, new: true });
+      console.log(`[CompleteCampaign] Wallet updated: balance=${walletResult.wallet.balance}, blocked=${walletResult.wallet.blockedBalance}`);
+    } else {
+      console.log(`[CompleteCampaign] No blocked amount to unblock, skipping wallet update`);
     }
 
     // CRITICAL: Update campaign with explicit $set to ensure blockedAmount becomes 0
+    console.log(`[CompleteCampaign] Updating campaign document...`);
     const updateResult = await Campaign.updateOne(
       { _id: campaign._id },
       {
@@ -272,12 +289,26 @@ campaignSchema.methods.completeCampaign = async function() {
       { session }
     );
 
-    console.log(`[CompleteCampaign] Update result: matched=${updateResult.matchedCount}, modified=${updateResult.modifiedCount}`);
+    console.log(`[CompleteCampaign] Campaign update result: matched=${updateResult.matchedCount}, modified=${updateResult.modifiedCount}`);
+    
+    if (updateResult.matchedCount === 0) {
+      throw new Error('Campaign not found during update');
+    }
+    if (updateResult.modifiedCount === 0) {
+      console.warn(`[CompleteCampaign] ⚠️  Campaign matched but not modified - may already have these values`);
+    }
 
+    console.log(`[CompleteCampaign] Committing transaction...`);
     await session.commitTransaction();
+    console.log(`[CompleteCampaign] Transaction committed successfully`);
+    
+    // Verify the update
+    const verifyResult = await Campaign.findById(campaign._id).select('blockedAmount status');
+    console.log(`[CompleteCampaign] Verification: blockedAmount=${verifyResult.blockedAmount}, status=${verifyResult.status}`);
     
     console.log(`✅ Campaign ${campaign._id} completed successfully`);
     console.log(`   Delivered: ${deliveryStats.delivered}, Failed: ${deliveryStats.failed}, Expired: ${deliveryStats.expired}`);
+    console.log(`========================================\n`);
     
     // Update local instance
     this.actualCost = actualCost;
@@ -294,8 +325,12 @@ campaignSchema.methods.completeCampaign = async function() {
       expired: deliveryStats.expired
     };
   } catch (error) {
+    console.error(`[CompleteCampaign] ❌ ERROR occurred:`, error.message);
+    console.error(`[CompleteCampaign] Stack trace:`, error.stack);
+    console.log(`[CompleteCampaign] Aborting transaction...`);
     await session.abortTransaction();
-    console.error(`❌ Campaign completion failed for ${this._id}:`, error.message);
+    console.log(`[CompleteCampaign] Transaction aborted`);
+    console.log(`========================================\n`);
     throw error;
   } finally {
     session.endSession();
