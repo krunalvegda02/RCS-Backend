@@ -210,10 +210,10 @@ campaignSchema.methods.completeCampaign = async function() {
     const blockedAmount = this.blockedAmount || this.estimatedCost || deliveryStats.total;
     const refundAmount = Math.max(0, blockedAmount - actualCost);
 
-    // Update campaign
+    // Update campaign - clear blocked amount after completion
     this.actualCost = actualCost;
     this.refundedAmount = refundAmount;
-    this.blockedAmount = blockedAmount;
+    this.blockedAmount = 0; // Clear blocked amount
     this.status = 'completed';
     this.completedAt = new Date();
     this.stats = {
