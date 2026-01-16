@@ -100,14 +100,9 @@ export const createMasterCampaign = async (req, res) => {
 
       await ContactCampaignMessage.bulkWrite(bulkOps, { ordered: false });
       await Campaign.findByIdAndUpdate(campaign._id, { status: 'pending' });
-    } else {
-      // Kafka sent successfully - update status to pending immediately
-      // Consumer will process entries in background
-      await Campaign.findByIdAndUpdate(campaign._id, { status: 'pending' });
-      console.log(`[Campaign] Status updated to pending after Kafka send`);
     }
 
-    // Note: Consumer will update to 'pending' after processing completes
+    // Kafka consumer will update status to 'pending' after all chunks complete
 
     console.log(`[Campaign] ✅ Created campaign with ${phoneNumbers.length} contacts on ${botId}`);
 
