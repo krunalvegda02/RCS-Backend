@@ -8,12 +8,12 @@ async function expirePendingMessages() {
     
     const ContactCampaignMessage = (await import('../src/models/contact_campaign_message.model.js')).default;
     
-    // Find messages that are pending for more than 5 minutes
+    // Find messages that are pending OR sent for more than 5 minutes without response
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
     
     const result = await ContactCampaignMessage.updateMany(
       {
-        'campaigns.status': 'pending',
+        'campaigns.status': { $in: ['pending', 'sent'] },
         'createdAt': { $lt: fiveMinutesAgo }
       },
       {
@@ -26,7 +26,7 @@ async function expirePendingMessages() {
       }
     );
     
-    console.log(`✅ Expired ${result.modifiedCount} pending messages older than 5 minutes`);
+    console.log(`✅ Expired ${result.modifiedCount} pending/sent messages older than 5 minutes`);
     
     await mongoose.connection.close();
     process.exit(0);
