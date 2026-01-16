@@ -111,10 +111,13 @@ async function startBatchEntriesConsumer() {
         
         // Check if any campaign completed all chunks
         for (const [campaignKey, progress] of campaignChunks.entries()) {
+          console.log(`[BatchConsumer] 🔍 Checking campaign ${campaignKey}: ${progress.completed.size}/${progress.total} chunks completed`);
+          console.log(`[BatchConsumer] 🔍 Completed chunk indexes:`, Array.from(progress.completed).sort((a,b) => a-b));
+          
           if (progress.completed.size === progress.total) {
             const Campaign = (await import('../models/campaign.model.js')).default;
-            await Campaign.findByIdAndUpdate(campaignKey, { status: 'pending' });
-            console.log(`[BatchConsumer] ✅✅✅ Campaign ${campaignKey} ALL ${progress.total} chunks completed - STATUS UPDATED TO PENDING ✅✅✅`);
+            const updated = await Campaign.findByIdAndUpdate(campaignKey, { status: 'pending' }, { new: true });
+            console.log(`[BatchConsumer] ✅✅✅ Campaign ${campaignKey} ALL ${progress.total} chunks completed - STATUS UPDATED TO: ${updated?.status} ✅✅✅`);
             campaignChunks.delete(campaignKey);
           }
         }
