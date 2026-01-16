@@ -222,12 +222,26 @@ async function startStatsConsumer() {
             try {
               const campaign = await Campaign.findById(campaignId);
               
-              // Only check campaigns that are not already completed
-              if (!campaign || campaign.status === 'completed') {
+              if (!campaign) {
+                console.log(`[StatsConsumer] Campaign ${campaignId} not found, skipping`);
                 continue;
               }
               
-              console.log(`[StatsConsumer] Campaign ${campaignId} status: ${campaign.status}`);
+              console.log(`[StatsConsumer] Campaign ${campaignId} status: ${campaign.status}, blockedAmount: ${campaign.blockedAmount}`);
+              
+              // Check campaigns that are completed but still have blocked amounts
+              if (campaign.status === 'completed' && campaign.blockedAmount > 0) {
+                console.log(`[StatsConsumer] ⚠️  Campaign ${campaignId} is completed but has blockedAmount=${campaign.blockedAmount}, fixing...`);
+                await campaign.completeCampaign();
+                console.log(`[StatsConsumer] ✅ Fixed campaign ${campaignId}`);
+                continue;
+              }
+              
+              // Skip campaigns already properly completed
+              if (campaign.status === 'completed' && campaign.blockedAmount === 0) {
+                console.log(`[StatsConsumer] Campaign ${campaignId} already completed properly, skipping`);
+                continue;
+              }
               
               // Check if all messages are processed
               const stats = await ContactCampaignMessage.aggregate([
@@ -257,7 +271,8 @@ async function startStatsConsumer() {
                 console.log(`[StatsConsumer] Campaign ${campaignId} not ready: ${pending} still pending`);
               }
             } catch (error) {
-              console.error(`[StatsConsumer] Error checking campaign ${campaignId}:`, error.message);
+              console.error(`[StatsConsumer] ❌ Error checking campaign ${campaignId}:`, error.message);
+              console.error(`[StatsConsumer] Stack:`, error.stack);
             }
           }
         }
