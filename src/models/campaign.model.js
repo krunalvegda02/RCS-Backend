@@ -161,13 +161,26 @@ campaignSchema.statics.findAvailableBot = async function() {
 
 // Complete campaign and settle wallet
 campaignSchema.methods.completeCampaign = async function() {
+  // Prevent double completion
+  if (this.status === 'completed' && this.blockedAmount === 0) {
+    console.log(`Campaign ${this._id} already completed properly`);
+    return;
+  }
+  
   const session = await mongoose.startSession();
   session.startTransaction();
   
   try {
     const User = mongoose.model('User');
-    const user = await User.findById(this.userId).session(session);
+    const Campaign = mongoose.model('Campaign');
     
+    // Get fresh campaign data within transaction
+    const campaign = await Campaign.findById(this._id).session(session);
+    if (!campaign) {
+      throw new Error('Campaign not found');
+    }
+    
+    const user = await User.findById(campaign.userId).session(session);
     if (!user) {
       throw new Error('User not found');
     }
@@ -177,9 +190,9 @@ campaignSchema.methods.completeCampaign = async function() {
     }
     
     const stats = await ContactCampaignMessage.aggregate([
-      { $match: { userId: this.userId } },
+      { $match: { userId: campaign.userId } },
       { $unwind: '$campaigns' },
-      { $match: { 'campaigns.campaignId': this._id } },
+      { $match: { 'campaigns.campaignId': campaign._id } },
       {
         $group: {
           _id: null,
@@ -207,8 +220,10 @@ campaignSchema.methods.completeCampaign = async function() {
     
     // Calculate actual cost (only delivered messages)
     const actualCost = deliveryStats.delivered * 1;
-    const blockedAmount = this.blockedAmount || this.estimatedCost || deliveryStats.total;
+    const blockedAmount = campaign.blockedAmount || campaign.estimatedCost || deliveryStats.total;
     const refundAmount = Math.max(0, blockedAmount - actualCost);
+
+    console.log(`[CompleteCampaign] ${campaign._id}: Blocked=₹${blockedAmount}, Actual=₹${actualCost}, Refund=₹${refundAmount}`);
 
     // Wallet settlement FIRST (before updating campaign)
     const walletUpdate = {
@@ -224,36 +239,47 @@ campaignSchema.methods.completeCampaign = async function() {
           type: 'debit',
           amount: actualCost,
           balanceAfter: user.wallet.balance - actualCost,
-          description: `Campaign "${this.name}" completed. Charged ₹${actualCost} for ${deliveryStats.delivered} delivered. ${deliveryStats.failed} failed + ${deliveryStats.expired} expired not charged.`,
+          description: `Campaign "${campaign.name}" completed. Charged ₹${actualCost} for ${deliveryStats.delivered} delivered. ${deliveryStats.failed} failed + ${deliveryStats.expired} expired not charged.`,
           createdAt: new Date()
         }
       }
     };
 
-    await User.findByIdAndUpdate(this.userId, walletUpdate, { session });
+    await User.findByIdAndUpdate(campaign.userId, walletUpdate, { session });
 
-    // Update campaign AFTER wallet is updated
+    // Update campaign AFTER wallet is updated - CRITICAL: Use findByIdAndUpdate
+    await Campaign.findByIdAndUpdate(
+      campaign._id,
+      {
+        $set: {
+          actualCost,
+          refundedAmount: refundAmount,
+          blockedAmount: 0,
+          status: 'completed',
+          completedAt: new Date(),
+          'stats.total': deliveryStats.total,
+          'stats.sent': deliveryStats.delivered + deliveryStats.failed + deliveryStats.expired,
+          'stats.delivered': deliveryStats.delivered,
+          'stats.failed': deliveryStats.failed,
+          'stats.read': 0,
+          'stats.replied': 0,
+          'stats.bounced': 0
+        }
+      },
+      { session }
+    );
+
+    await session.commitTransaction();
+    
+    console.log(`✅ Campaign ${campaign._id} completed successfully`);
+    console.log(`   Delivered: ${deliveryStats.delivered}, Failed: ${deliveryStats.failed}, Expired: ${deliveryStats.expired}`);
+    
+    // Update local instance
     this.actualCost = actualCost;
     this.refundedAmount = refundAmount;
     this.blockedAmount = 0;
     this.status = 'completed';
     this.completedAt = new Date();
-    this.stats = {
-      total: deliveryStats.total,
-      sent: deliveryStats.delivered + deliveryStats.failed + deliveryStats.expired,
-      delivered: deliveryStats.delivered,
-      failed: deliveryStats.failed,
-      read: 0,
-      replied: 0,
-      bounced: 0
-    };
-    await this.save({ session });
-
-    await session.commitTransaction();
-    
-    console.log(`✅ Campaign ${this._id} completed:`);
-    console.log(`   Blocked: ₹${blockedAmount}, Actual: ₹${actualCost}, Refund: ₹${refundAmount}`);
-    console.log(`   Delivered: ${deliveryStats.delivered}, Failed: ${deliveryStats.failed}, Expired: ${deliveryStats.expired}`);
     
     return {
       actualCost,
@@ -264,7 +290,7 @@ campaignSchema.methods.completeCampaign = async function() {
     };
   } catch (error) {
     await session.abortTransaction();
-    console.error('Campaign completion failed:', error);
+    console.error(`❌ Campaign completion failed for ${this._id}:`, error.message);
     throw error;
   } finally {
     session.endSession();

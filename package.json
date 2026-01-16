@@ -9,6 +9,8 @@
     "kafka-consumer": "node -r dotenv/config src/workers/kafkaConsumer.js",
     "batch-consumer": "node -r dotenv/config src/workers/batchEntriesConsumer.js",
     "stats-consumer": "node -r dotenv/config src/workers/statsConsumer.js",
+    "cleanup-campaigns": "node -r dotenv/config scripts/autoCleanupCampaigns.js",
+    "expire-messages": "node -r dotenv/config scripts/expirePendingMessages.js",
     "seed": "node -r dotenv/config src/scripts/seedTestData.js"
   },
   "keywords": [],
