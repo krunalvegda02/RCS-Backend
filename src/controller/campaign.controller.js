@@ -1009,8 +1009,9 @@ export const getUserCampaignReports = async (req, res) => {
         failed: 0
       };
 
-      // Use message count if available, otherwise fall back to campaign.stats.total
-      const totalRecipients = stats.totalRecipients > 0 ? stats.totalRecipients : (campaign.stats?.total || 0);
+      // Use campaign.stats.total as the primary source of truth for recipient count
+      // Fall back to message count only if stats.total is missing or 0
+      const totalRecipients = (campaign.stats?.total > 0) ? campaign.stats.total : stats.totalRecipients;
 
       console.log(`[Campaign] ${campaign.name}: isMaster=${campaign.isMaster}, stats.total=${campaign.stats?.total}, messageCount=${stats.totalRecipients}, final=${totalRecipients}`);
 

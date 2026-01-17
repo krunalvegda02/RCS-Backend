@@ -8,7 +8,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 3000,
-        MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
+        MONGODB_URI: 'mongodb+srv://sikarwarvishal75_db_user:Gama%40123@cluster0.whqwih.mongodb.net/rcs?retryWrites=true&w=majority',
         KAFKA_BROKER: 'localhost:9092',
         CLOUDINARY_CLOUD_NAME: 'krunalvegda02',
         CLOUDINARY_API_KEY: '528136484569676',
@@ -40,7 +40,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         WORKER_MODE: 'true',
-        MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
+        MONGODB_URI: 'mongodb+srv://sikarwarvishal75_db_user:Gama%40123@cluster0.whqwih.mongodb.net/rcs?retryWrites=true&w=majority',
         KAFKA_BROKER: 'localhost:9092',
         KAFKAJS_NO_PARTITIONER_WARNING: '1'
       },
@@ -58,7 +58,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         WORKER_MODE: 'true',
-        MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
+        MONGODB_URI: 'mongodb+srv://sikarwarvishal75_db_user:Gama%40123@cluster0.whqwih.mongodb.net/rcs?retryWrites=true&w=majority',
         KAFKA_BROKER: 'localhost:9092',
         KAFKAJS_NO_PARTITIONER_WARNING: '1'
       },
@@ -71,12 +71,12 @@ module.exports = {
     {
       name: 'batch-consumer',
       script: 'src/workers/batchEntriesConsumer.js',
-      instances: 1,
+      instances: 2,
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
         WORKER_MODE: 'true',
-        MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority',
+        MONGODB_URI: 'mongodb+srv://sikarwarvishal75_db_user:Gama%40123@cluster0.whqwih.mongodb.net/rcs?retryWrites=true&w=majority',
         KAFKA_BROKER: 'localhost:9092',
         KAFKAJS_NO_PARTITIONER_WARNING: '1'
       },
@@ -95,7 +95,7 @@ module.exports = {
       autorestart: false,
       env: {
         NODE_ENV: 'production',
-        MONGODB_URI: 'mongodb+srv://krunalvegda02:krunalvegda02@cluster0.jwybog2.mongodb.net/test?retryWrites=true&w=majority'
+        MONGODB_URI: 'mongodb+srv://sikarwarvishal75_db_user:Gama%40123@cluster0.whqwih.mongodb.net/rcs?retryWrites=true&w=majority'
       }
     }
   ]

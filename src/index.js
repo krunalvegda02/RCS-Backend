@@ -40,9 +40,9 @@ if (cluster.isPrimary) {
   process.on("SIGINT", () => process.exit(0));
   process.on("SIGTERM", () => process.exit(0));
 
-/* ============================
-   WORKER PROCESS
-============================ */
+  /* ============================
+     WORKER PROCESS
+  ============================ */
 } else {
   (async () => {
     try {
@@ -52,7 +52,7 @@ if (cluster.isPrimary) {
       await connectDB();
 
       const server = createServer(app);
-      
+
       // Increase server timeout for large requests
       server.timeout = 600000; // 10 minutes
       server.keepAliveTimeout = 610000; // 10 minutes + 10 seconds
@@ -65,7 +65,7 @@ if (cluster.isPrimary) {
       /* -------- GRACEFUL SHUTDOWN -------- */
       const gracefulShutdown = async () => {
         console.log(`🛑 Worker ${process.pid} shutting down`);
-        await JioRCSService.cleanup();
+        // await JioRCSService.cleanup();
         server.close(() => process.exit(0));
       };
 

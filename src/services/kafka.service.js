@@ -16,7 +16,7 @@ const producer = kafka.producer({
   retry: {
     retries: 2,
     initialRetryTime: 100
-  } 
+  }
 });
 
 const statsProducer = kafka.producer({
@@ -57,19 +57,19 @@ let dbConnectingPromise = null;
 export async function connectProducer() {
   if (producerConnected) return;
   if (connectingPromise) return connectingPromise;
-  
+
   connectingPromise = producer.connect().then(() => {
     producerConnected = true;
     connectingPromise = null;
     console.log('✅ Kafka Producer connected');
   });
-  
+
   return connectingPromise;
 }
 
 export async function sendWebhookToKafka(webhookData) {
   await connectProducer();
-  
+
   await producer.send({
     topic: 'rcs-webhooks',
     messages: [{
@@ -78,7 +78,7 @@ export async function sendWebhookToKafka(webhookData) {
       timestamp: Date.now()
     }]
   });
-  
+
   return { success: true };
 }
 
@@ -100,7 +100,7 @@ export async function sendStatsToKafka(data, isBatch = false) {
       }
       await statsConnectingPromise;
     }
-    
+
     // 🔥 FIX #6: Use sendBatch for better performance
     if (isBatch && Array.isArray(data)) {
       await statsProducer.sendBatch({
@@ -115,7 +115,7 @@ export async function sendStatsToKafka(data, isBatch = false) {
         key: data.logId,
         value: JSON.stringify(data)
       });
-      
+
       // Flush if buffer is full
       if (messageBuffer.length >= BUFFER_SIZE) {
         await flushStatsBuffer();
@@ -134,12 +134,12 @@ async function flushStatsBuffer() {
     clearTimeout(bufferTimer);
     bufferTimer = null;
   }
-  
+
   if (messageBuffer.length === 0) return;
-  
+
   const messages = [...messageBuffer];
   messageBuffer = [];
-  
+
   try {
     await statsProducer.sendBatch({
       topicMessages: [{
@@ -157,11 +157,11 @@ export async function connectConsumer() {
     console.log('[Consumer] Attempting to connect to Kafka...');
     await consumer.connect();
     console.log('[Consumer] Connected successfully');
-    
+
     console.log('[Consumer] Subscribing to rcs-webhooks topic...');
-    await consumer.subscribe({ 
-      topic: 'rcs-webhooks', 
-      fromBeginning: true 
+    await consumer.subscribe({
+      topic: 'rcs-webhooks',
+      fromBeginning: true
     });
     console.log('✅ Kafka Consumer connected and subscribed');
     return consumer;
@@ -171,7 +171,7 @@ export async function connectConsumer() {
     console.error('Error message:', error.message);
     console.error('Error code:', error.code);
     console.error('Kafka broker:', process.env.KAFKA_BROKER || 'localhost:9092');
-    
+
     if (error.message.includes('ECONNREFUSED')) {
       console.error('🔴 Kafka broker is not running on localhost:9092');
       console.error('💡 Start Kafka with: docker-compose -f docker-compose.kafka.prod.yml up -d');
@@ -180,7 +180,7 @@ export async function connectConsumer() {
     } else if (error.message.includes('topic')) {
       console.error('🔴 Topic rcs-webhooks may not exist');
     }
-    
+
     throw error;
   }
 }
@@ -191,12 +191,12 @@ export async function sendBatchEntriesToKafka(batchData) {
       console.error('[Kafka] Invalid batchData:', batchData);
       return { success: false, error: 'Invalid batch data structure' };
     }
-    
+
     const campaignId = batchData.campaignId?.toString ? batchData.campaignId.toString() : batchData.campaignId;
     const templateId = batchData.templateId?.toString ? batchData.templateId.toString() : batchData.templateId;
     const userId = batchData.userId?.toString ? batchData.userId.toString() : batchData.userId;
     const phoneNumbers = batchData.phoneNumbers;
-    
+
     if (!dbProducerConnected) {
       if (!dbConnectingPromise) {
         dbConnectingPromise = dbProducer.connect().then(() => {
@@ -207,17 +207,17 @@ export async function sendBatchEntriesToKafka(batchData) {
       }
       await dbConnectingPromise;
     }
-    
+
     // Split into 5K chunks for fast parallel processing
     const CHUNK_SIZE = 5000;
     const chunks = [];
     for (let i = 0; i < phoneNumbers.length; i += CHUNK_SIZE) {
       chunks.push(phoneNumbers.slice(i, i + CHUNK_SIZE));
     }
-    
+
     // Send all chunks in parallel using sendBatch
     const messages = chunks.map((chunk, index) => ({
-      key: `${campaignId}-${index}`,
+      key: campaignId.toString(),
       value: JSON.stringify({
         campaignId,
         templateId,
@@ -229,14 +229,14 @@ export async function sendBatchEntriesToKafka(batchData) {
       }),
       timestamp: Date.now()
     }));
-    
+
     await dbProducer.sendBatch({
       topicMessages: [{
         topic: 'campaign-batch-entries',
         messages
       }]
     });
-    
+
     console.log(`[Kafka] ✅ Sent ${phoneNumbers.length} contacts in ${chunks.length} chunks`);
     return { success: true, chunks: chunks.length };
   } catch (error) {
