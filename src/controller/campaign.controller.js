@@ -898,110 +898,11 @@ export const getUserCampaignReports = async (req, res) => {
 
     // Get ContactCampaignMessage model to aggregate interaction counts
 
-    // Get interaction counts for current page campaigns only
-    const campaignIds = campaignsLean.map(c => c._id);
-    console.log('[Campaign] Aggregating interactions for campaign IDs:', campaignIds.map(id => id.toString()));
-
-    // For master campaigns, also get their sub-campaign IDs
-    const allCampaignIds = [...campaignIds];
-    for (const campaign of campaignsLean) {
-      if (campaign.isMaster) {
-        const subCampaigns = await Campaign.find({ masterCampaignId: campaign._id }).select('_id').lean();
-        allCampaignIds.push(...subCampaigns.map(s => s._id));
-      }
-    }
-
-    // Convert userId to ObjectId for proper matching
-    const userObjectId = typeof userId === 'string' ? new mongoose.Types.ObjectId(userId) : userId;
-
-    // Debug: Check if there are any messages for this user
-    const totalMessages = await ContactCampaignMessage.countDocuments({ userId: userObjectId });
-    console.log(`[Campaign] Total messages for user: ${totalMessages}`);
-
-    // Debug: Check sample message
-    const sampleMessage = await ContactCampaignMessage.findOne({ userId: userObjectId }).lean();
-    if (sampleMessage) {
-      console.log(`[Campaign] Sample message campaignIds:`, sampleMessage.campaigns?.map(c => c.campaignId.toString()));
-    }
-
-    const interactionStats = await ContactCampaignMessage.aggregate([
-      { $match: { userId: userObjectId, 'campaigns.campaignId': { $in: allCampaignIds } } },
-      { $unwind: '$campaigns' },
-      { $match: { 'campaigns.campaignId': { $in: allCampaignIds } } },
-      {
-        $group: {
-          _id: '$campaigns.campaignId',
-          totalRecipients: { $sum: 1 },
-          totalInteractions: { $sum: '$campaigns.userClickCount' },
-          totalReplies: { $sum: '$campaigns.userReplyCount' },
-          totalSent: { $sum: { $cond: [{ $in: ['$campaigns.status', ['sent', 'delivered', 'read', 'replied']] }, 1, 0] } },
-          totalDelivered: { $sum: { $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0] } },
-          totalRead: { $sum: { $cond: [{ $in: ['$campaigns.status', ['read', 'replied']] }, 1, 0] } },
-          totalReplied: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'replied'] }, 1, 0] } },
-          totalFailed: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'failed'] }, 1, 0] } }
-        }
-      }
-    ]);
-
-    console.log('[Campaign] Interaction stats:', interactionStats);
-
-    // Create a map for quick lookup and aggregate sub-campaign stats to master
-    const interactionMap = {};
-    const subCampaignMap = {}; // Map sub-campaign stats to master
-
-    // First pass: collect all stats
-    interactionStats.forEach(stat => {
-      interactionMap[stat._id.toString()] = {
-        totalRecipients: stat.totalRecipients || 0,
-        interactions: stat.totalInteractions || 0,
-        replies: stat.totalReplies || 0,
-        sent: stat.totalSent || 0,
-        delivered: stat.totalDelivered || 0,
-        read: stat.totalRead || 0,
-        replied: stat.totalReplied || 0,
-        failed: stat.totalFailed || 0
-      };
-    });
-
-    // Second pass: aggregate sub-campaign stats to master campaigns
-    for (const campaign of campaignsLean) {
-      if (campaign.isMaster) {
-        const subCampaigns = await Campaign.find({ masterCampaignId: campaign._id }).select('_id').lean();
-        const masterStats = {
-          totalRecipients: 0,
-          interactions: 0,
-          replies: 0,
-          sent: 0,
-          delivered: 0,
-          read: 0,
-          replied: 0,
-          failed: 0
-        };
-
-        subCampaigns.forEach(sub => {
-          const subStats = interactionMap[sub._id.toString()];
-          if (subStats) {
-            masterStats.totalRecipients += subStats.totalRecipients;
-            masterStats.interactions += subStats.interactions;
-            masterStats.replies += subStats.replies;
-            masterStats.sent += subStats.sent;
-            masterStats.delivered += subStats.delivered;
-            masterStats.read += subStats.read;
-            masterStats.replied += subStats.replied;
-            masterStats.failed += subStats.failed;
-          }
-        });
-
-        interactionMap[campaign._id.toString()] = masterStats;
-      }
-    }
-
-    // Transform campaigns to match frontend expectations
+    // Optimized: Use campaign.stats directly instead of aggregating ContactCampaignMessage
+    // This avoids the expensive $unwind on heavy documents
     const reports = campaignsLean.map(campaign => {
-      const stats = interactionMap[campaign._id.toString()] || {
-        totalRecipients: 0,
-        interactions: 0,
-        replies: 0,
+      const stats = campaign.stats || {
+        total: 0,
         sent: 0,
         delivered: 0,
         read: 0,
@@ -1009,23 +910,17 @@ export const getUserCampaignReports = async (req, res) => {
         failed: 0
       };
 
-      // Use campaign.stats.total as the primary source of truth for recipient count
-      // Fall back to message count only if stats.total is missing or 0
-      const totalRecipients = (campaign.stats?.total > 0) ? campaign.stats.total : stats.totalRecipients;
-
-      console.log(`[Campaign] ${campaign.name}: isMaster=${campaign.isMaster}, stats.total=${campaign.stats?.total}, messageCount=${stats.totalRecipients}, final=${totalRecipients}`);
-
       return {
         _id: campaign._id,
         CampaignName: campaign.name,
         type: campaign.templateId?.templateType || 'RCS',
-        cost: totalRecipients,
+        cost: campaign.stats?.total || 0,
         successCount: stats.sent,
         failedCount: stats.failed,
         totalDelivered: stats.delivered,
         totalRead: stats.read,
         totalReplied: stats.replied,
-        userClickCount: stats.interactions,
+        userClickCount: 0, // Clicks not stored on campaign stats yet, performance tradeoff
         status: campaign.status,
         createdAt: campaign.createdAt,
         isMaster: campaign.isMaster || false
@@ -1037,15 +932,15 @@ export const getUserCampaignReports = async (req, res) => {
     // Calculate aggregate stats for all campaigns (not just current page) - exclude archived
     const userObjectIdForStats = typeof userId === 'string' ? new mongoose.Types.ObjectId(userId) : userId;
 
-    const sentStats = await ContactCampaignMessage.aggregate([
+    // Optimized: Aggregate stats from Campaign collection (O(N) vs O(M))
+    const sentStats = await Campaign.aggregate([
       { $match: { userId: userObjectIdForStats } },
-      { $unwind: '$campaigns' },
       {
         $group: {
           _id: null,
-          totalSent: { $sum: { $cond: [{ $in: ['$campaigns.status', ['sent', 'delivered', 'read', 'replied', 'failed']] }, 1, 0] } },
-          totalDelivered: { $sum: { $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0] } },
-          totalFailed: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'failed'] }, 1, 0] } }
+          totalSent: { $sum: '$stats.sent' },
+          totalDelivered: { $sum: '$stats.delivered' },
+          totalFailed: { $sum: '$stats.failed' }
         }
       }
     ]);
