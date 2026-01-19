@@ -122,33 +122,41 @@ campaignSchema.index({ botId: 1, status: 1 });
 
 
 
-// Sync stats from ContactCampaignMessage
+// Sync stats from ContactCampaignMessage - AUTOMATIC
 campaignSchema.methods.syncStats = async function () {
   if (!ContactCampaignMessage) {
     ContactCampaignMessage = mongoose.model('ContactCampaignMessage');
   }
 
   const stats = await ContactCampaignMessage.aggregate([
-    { $match: { userId: this.userId, 'campaigns.campaignId': this._id } },
+    { $match: { userId: this.userId } },
     { $unwind: '$campaigns' },
     { $match: { 'campaigns.campaignId': this._id } },
     {
       $group: {
-        _id: '$campaigns.status',
-        count: { $sum: 1 }
+        _id: null,
+        total: { $sum: 1 },
+        sent: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'sent'] }, 1, 0] } },
+        delivered: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'delivered'] }, 1, 0] } },
+        read: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'read'] }, 1, 0] } },
+        replied: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'replied'] }, 1, 0] } },
+        failed: { $sum: { $cond: [{ $in: ['$campaigns.status', ['failed', 'bounced', 'expired']] }, 1, 0] } }
       }
     }
   ]);
 
-  const statusCounts = { sent: 0, delivered: 0, failed: 0, pending: 0 };
-  stats.forEach(s => {
-    if (['sent', 'delivered', 'read', 'replied'].includes(s._id)) statusCounts.sent += s.count;
-    if (['delivered', 'read', 'replied'].includes(s._id)) statusCounts.delivered += s.count;
-    if (s._id === 'failed') statusCounts.failed += s.count;
-    if (['draft', 'queued'].includes(s._id)) statusCounts.pending += s.count;
-  });
-
-  this.stats = { ...this.stats, ...statusCounts };
+  const newStats = stats[0] || { total: 0, sent: 0, delivered: 0, read: 0, replied: 0, failed: 0 };
+  
+  this.stats = {
+    total: newStats.total,
+    sent: newStats.sent,
+    delivered: newStats.delivered,
+    read: newStats.read,
+    replied: newStats.replied,
+    failed: newStats.failed,
+    bounced: 0
+  };
+  
   await this.save();
   return this.stats;
 };
@@ -232,22 +240,24 @@ campaignSchema.methods.completeCampaign = async function () {
         $group: {
           _id: null,
           total: { $sum: 1 },
-          delivered: {
+          sent: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'sent'] }, 1, 0] } },
+          delivered: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'delivered'] }, 1, 0] } },
+          read: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'read'] }, 1, 0] } },
+          replied: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'replied'] }, 1, 0] } },
+          failed: { $sum: { $cond: [{ $in: ['$campaigns.status', ['failed', 'bounced', 'expired']] }, 1, 0] } },
+          deliveredTotal: {
             $sum: { $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0] }
-          },
-          failed: {
-            $sum: { $cond: [{ $in: ['$campaigns.status', ['failed', 'bounced', 'expired']] }, 1, 0] }
           }
         }
       }
-    ]).maxTimeMS(15000).allowDiskUse(true);
+    ], { maxTimeMS: 15000, allowDiskUse: true });
 
-    const deliveryStats = stats[0] || { total: 0, delivered: 0, failed: 0 };
-    console.log(`[SettleCampaign] Stats: delivered=${deliveryStats.delivered}, failed=${deliveryStats.failed}`);
+    const deliveryStats = stats[0] || { total: 0, sent: 0, delivered: 0, read: 0, replied: 0, failed: 0, deliveredTotal: 0 };
+    console.log(`[SettleCampaign] Stats: total=${deliveryStats.total}, delivered=${deliveryStats.deliveredTotal}, failed=${deliveryStats.failed}`);
 
     // 2. Calculate costs
     const blockedAmount = this.blockedAmount || this.estimatedCost || deliveryStats.total;
-    const actualCost = deliveryStats.delivered * 1; // ₹1 per delivered
+    const actualCost = deliveryStats.deliveredTotal * 1; // ₹1 per delivered
     const refundAmount = Math.max(0, blockedAmount - actualCost);
 
     console.log(`[SettleCampaign] Blocked=₹${blockedAmount}, Charge=₹${actualCost}, Refund=₹${refundAmount}`);
@@ -264,7 +274,7 @@ campaignSchema.methods.completeCampaign = async function () {
       console.log(`[SettleCampaign] Wallet updated`);
     }
 
-    // 4. Update campaign to 'settled'
+    // 4. Update campaign to 'settled' - PRESERVE ALL STATS
     await Campaign.findByIdAndUpdate(this._id, {
       $set: {
         status: 'settled',
@@ -273,7 +283,10 @@ campaignSchema.methods.completeCampaign = async function () {
         blockedAmount: 0,
         completedAt: new Date(),
         'stats.total': deliveryStats.total,
+        'stats.sent': deliveryStats.sent,
         'stats.delivered': deliveryStats.delivered,
+        'stats.read': deliveryStats.read,
+        'stats.replied': deliveryStats.replied,
         'stats.failed': deliveryStats.failed
       }
     });
@@ -283,10 +296,16 @@ campaignSchema.methods.completeCampaign = async function () {
     this.actualCost = actualCost;
     this.refundedAmount = refundAmount;
     this.blockedAmount = 0;
+    this.stats.total = deliveryStats.total;
+    this.stats.sent = deliveryStats.sent;
+    this.stats.delivered = deliveryStats.delivered;
+    this.stats.read = deliveryStats.read;
+    this.stats.replied = deliveryStats.replied;
+    this.stats.failed = deliveryStats.failed;
 
     console.log(`[SettleCampaign] ✅ Campaign ${this._id} settled successfully`);
 
-    return { actualCost, refundAmount, delivered: deliveryStats.delivered, failed: deliveryStats.failed };
+    return { actualCost, refundAmount, delivered: deliveryStats.deliveredTotal, failed: deliveryStats.failed };
   } catch (error) {
     console.error(`[SettleCampaign] ❌ Error:`, error.message);
     throw error;

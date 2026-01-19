@@ -25,8 +25,8 @@ async function startStatsConsumer() {
     });
 
     await consumer.connect();
-    await consumer.subscribe({ topic: 'message-log-processing', fromBeginning: true });
-    console.log('✅ Stats Consumer subscribed to message-log-processing');
+    await consumer.subscribe({ topic: 'message-stats', fromBeginning: true });
+    console.log('✅ Stats Consumer subscribed to message-stats');
 
     const MessageLog = (await import('../models/messageLog.model.js')).default;
     const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
@@ -207,6 +207,31 @@ async function startStatsConsumer() {
 
         const duration = Date.now() - startTime;
         console.log(`[StatsConsumer] Batch complete: ${logs.length} logs in ${duration}ms`);
+
+        // AUTO-SYNC CAMPAIGN STATS
+        if (allSuccess && bulkOps.length > 0) {
+          const Campaign = (await import('../models/campaign.model.js')).default;
+          const affectedCampaigns = new Set();
+          
+          logs.forEach(log => {
+            if (log.campaignId) affectedCampaigns.add(log.campaignId.toString());
+          });
+          
+          if (affectedCampaigns.size > 0) {
+            console.log(`[StatsConsumer] Auto-syncing stats for ${affectedCampaigns.size} campaigns`);
+            for (const campaignId of affectedCampaigns) {
+              try {
+                const campaign = await Campaign.findById(campaignId);
+                if (campaign && campaign.status !== 'settled') {
+                  await campaign.syncStats();
+                  console.log(`[StatsConsumer] ✅ Synced stats for campaign ${campaignId}`);
+                }
+              } catch (err) {
+                console.error(`[StatsConsumer] Failed to sync campaign ${campaignId}:`, err.message);
+              }
+            }
+          }
+        }
 
         // Campaign completion/wallet settlement now handled by expirePendingMessages.js script
         // No real-time wallet adjustments - only status tracking here
