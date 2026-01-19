@@ -57,10 +57,10 @@ async function startBatchEntriesConsumer() {
 
     consumer = kafka.consumer({
       groupId: `batch-entries-processor-${process.env.NODE_ENV || 'dev'}`,
-      sessionTimeout: 120000,
-      heartbeatInterval: 10000,
+      sessionTimeout: 300000,
+      heartbeatInterval: 3000,
       maxWaitTimeInMs: 100,
-      rebalanceTimeout: 120000
+      rebalanceTimeout: 300000
     });
 
     await consumer.connect();
@@ -173,10 +173,13 @@ async function startBatchEntriesConsumer() {
               for (let i = 0; i < totalOps; i += BULK_WRITE_BATCH_SIZE) {
                 const chunkOps = bulkOps.slice(i, i + BULK_WRITE_BATCH_SIZE);
                 try {
+                  const dbStart = Date.now();
                   const result = await ContactCampaignMessage.bulkWrite(chunkOps, {
                     ordered: false,
                     writeConcern: { w: 1, j: false }
                   });
+                  const dbDuration = Date.now() - dbStart;
+
                   successCount += result.insertedCount;
                   modifiedCount += result.modifiedCount;
                   processedOps += chunkOps.length;
@@ -184,13 +187,16 @@ async function startBatchEntriesConsumer() {
                   // Critical: Heartbeat after each mini-batch
                   await heartbeat();
 
-                  if (i + BULK_WRITE_BATCH_SIZE < totalOps) {
-                    console.log(`[BatchConsumer] ... processed ${processedOps}/${totalOps} ops`);
+                  if ((i + BULK_WRITE_BATCH_SIZE < totalOps) || dbDuration > 1000) {
+                    console.log(`[BatchConsumer] ... processed batch ${Math.floor(i / BULK_WRITE_BATCH_SIZE) + 1} (${chunkOps.length} ops) in ${dbDuration}ms`);
                   }
 
                 } catch (chunkError) {
                   console.error(`[BatchConsumer] ❌ Batch BulkWrite error (idx ${i}):`, chunkError.message);
-                  // Continue processing other chunks but log error
+                  // If we lost Kafka connection, there's no point continuing the loop as we can't notify
+                  if (chunkError.message.includes('rebalancing') || chunkError.message.includes('not aware of this member')) {
+                    throw chunkError;
+                  }
                 }
               }
               console.log(`[BatchConsumer] 💾 BulkWrite summary: inserted=${successCount}, modified=${modifiedCount}`);
