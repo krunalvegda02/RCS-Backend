@@ -932,20 +932,24 @@ export const getUserCampaignReports = async (req, res) => {
     // Calculate aggregate stats for all campaigns (not just current page) - exclude archived
     const userObjectIdForStats = typeof userId === 'string' ? new mongoose.Types.ObjectId(userId) : userId;
 
-    // Optimized: Aggregate stats from Campaign collection (O(N) vs O(M))
+    // Optimized: Aggregate stats from Campaign collection
     const sentStats = await Campaign.aggregate([
       { $match: { userId: userObjectIdForStats } },
       {
         $group: {
           _id: null,
-          totalSent: { $sum: '$stats.sent' },
+          totalMessages: { $sum: '$stats.total' },  // All messages
           totalDelivered: { $sum: '$stats.delivered' },
           totalFailed: { $sum: '$stats.failed' }
         }
       }
     ]);
 
-    const aggregateStats = sentStats[0] || { totalSent: 0, totalDelivered: 0, totalFailed: 0 };
+    const aggregateStats = sentStats[0] || { totalMessages: 0, totalDelivered: 0, totalFailed: 0 };
+    // totalSent = all messages that are not draft (calculated as delivered + failed + everything else that was sent)
+    // totalExpired = total - delivered - failed (messages that didn't get a final status)
+    const totalSent = aggregateStats.totalMessages; // All messages created
+    const totalExpired = Math.max(0, aggregateStats.totalMessages - aggregateStats.totalDelivered - aggregateStats.totalFailed);
 
     res.json({
       success: true,
@@ -955,9 +959,10 @@ export const getUserCampaignReports = async (req, res) => {
         limit: parseInt(limit),
         total,
         pages: Math.ceil(total / limit),
-        totalSent: aggregateStats.totalSent,
+        totalSent,
         totalDelivered: aggregateStats.totalDelivered,
-        totalFailed: aggregateStats.totalFailed
+        totalFailed: aggregateStats.totalFailed,
+        totalExpired
       }
     });
 
@@ -1065,21 +1070,39 @@ export const getAllForAdmin = async (req, res) => {
       })
     );
 
-    // Get campaign IDs for aggregation
+    // Get available campaign IDs (Master + Standalone)
     const campaignIds = paginatedCampaigns.map(c => c._id);
 
-    // Get ContactCampaignMessage model and aggregate stats
+    // For Master Campaigns, we need to find their Sub-Campaigns to aggregate stats correctly
+    const masterCampaignIds = paginatedCampaigns.filter(c => c.isMaster).map(c => c._id);
+    const subCampaignMap = {}; // MasterID -> [SubID1, SubID2...]
+    let allCampaignIdsForAgg = [...campaignIds];
 
-    // Aggregate stats for paginated campaigns
+    if (masterCampaignIds.length > 0) {
+      // Import Campaign model if not available (though it should be locally available as 'Campaign' usually or via mongoose)
+      // Assuming 'Campaign' variable from line 936 is available or we use mongoose.model
+      const SubCampaignModel = mongoose.model('Campaign');
+      const subCampaigns = await SubCampaignModel.find({ masterCampaignId: { $in: masterCampaignIds } }).select('_id masterCampaignId');
+
+      subCampaigns.forEach(sub => {
+        const masterIdStr = sub.masterCampaignId.toString();
+        if (!subCampaignMap[masterIdStr]) subCampaignMap[masterIdStr] = [];
+        subCampaignMap[masterIdStr].push(sub._id.toString());
+        allCampaignIdsForAgg.push(sub._id);
+      });
+    }
+
+    // Aggregate stats for ALL relevant campaigns (Masters, Standalone, AND Sub-Campaigns)
     const campaignStatsAgg = await ContactCampaignMessage.aggregate([
-      { $match: { 'campaigns.campaignId': { $in: campaignIds } } },
+      { $match: { 'campaigns.campaignId': { $in: allCampaignIdsForAgg } } },
       { $unwind: '$campaigns' },
-      { $match: { 'campaigns.campaignId': { $in: campaignIds } } },
+      { $match: { 'campaigns.campaignId': { $in: allCampaignIdsForAgg } } },
       {
         $group: {
           _id: '$campaigns.campaignId',
           totalDelivered: { $sum: { $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0] } },
-          totalFailed: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'failed'] }, 1, 0] } }
+          totalFailed: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'failed'] }, 1, 0] } },
+          totalExpired: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'expired'] }, 1, 0] } }
         }
       }
     ]);
@@ -1089,7 +1112,8 @@ export const getAllForAdmin = async (req, res) => {
     campaignStatsAgg.forEach(stat => {
       statsMap[stat._id.toString()] = {
         totalDelivered: stat.totalDelivered || 0,
-        totalFailed: stat.totalFailed || 0
+        totalFailed: stat.totalFailed || 0,
+        totalExpired: stat.totalExpired || 0
       };
     });
 
@@ -1101,17 +1125,34 @@ export const getAllForAdmin = async (req, res) => {
           _id: null,
           totalSent: { $sum: { $cond: [{ $in: ['$campaigns.status', ['sent', 'delivered', 'read', 'replied', 'failed']] }, 1, 0] } },
           totalDelivered: { $sum: { $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0] } },
-          totalFailed: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'failed'] }, 1, 0] } }
+          totalFailed: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'failed'] }, 1, 0] } },
+          totalExpired: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'expired'] }, 1, 0] } }
         }
       }
     ]);
 
-    const universalStats = universalStatsResult[0] || { totalSent: 0, totalDelivered: 0, totalFailed: 0 };
+    const universalStats = universalStatsResult[0] || { totalSent: 0, totalDelivered: 0, totalFailed: 0, totalExpired: 0 };
     universalStats.totalCampaigns = total;
 
     const transformedCampaigns = paginatedCampaigns.map(campaign => {
       const campaignObj = campaign.toObject ? campaign.toObject() : campaign;
-      const stats = statsMap[campaignObj._id.toString()] || { totalDelivered: 0, totalFailed: 0 };
+      const campaignIdStr = campaignObj._id.toString();
+
+      let stats = { totalDelivered: 0, totalFailed: 0, totalExpired: 0 };
+
+      // If Master Campaign, sum up Sub-Campaign stats
+      if (campaignObj.isMaster && subCampaignMap[campaignIdStr]) {
+        subCampaignMap[campaignIdStr].forEach(subId => {
+          const subStats = statsMap[subId] || { totalDelivered: 0, totalFailed: 0, totalExpired: 0 };
+          stats.totalDelivered += subStats.totalDelivered;
+          stats.totalFailed += subStats.totalFailed;
+          stats.totalExpired += subStats.totalExpired;
+        });
+      } else {
+        // Standalone or direct match
+        stats = statsMap[campaignIdStr] || stats;
+      }
+
       return {
         _id: campaignObj._id,
         CampaignName: campaignObj.name,
@@ -1119,6 +1160,7 @@ export const getAllForAdmin = async (req, res) => {
         cost: campaignObj.stats?.total || 0,
         successCount: campaignObj.stats?.sent || 0,
         failedCount: stats.totalFailed,
+        expiredCount: stats.totalExpired,
         totalDelivered: stats.totalDelivered,
         status: campaignObj.status,
         createdAt: campaignObj.createdAt,
@@ -1146,101 +1188,87 @@ export const getAllForAdmin = async (req, res) => {
   }
 };
 
-// Admin: Get campaign messages
+// Get campaign messages - OPTIMIZED for large datasets
 export const getCampaignMessages = async (req, res) => {
   try {
     const { id } = req.params;
     const { search, status } = req.query;
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const limit = Math.min(parseInt(req.query.limit) || 10, 50); // Cap at 50
 
-    const campaign = await Campaign.findById(id);
+    // Lightweight campaign lookup
+    const campaign = await Campaign.findById(id).select('_id userId isMaster').lean();
     if (!campaign) {
-      return res.status(404).json({
-        success: false,
-        message: 'Campaign not found',
-      });
+      return res.status(404).json({ success: false, message: 'Campaign not found' });
     }
 
-
-    // If master campaign, get messages from all sub-campaigns
+    // Get sub-campaign IDs if master
     let campaignIds = [campaign._id];
     if (campaign.isMaster) {
       const subCampaigns = await Campaign.find({ masterCampaignId: campaign._id }).select('_id').lean();
       campaignIds = [...campaignIds, ...subCampaigns.map(s => s._id)];
     }
 
-    // Build aggregation pipeline
+    // Build lightweight match stage
+    // Build lightweight match stage with $elemMatch to ensure exact match on array item
     const matchStage = {
       userId: campaign.userId,
-      'campaigns.campaignId': { $in: campaignIds }
+      campaigns: {
+        $elemMatch: {
+          campaignId: { $in: campaignIds }
+        }
+      }
     };
+
+    if (status && status !== 'all') {
+      matchStage.campaigns.$elemMatch.status = status;
+    }
 
     if (search) {
       matchStage.recipientPhoneNumber = { $regex: search, $options: 'i' };
     }
 
-    // Unwind campaigns array and filter by campaignId and status
-    const pipeline = [
-      { $match: matchStage },
-      { $unwind: '$campaigns' },
-      { $match: { 'campaigns.campaignId': { $in: campaignIds } } }
-    ];
 
-    if (status && status !== 'all') {
-      pipeline.push({ $match: { 'campaigns.status': status } });
-    }
 
-    // Get total count
-    const countPipeline = [...pipeline, { $count: 'total' }];
-    const countResult = await ContactCampaignMessage.aggregate(countPipeline);
-    const total = countResult[0]?.total || 0;
+    // Optimized count: Use countDocuments which leverages the index directly
+    const total = await ContactCampaignMessage.countDocuments(matchStage).maxTimeMS(60000);
 
-    // Get paginated results
-    pipeline.push(
-      { $sort: { createdAt: -1 } },
-      { $skip: (page - 1) * limit },
-      { $limit: limit },
-      {
-        $project: {
-          _id: '$campaigns._id',
-          phoneNumber: '$recipientPhoneNumber',
-          status: '$campaigns.status',
-          templateType: { $literal: 'RCS' },
-          sentAt: '$campaigns.sentAt',
-          deliveredAt: '$campaigns.deliveredAt',
-          readAt: '$campaigns.readAt',
-          clickedAt: '$campaigns.clickedAt',
-          clickedAction: '$campaigns.clickedAction',
-          userText: '$campaigns.userText',
-          suggestionResponse: '$campaigns.suggestionResponse',
-          interactions: '$campaigns.userClickCount',
-          replies: '$campaigns.userReplyCount',
-          errorMessage: '$campaigns.errorMessage',
-          errorCode: '$campaigns.errorCode',
-          createdAt: '$createdAt'
-        }
-      }
-    );
+    // Optimized Data Query: Use find() instead of aggregate() for maximum speed
+    // Use select() to fetch only necessary fields and campaigns.$ to get the matching campaign entry
+    const docs = await ContactCampaignMessage.find(matchStage)
+      .select({
+        recipientPhoneNumber: 1,
+        'campaigns.$': 1 // Project ONLY the first matching campaign element
+      })
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean()
+      .maxTimeMS(60000);
 
-    const messages = await ContactCampaignMessage.aggregate(pipeline);
+    // Map the results to the expected format
+    const messages = docs.map(doc => {
+      const camp = doc.campaigns?.[0] || {};
+      return {
+        _id: camp._id,
+        phoneNumber: doc.recipientPhoneNumber,
+        status: camp.status,
+        sentAt: camp.sentAt,
+        deliveredAt: camp.deliveredAt,
+        readAt: camp.readAt,
+        failedAt: camp.failedAt,
+        errorCode: camp.errorCode
+      };
+    });
 
     res.json({
       success: true,
       data: messages,
-      pagination: {
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit),
-      },
+      pagination: { page, limit, total, pages: Math.ceil(total / limit) }
     });
   } catch (error) {
-    console.error('[Campaign] Admin get messages error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    console.error('[Campaign] Get messages error:', error.message);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -1806,36 +1834,6 @@ export const getReachableUsers = async (req, res) => {
       success: false,
       message: error.message
     });
-  }
-};
-
-// Mark campaign as ready for Python bot
-export const sendCampaign = async (req, res) => {
-  try {
-    const { campaignId } = req.body;
-    const userId = req.user._id;
-
-    console.log(`[Campaign] Marking campaign as ready: ${campaignId}`);
-
-    const campaign = await Campaign.findOne({ _id: campaignId, userId });
-    if (!campaign) {
-      return res.status(404).json({ success: false, message: 'Campaign not found' });
-    }
-
-    // Update campaign status to running (ready for Python bot)
-    campaign.status = 'running';
-    campaign.startedAt = new Date();
-    await campaign.save();
-
-    console.log(`[Campaign] Campaign ${campaignId} marked as running for Python bot`);
-
-    res.json({
-      success: true,
-      message: 'Campaign marked as ready for Python bot processing'
-    });
-  } catch (error) {
-    console.error('[Campaign] Send campaign error:', error);
-    res.status(500).json({ success: false, message: error.message });
   }
 };
 

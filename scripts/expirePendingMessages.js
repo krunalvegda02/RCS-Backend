@@ -8,35 +8,45 @@ async function expirePendingMessages() {
 
     const ContactCampaignMessage = (await import('../src/models/contact_campaign_message.model.js')).default;
 
-// Find messages that are pending OR sent for more than 48 hours without response
-const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    // Find messages that are pending OR sent for more than 48 hours without response
+    // const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+
+
 
 
     // 1. Identify affected campaigns FIRST (before updating)
     const affectedCampaignIds = await ContactCampaignMessage.distinct('campaigns.campaignId', {
       'campaigns.status': { $in: ['pending', 'sent', 'draft'] },
-      'createdAt': { $lt: fortyEightHoursAgo }
+      'createdAt': { $lt: fiveMinutesAgo }
     });
 
     console.log(`found ${affectedCampaignIds.length} campaigns with stale messages`);
+
+
+
 
     // 2. Expire the messages
     const result = await ContactCampaignMessage.updateMany(
       {
         'campaigns.status': { $in: ['pending', 'sent', 'draft'] },
-        'createdAt': { $lt: fortyEightHoursAgo }
+        'createdAt': { $lt: fiveMinutesAgo }
       },
       {
         $set: {
           'campaigns.$.status': 'expired',
           'campaigns.$.failedAt': new Date(),
           'campaigns.$.errorCode': 'TIMEOUT',
-          'campaigns.$.errorMessage': 'No webhook received within 5 minutes'
+          'campaigns.$.errorMessage': 'No webhook received within 48 hours'
         }
       }
     );
 
-    console.log(`✅ Expired ${result.modifiedCount} pending/sent messages older than 5 minutes`);
+
+
+    console.log(`✅ Expired ${result.modifiedCount} pending/sent messages older than 48 hours`);
+
+
 
     // 3. Trigger wallet refund / campaign completion for affected campaigns
     if (result.modifiedCount > 0 && affectedCampaignIds.length > 0) {

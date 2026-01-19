@@ -51,33 +51,83 @@ async function startBatchEntriesConsumer() {
             
             console.log(`[BatchConsumer] Processing chunk ${chunkIndex + 1}/${totalChunks} (${phoneNumbers.length} contacts) for campaign ${campaignId}`);
             
-            const bulkOps = phoneNumbers.map(phone => {
-              const cleanPhone = phone.replace(/^\+?91/, '').replace(/\D/g, '');
-              return {
-                updateOne: {
-                  filter: { recipientPhoneNumber: cleanPhone, userId },
-                  update: {
-                    $setOnInsert: { recipientPhoneNumber: cleanPhone, userId },
-                    $addToSet: { 
-                      campaigns: {
-                        campaignId,
-                        templateId,
-                        messageId: uuidv4(),
-                        status: 'draft',
-                        queuedAt: new Date()
-                      },
-                      campaignIds: campaignId 
-                    }
-                  },
-                  upsert: true
-                }
-              };
+            // Fetch all existing contacts for this user in one query
+            const cleanPhones = phoneNumbers.map(phone => phone.replace(/^\+?91/, '').replace(/\D/g, ''));
+            const existingContacts = await ContactCampaignMessage.find({
+              recipientPhoneNumber: { $in: cleanPhones },
+              userId
+            }).lean();
+            
+            // Create a map for quick lookup
+            const contactMap = new Map();
+            existingContacts.forEach(contact => {
+              contactMap.set(contact.recipientPhoneNumber, contact);
             });
             
-            await ContactCampaignMessage.bulkWrite(bulkOps, {
-              ordered: false,
-              writeConcern: { w: 1, j: false }
-            });
+            const bulkOps = [];
+            
+            for (const phone of phoneNumbers) {
+              const cleanPhone = phone.replace(/^\+?91/, '').replace(/\D/g, '');
+              const messageId = uuidv4();
+              const existingContact = contactMap.get(cleanPhone);
+              
+              if (!existingContact) {
+                // Insert new contact
+                bulkOps.push({
+                  insertOne: {
+                    document: {
+                      recipientPhoneNumber: cleanPhone,
+                      userId,
+                      campaignIds: [campaignId],
+                      campaigns: [{
+                        campaignId,
+                        templateId,
+                        messageId,
+                        status: 'draft',
+                        queuedAt: new Date(),
+                        userClickCount: 0,
+                        userReplyCount: 0
+                      }]
+                    }
+                  }
+                });
+              } else {
+                // Check if campaign already exists
+                const campaignExists = existingContact.campaigns?.some(
+                  c => c.campaignId.toString() === campaignId.toString()
+                );
+                
+                if (!campaignExists) {
+                  // Update existing contact - add campaign
+                  bulkOps.push({
+                    updateOne: {
+                      filter: { _id: existingContact._id },
+                      update: {
+                        $push: {
+                          campaigns: {
+                            campaignId,
+                            templateId,
+                            messageId,
+                            status: 'draft',
+                            queuedAt: new Date(),
+                            userClickCount: 0,
+                            userReplyCount: 0
+                          }
+                        },
+                        $addToSet: { campaignIds: campaignId }
+                      }
+                    }
+                  });
+                }
+              }
+            }
+            
+            if (bulkOps.length > 0) {
+              await ContactCampaignMessage.bulkWrite(bulkOps, {
+                ordered: false,
+                writeConcern: { w: 1, j: false }
+              });
+            }
             
             totalProcessed += phoneNumbers.length;
             const duration = Date.now() - startTime;

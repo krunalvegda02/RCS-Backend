@@ -27,9 +27,6 @@ router.post('/create-entries', CampaignController.createCampaignEntries);
 router.post('/master', SubCampaignController.createMasterCampaign);
 router.post('/update-status', SubCampaignController.updateCampaignStatus);
 
-// Send campaign messages to Kafka
-router.post('/send', CampaignController.sendCampaign);
-
 // Batched contact upload
 router.post('/batches/upload', CampaignController.uploadContactBatch);
 router.post('/batches/:batchId/process', CampaignController.processContactBatch);

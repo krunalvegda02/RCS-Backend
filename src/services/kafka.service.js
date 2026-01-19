@@ -40,7 +40,7 @@ const dbProducer = kafka.producer({
 });
 
 const consumer = kafka.consumer({
-  groupId: `webhook-processors-${process.env.NODE_ENV || 'dev'}`,
+  groupId: `webhook-processor-${process.env.NODE_ENV || 'dev'}`,
   sessionTimeout: 30000,
   heartbeatInterval: 3000,
   maxBytesPerPartition: 1048576,
@@ -71,7 +71,7 @@ export async function sendWebhookToKafka(webhookData) {
   await connectProducer();
 
   await producer.send({
-    topic: 'rcs-webhooks',
+    topic: 'webhook-events',
     messages: [{
       key: webhookData.messageId || Date.now().toString(),
       value: JSON.stringify(webhookData),
@@ -105,7 +105,7 @@ export async function sendStatsToKafka(data, isBatch = false) {
     if (isBatch && Array.isArray(data)) {
       await statsProducer.sendBatch({
         topicMessages: [{
-          topic: 'message-log-processing',
+          topic: 'message-stats',
           messages: data
         }]
       });
@@ -143,7 +143,7 @@ async function flushStatsBuffer() {
   try {
     await statsProducer.sendBatch({
       topicMessages: [{
-        topic: 'message-log-processing',
+        topic: 'message-stats',
         messages
       }]
     });
@@ -158,9 +158,9 @@ export async function connectConsumer() {
     await consumer.connect();
     console.log('[Consumer] Connected successfully');
 
-    console.log('[Consumer] Subscribing to rcs-webhooks topic...');
+    console.log('[Consumer] Subscribing to webhook-events topic...');
     await consumer.subscribe({
-      topic: 'rcs-webhooks',
+      topic: 'webhook-events',
       fromBeginning: true
     });
     console.log('✅ Kafka Consumer connected and subscribed');
@@ -178,7 +178,7 @@ export async function connectConsumer() {
     } else if (error.message.includes('timeout')) {
       console.error('🔴 Connection timeout - Kafka may be starting up');
     } else if (error.message.includes('topic')) {
-      console.error('🔴 Topic rcs-webhooks may not exist');
+      console.error('🔴 Topic webhook-events may not exist');
     }
 
     throw error;

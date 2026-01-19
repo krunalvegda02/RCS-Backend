@@ -7,53 +7,53 @@ process.env.WORKER_MODE = 'true';
 async function startWebhookConsumer() {
   try {
     console.log('[WebhookConsumer] Starting up...');
-    
+
     await connectDB();
     console.log('✅ Webhook Consumer connected to MongoDB');
-    
+
     console.log('[WebhookConsumer] Connecting to Kafka...');
     const consumer = await connectConsumer();
     console.log('[WebhookConsumer] Kafka connection successful');
-    
+
     const MessageLog = (await import('../models/messageLog.model.js')).default;
     const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
-    
+
     let totalProcessed = 0;
-    
+
     // In-memory cache for messageId → userId/campaignId
     const messageCache = new Map();
     let lastCacheRefresh = Date.now();
     const CACHE_REFRESH_INTERVAL = 60000;
-    
+
     const getCacheKey = (type, id) => `${type}:${id}`;
-    
+
     await consumer.run({
       partitionsConsumedConcurrently: 4,
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
         const startTime = Date.now();
         const messages = batch.messages;
-        
+
         console.log(`[WebhookConsumer] Processing batch: ${messages.length} messages`);
-        
+
         const parsedData = [];
-        
+
         for (const message of messages) {
           if (!isRunning() || isStale()) break;
-          
+
           try {
             const webhookData = JSON.parse(message.value.toString());
             const data = webhookData.data;
-            
+
             // Use the messageId from the webhook payload (already processed in app.js)
-            const messageId = webhookData.messageId || 
-                            data?.entity?.messageId || 
-                            data?.messageId || 
-                            data?.entity?.rcsMessageId ||
-                            data?.rcsMessageId;
-            
+            const messageId = webhookData.messageId ||
+              data?.entity?.messageId ||
+              data?.messageId ||
+              data?.entity?.rcsMessageId ||
+              data?.rcsMessageId;
+
             console.log(`[WebhookConsumer] 🔍 Parsed messageId: ${messageId}, entityType: ${data?.entityType}`);
-            
+
             parsedData.push({
               offset: message.offset,
               messageId,
@@ -68,23 +68,23 @@ async function startWebhookConsumer() {
             console.error('[WebhookConsumer] Parse error:', error.message);
           }
         }
-        
+
         const messageIds = parsedData.map(p => p.messageId).filter(Boolean);
         if (messageIds.length === 0) {
           console.log(`[WebhookConsumer] No valid messageIds in batch`);
           await heartbeat();
           return;
         }
-        
+
         // Check cache first
         const uncachedIds = [];
         const messageMap = {};
-        
+
         for (const id of messageIds) {
           const msgKey = getCacheKey('msg', id);
           const jioKey = getCacheKey('jio', id);
           const rcsKey = getCacheKey('rcs', id);
-          
+
           if (messageCache.has(msgKey)) {
             messageMap[id] = messageCache.get(msgKey);
           } else if (messageCache.has(jioKey)) {
@@ -95,51 +95,68 @@ async function startWebhookConsumer() {
             uncachedIds.push(id);
           }
         }
-        
-        // Query DB for uncached messageIds
+
+        // Query DB for uncached messageIds in chunks to prevent timeout
         if (uncachedIds.length > 0) {
-          console.log(`[WebhookConsumer] 🔍 Querying DB for ${uncachedIds.length} uncached IDs:`, uncachedIds);
-          
-          const messageDocs = await ContactCampaignMessage.find({
-            $or: [
-              { 'campaigns.messageId': { $in: uncachedIds } },
-              { 'campaigns.jioMessageId': { $in: uncachedIds } },
-              { 'campaigns.rcsMessageId': { $in: uncachedIds } }
-            ]
-          }, { userId: 1, campaigns: 1 }).lean();
-          
-          console.log(`[WebhookConsumer] 🔍 Found ${messageDocs.length} matching documents`);
-          
+          console.log(`[WebhookConsumer] 🔍 Querying DB for ${uncachedIds.length} uncached IDs`);
+
+          const CHUNK_SIZE = 500;
+          const chunks = [];
+          for (let i = 0; i < uncachedIds.length; i += CHUNK_SIZE) {
+            chunks.push(uncachedIds.slice(i, i + CHUNK_SIZE));
+          }
+
+          let totalFound = 0;
+
+          // Process chunks sequentially to avoid overwhelming the DB
+          for (const chunk of chunks) {
+            try {
+              const messageDocs = await ContactCampaignMessage.find({
+                $or: [
+                  { 'campaigns.messageId': { $in: chunk } },
+                  { 'campaigns.jioMessageId': { $in: chunk } },
+                  { 'campaigns.rcsMessageId': { $in: chunk } }
+                ]
+              }, { userId: 1, campaigns: 1 }).lean().maxTimeMS(20000);
+
+              totalFound += messageDocs.length;
+
+              messageDocs.forEach(doc => {
+                doc.campaigns?.forEach(camp => {
+                  const info = { userId: doc.userId, campaignId: camp.campaignId };
+                  if (camp.messageId) {
+                    messageMap[camp.messageId] = info;
+                    messageCache.set(getCacheKey('msg', camp.messageId), info);
+                  }
+                  if (camp.jioMessageId) {
+                    messageMap[camp.jioMessageId] = info;
+                    messageCache.set(getCacheKey('jio', camp.jioMessageId), info);
+                  }
+                  if (camp.rcsMessageId) {
+                    messageMap[camp.rcsMessageId] = info;
+                    messageCache.set(getCacheKey('rcs', camp.rcsMessageId), info);
+                  }
+                });
+              });
+            } catch (err) {
+              console.error('[WebhookConsumer] ⚠️ Chunk query failed:', err.message);
+              // Continue to next chunk - better to process some than none
+            }
+          }
+
+          console.log(`[WebhookConsumer] 🔍 Found ${totalFound} matching documents in total`);
           await heartbeat();
-          
-          messageDocs.forEach(doc => {
-            doc.campaigns?.forEach(camp => {
-              const info = { userId: doc.userId, campaignId: camp.campaignId };
-              if (camp.messageId) {
-                messageMap[camp.messageId] = info;
-                messageCache.set(getCacheKey('msg', camp.messageId), info);
-              }
-              if (camp.jioMessageId) {
-                messageMap[camp.jioMessageId] = info;
-                messageCache.set(getCacheKey('jio', camp.jioMessageId), info);
-              }
-              if (camp.rcsMessageId) {
-                messageMap[camp.rcsMessageId] = info;
-                messageCache.set(getCacheKey('rcs', camp.rcsMessageId), info);
-              }
-            });
-          });
         }
-        
+
         // Build logs array
         const logsToInsert = [];
-        
+
         console.log(`[WebhookConsumer] 🔍 Building logs for ${parsedData.length} parsed items`);
-        
+
         for (const parsed of parsedData) {
           const msgInfo = messageMap[parsed.messageId];
           console.log(`[WebhookConsumer] 🔍 MessageId: ${parsed.messageId}, Found info:`, msgInfo ? 'YES' : 'NO');
-          
+
           if (msgInfo?.userId) {
             logsToInsert.push({
               messageId: parsed.messageId,
@@ -160,9 +177,9 @@ async function startWebhookConsumer() {
             });
           }
         }
-        
+
         let dbSuccess = false;
-        
+
         if (logsToInsert.length > 0) {
           try {
             const insertedLogs = await MessageLog.insertMany(logsToInsert, { ordered: false });
@@ -170,11 +187,15 @@ async function startWebhookConsumer() {
             totalProcessed += logsToInsert.length;
             const duration = Date.now() - startTime;
             console.log(`[WebhookConsumer] ✅ ${logsToInsert.length} logs processed in ${duration}ms | Total: ${totalProcessed}`);
-            
-            // Send log IDs to stats processing topic
-            const { sendStatsToKafka } = await import('../services/kafka.service.js');
-            for (const log of insertedLogs) {
-              await sendStatsToKafka({ logId: log._id.toString() });
+
+            // Send log IDs to stats processing topic in batch
+            if (insertedLogs.length > 0) {
+              const { sendStatsToKafka } = await import('../services/kafka.service.js');
+              const messages = insertedLogs.map(log => ({
+                key: log._id.toString(),
+                value: JSON.stringify({ logId: log._id.toString() })
+              }));
+              await sendStatsToKafka(messages, true);
             }
           } catch (bulkError) {
             if (bulkError.message.includes('E11000')) {
@@ -186,13 +207,13 @@ async function startWebhookConsumer() {
         } else {
           dbSuccess = true;
         }
-        
+
         if (dbSuccess && messages.length > 0) {
           await resolveOffset(messages[messages.length - 1].offset);
         }
-        
+
         await heartbeat();
-        
+
         // Cache cleanup
         if (Date.now() - lastCacheRefresh > CACHE_REFRESH_INTERVAL) {
           if (messageCache.size > 100000) {

@@ -501,6 +501,7 @@ userSchema.methods.blockBalanceForCampaign = async function (amount, campaignId)
     );
 
     await session.commitTransaction();
+    session.endSession();
 
     // Update current instance
     this.wallet.blockedBalance = result.wallet.blockedBalance;
@@ -511,9 +512,8 @@ userSchema.methods.blockBalanceForCampaign = async function (amount, campaignId)
     return this.wallet.blockedBalance;
   } catch (error) {
     await session.abortTransaction();
-    throw error;
-  } finally {
     session.endSession();
+    throw error;
   }
 };
 
@@ -541,6 +541,7 @@ userSchema.methods.unblockBalanceForCampaign = async function (blockedAmount, ac
     );
 
     await session.commitTransaction();
+    session.endSession();
 
     // Update current instance
     this.wallet.balance = result.wallet.balance;
@@ -556,9 +557,8 @@ userSchema.methods.unblockBalanceForCampaign = async function (blockedAmount, ac
     };
   } catch (error) {
     await session.abortTransaction();
-    throw error;
-  } finally {
     session.endSession();
+    throw error;
   }
 };
 
@@ -584,13 +584,11 @@ userSchema.methods.unblockBalance = async function (amount) {
           'wallet.lastUpdated': new Date()
         }
       },
-      { new: true, session, runValidators: true } // runValidators ensures blockedBalance doesn't go below 0
+      { new: true, session, runValidators: true }
     );
 
-    // If result is null (user not found) or validation failed (would go negative)
-    // Actually, findByIdAndUpdate with runValidators will throw if schema min:0 is violated
-
     await session.commitTransaction();
+    session.endSession();
 
     // Update current instance
     this.wallet.blockedBalance = result.wallet.blockedBalance;
@@ -601,9 +599,8 @@ userSchema.methods.unblockBalance = async function (amount) {
     return this.wallet.blockedBalance;
   } catch (error) {
     await session.abortTransaction();
-    throw error;
-  } finally {
     session.endSession();
+    throw error;
   }
 };
 

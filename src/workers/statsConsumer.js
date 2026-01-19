@@ -11,7 +11,11 @@ async function startStatsConsumer() {
 
     const kafka = new Kafka({
       clientId: 'stats-consumer',
-      brokers: [process.env.KAFKA_BROKER || 'localhost:9092']
+      brokers: [process.env.KAFKA_BROKER || 'localhost:9092'],
+      retry: {
+        initialRetryTime: 100,
+        retries: 8
+      }
     });
 
     const consumer = kafka.consumer({
@@ -21,53 +25,19 @@ async function startStatsConsumer() {
     });
 
     await consumer.connect();
-    await consumer.subscribe({ topic: 'message-log-processing', fromBeginning: true });
-    console.log('✅ Stats Consumer subscribed to message-log-processing');
+    await consumer.subscribe({ topic: 'message-stats', fromBeginning: true });
+    console.log('✅ Stats Consumer subscribed to message-stats');
 
     const MessageLog = (await import('../models/messageLog.model.js')).default;
-    const User = (await import('../models/user.model.js')).default;
     const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
-    const Campaign = (await import('../models/campaign.model.js')).default;
 
     let totalProcessed = 0;
-    const campaignsToCheck = new Set(); // Track campaigns that need completion check
 
-    // ========================================================================================
-    // CRITICAL: Proactive Polling for Stuck Campaigns
-    // This runs independently of Kafka messages to catch campaigns updated by external scripts
-    // ========================================================================================
-    setInterval(async () => {
-      try {
-        console.log('[StatsConsumer] 🔍 Proactive Polling: Checking for stuck campaigns...');
-
-        // Find campaigns that are 'completed' but still have blockedAmount > 0
-        const stuckCampaigns = await Campaign.find({
-          status: 'completed',
-          blockedAmount: { $gt: 0 }
-        });
-
-        if (stuckCampaigns.length > 0) {
-          console.log(`[StatsConsumer] ⚠️ Found ${stuckCampaigns.length} stuck campaigns. Fixing...`);
-
-          for (const campaign of stuckCampaigns) {
-            try {
-              console.log(`[StatsConsumer] 🛠 Fixing stuck campaign ${campaign._id} (Blocked: ₹${campaign.blockedAmount})`);
-              await campaign.completeCampaign();
-              console.log(`[StatsConsumer] ✅ Fixed campaign ${campaign._id}`);
-            } catch (err) {
-              console.error(`[StatsConsumer] ❌ Failed to fix campaign ${campaign._id}:`, err.message);
-            }
-          }
-        } else {
-          console.log('[StatsConsumer] ✅ Polling: No stuck campaigns found');
-        }
-      } catch (error) {
-        console.error('[StatsConsumer] ❌ Polling Error:', error.message);
-      }
-    }, 60000); // Check every 60 seconds
+    // NOTE: Proactive polling for stuck campaigns has been REMOVED
+    // Wallet settlement now happens via expirePendingMessages.js cron job
 
     await consumer.run({
-      partitionsConsumedConcurrently: 10,
+      partitionsConsumedConcurrently: 4,
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
         const startTime = Date.now();
@@ -94,19 +64,12 @@ async function startStatsConsumer() {
         }
 
         const bulkOps = [];
-        const walletOps = new Map();
-        campaignsToCheck.clear(); // Clear before processing batch
 
         for (const log of logs) {
           const { messageId, webhookData, campaignId, userId, eventType: logEventType } = log;
           const eventType = webhookData?.eventType;
           const entity = webhookData?.rawPayload?.entity;
           const entityType = webhookData?.rawPayload?.entityType;
-
-          // Track campaign for completion check
-          if (campaignId) {
-            campaignsToCheck.add(campaignId.toString());
-          }
 
           // Convert ObjectIds to strings for Map keys
           const userIdStr = userId?.toString ? userId.toString() : userId;
@@ -144,8 +107,6 @@ async function startStatsConsumer() {
               case 'MESSAGE_DELIVERED':
                 newStatus = 'delivered';
                 updateFields['campaigns.$.deliveredAt'] = timestamp;
-                if (!walletOps.has(userIdStr)) walletOps.set(userIdStr, { delivered: 0, refund: 0 });
-                walletOps.get(userIdStr).delivered += 1;
                 break;
 
               case 'MESSAGE_READ':
@@ -160,8 +121,6 @@ async function startStatsConsumer() {
                 updateFields['campaigns.$.failedAt'] = timestamp;
                 updateFields['campaigns.$.errorCode'] = webhookData.rawPayload?.entity?.error?.code || 'UNKNOWN';
                 updateFields['campaigns.$.errorMessage'] = webhookData.rawPayload?.entity?.error?.message || 'Failed';
-                if (!walletOps.has(userIdStr)) walletOps.set(userIdStr, { delivered: 0, refund: 0 });
-                walletOps.get(userIdStr).refund += 1;
                 break;
             }
           }
@@ -205,7 +164,7 @@ async function startStatsConsumer() {
           messageUpdateSuccess = true; // No updates needed is success
         }
 
-        // Bulk update wallets (only if message updates succeeded)
+
         // if (messageUpdateSuccess && walletOps.size > 0) {
         //   const walletBulk = [];
         //   for (const [userIdStr, ops] of walletOps.entries()) {
@@ -249,103 +208,8 @@ async function startStatsConsumer() {
         const duration = Date.now() - startTime;
         console.log(`[StatsConsumer] Batch complete: ${logs.length} logs in ${duration}ms`);
 
-        // Check campaign completion for all affected campaigns
-        if (allSuccess && campaignsToCheck.size > 0) {
-          console.log(`[StatsConsumer] Checking completion for ${campaignsToCheck.size} campaigns`);
-          for (const campaignId of campaignsToCheck) {
-            try {
-              const campaign = await Campaign.findById(campaignId);
-
-              if (!campaign) {
-                console.log(`[StatsConsumer] Campaign ${campaignId} not found, skipping`);
-                continue;
-              }
-
-              console.log(`[StatsConsumer] Campaign ${campaignId} status: ${campaign.status}, blockedAmount: ${campaign.blockedAmount}`);
-
-              // Check campaigns that are completed but still have blocked amounts
-              if (campaign.status === 'completed' && campaign.blockedAmount > 0) {
-                console.log(`[StatsConsumer] ⚠️  Campaign ${campaignId} is completed but has blockedAmount=${campaign.blockedAmount}, fixing...`);
-                await campaign.completeCampaign();
-                console.log(`[StatsConsumer] ✅ Fixed campaign ${campaignId}`);
-                continue;
-              }
-
-              // Skip campaigns already properly completed
-              if (campaign.status === 'completed' && campaign.blockedAmount === 0) {
-                // IMPORTANT: Even for completed campaigns, check if we need to charge more
-                // (in case more messages became 'delivered' after initial completion)
-                const stats = await ContactCampaignMessage.aggregate([
-                  { $match: { userId: campaign.userId } },
-                  { $unwind: '$campaigns' },
-                  { $match: { 'campaigns.campaignId': campaign._id } },
-                  {
-                    $group: {
-                      _id: null,
-                      delivered: { $sum: { $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0] } }
-                    }
-                  }
-                ]);
-
-                const currentDelivered = stats[0]?.delivered || 0;
-                const expectedCost = currentDelivered * 1; // ₹1 per delivered
-                const chargedCost = campaign.actualCost || 0;
-
-                if (expectedCost > chargedCost) {
-                  const additionalCharge = expectedCost - chargedCost;
-                  console.log(`[StatsConsumer] 📊 Campaign ${campaignId} has more delivered messages: ${currentDelivered}`);
-                  console.log(`[StatsConsumer] 💰 Charging additional ₹${additionalCharge} (was ₹${chargedCost}, now ₹${expectedCost})`);
-
-                  // Charge the additional amount (no transaction record - only wallet transfers are recorded)
-                  await User.findByIdAndUpdate(campaign.userId, {
-                    $inc: { 'wallet.balance': -additionalCharge },
-                    $set: { 'wallet.lastUpdated': new Date() }
-                  });
-
-                  // Update campaign actualCost
-                  await Campaign.findByIdAndUpdate(campaignId, { actualCost: expectedCost });
-                  console.log(`[StatsConsumer] ✅ Additional charge complete for campaign ${campaignId}`);
-                } else {
-                  console.log(`[StatsConsumer] Campaign ${campaignId} already completed properly, skipping`);
-                }
-                continue;
-              }
-
-              // Check if all messages are processed
-              // NOTE: 'sent' status is counted as 'processed' because we may never receive delivery webhooks
-              // Only 'draft', 'queued', 'pending' are truly pending (not yet sent)
-              const stats = await ContactCampaignMessage.aggregate([
-                { $match: { userId: campaign.userId } },
-                { $unwind: '$campaigns' },
-                { $match: { 'campaigns.campaignId': campaign._id } },
-                {
-                  $group: {
-                    _id: null,
-                    total: { $sum: 1 },
-                    pending: { $sum: { $cond: [{ $in: ['$campaigns.status', ['draft', 'queued', 'pending']] }, 1, 0] } },
-                    processed: { $sum: { $cond: [{ $in: ['$campaigns.status', ['sent', 'delivered', 'read', 'replied', 'failed', 'expired']] }, 1, 0] } }
-                  }
-                }
-              ]);
-
-              const { total = 0, pending = 0, processed = 0 } = stats[0] || {};
-
-              console.log(`[StatsConsumer] Campaign ${campaignId}: total=${total}, pending=${pending}, processed=${processed}`);
-
-              // If all messages are processed (no pending), complete the campaign
-              if (total > 0 && pending === 0 && processed >= total) {
-                console.log(`[StatsConsumer] 🏁 Completing campaign ${campaignId}: ${processed}/${total} processed`);
-                await campaign.completeCampaign();
-                console.log(`[StatsConsumer] ✅ Campaign ${campaignId} completed with wallet adjustment`);
-              } else {
-                console.log(`[StatsConsumer] Campaign ${campaignId} not ready: ${pending} still pending`);
-              }
-            } catch (error) {
-              console.error(`[StatsConsumer] ❌ Error checking campaign ${campaignId}:`, error.message);
-              console.error(`[StatsConsumer] Stack:`, error.stack);
-            }
-          }
-        }
+        // Campaign completion/wallet settlement now handled by expirePendingMessages.js script
+        // No real-time wallet adjustments - only status tracking here
 
         // 🔥 FIX #1: ACK only if everything succeeded
         if (allSuccess && messages.length > 0) {

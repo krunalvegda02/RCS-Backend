@@ -7,21 +7,19 @@ const connectDB = async () => {
       `${process.env.MONGODB_URI}`,
       {
         serverSelectionTimeoutMS: 30000,
-        socketTimeoutMS: 60000,
+        socketTimeoutMS: 120000,
         connectTimeoutMS: 30000,
         maxPoolSize: 50,
         minPoolSize: 10,
-        maxIdleTimeMS: 30000,
+        maxIdleTimeMS: 60000,
         retryWrites: true,
-        retryReads: true,
-        compressors: ['zlib'],
-        zlibCompressionLevel: 6
+        retryReads: true
       }
     );
-    
+
     mongoose.set('debug', false);
     mongoose.set('strictQuery', false);
-    
+
     app.on("error", (error) => {
       console.log("Express Error:", error);
     });
