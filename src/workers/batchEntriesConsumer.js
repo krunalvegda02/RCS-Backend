@@ -25,7 +25,7 @@ async function startBatchEntriesConsumer() {
     });
     
     await consumer.connect();
-    await consumer.subscribe({ topic: 'campaign-batch-entries', fromBeginning: true });
+    await consumer.subscribe({ topic: 'campaign-batch-entries', fromBeginning: false });
     console.log('✅ Batch Entries Consumer subscribed to campaign-batch-entries');
     
     const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
