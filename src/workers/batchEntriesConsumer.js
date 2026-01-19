@@ -129,6 +129,9 @@ async function startBatchEntriesConsumer() {
                   ordered: false,
                   writeConcern: { w: 1, j: false }
                 });
+                
+                await heartbeat(); // Heartbeat after DB write
+                
                 console.log(`[BatchConsumer] 💾 BulkWrite result:`, JSON.stringify(result, null, 2));
                 console.log(`[BatchConsumer] 💾 Summary: inserted=${result.insertedCount}, modified=${result.modifiedCount}, matched=${result.matchedCount}`);
                 
@@ -232,6 +235,9 @@ async function startBatchEntriesConsumer() {
             
             console.log(`[BatchConsumer] ✅✅✅ Campaign ${campaignKey} ALL ${progress.total} chunks completed`);
             console.log(`[BatchConsumer] 📊 Final Stats: total=${stats.total}, pending=${stats.pending}, sent=${stats.sent}, delivered=${stats.delivered}, read=${stats.read}, replied=${stats.replied}, failed=${stats.failed}`);
+            
+            await heartbeat(); // Heartbeat after stats sync
+            
             campaignChunks.delete(campaignKey);
           }
         }
