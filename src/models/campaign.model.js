@@ -52,6 +52,10 @@ const campaignSchema = new mongoose.Schema(
         type: Number,
         default: 0,
       },
+      pending: {
+        type: Number,
+        default: 0,
+      },
       sent: {
         type: Number,
         default: 0,
@@ -136,6 +140,7 @@ campaignSchema.methods.syncStats = async function () {
       $group: {
         _id: null,
         total: { $sum: 1 },
+        pending: { $sum: { $cond: [{ $in: ['$campaigns.status', ['pending', 'draft', 'queued']] }, 1, 0] } },
         sent: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'sent'] }, 1, 0] } },
         delivered: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'delivered'] }, 1, 0] } },
         read: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'read'] }, 1, 0] } },
@@ -145,10 +150,11 @@ campaignSchema.methods.syncStats = async function () {
     }
   ]);
 
-  const newStats = stats[0] || { total: 0, sent: 0, delivered: 0, read: 0, replied: 0, failed: 0 };
+  const newStats = stats[0] || { total: 0, pending: 0, sent: 0, delivered: 0, read: 0, replied: 0, failed: 0 };
   
   this.stats = {
     total: newStats.total,
+    pending: newStats.pending,
     sent: newStats.sent,
     delivered: newStats.delivered,
     read: newStats.read,

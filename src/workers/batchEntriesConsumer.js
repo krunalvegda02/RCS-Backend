@@ -181,8 +181,28 @@ async function startBatchEntriesConsumer() {
           
           if (progress.completed.size === progress.total) {
             const Campaign = (await import('../models/campaign.model.js')).default;
-            const updated = await Campaign.findByIdAndUpdate(campaignKey, { status: 'pending' }, { new: true });
-            console.log(`[BatchConsumer] ✅✅✅ Campaign ${campaignKey} ALL ${progress.total} chunks completed - STATUS UPDATED TO: ${updated?.status} ✅✅✅`);
+            
+            // Count actual contacts inserted
+            const contactCount = await ContactCampaignMessage.countDocuments({
+              'campaigns.campaignId': new mongoose.Types.ObjectId(campaignKey)
+            });
+            
+            console.log(`[BatchConsumer] 📊 Campaign ${campaignKey}: ${contactCount} contacts in database`);
+            
+            // Update campaign status
+            const campaign = await Campaign.findByIdAndUpdate(
+              campaignKey,
+              { status: 'pending' },
+              { new: true }
+            );
+            
+            // Sync stats from ContactCampaignMessage
+            if (campaign && campaign.syncStats) {
+              await campaign.syncStats();
+              console.log(`[BatchConsumer] 🔄 Synced stats for campaign ${campaignKey}:`, campaign.stats);
+            }
+            
+            console.log(`[BatchConsumer] ✅✅✅ Campaign ${campaignKey} ALL ${progress.total} chunks completed - STATUS: ${campaign?.status}, TOTAL: ${campaign?.stats?.total} ✅✅✅`);
             campaignChunks.delete(campaignKey);
           }
         }
