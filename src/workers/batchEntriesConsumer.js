@@ -93,44 +93,31 @@ async function startBatchEntriesConsumer() {
                   }
                 });
               } else {
-                // Check if campaign already exists in this contact
-                const campaignExists = existingContact.campaigns?.some(
-                  c => c.campaignId.toString() === campaignId.toString()
-                );
-                
-                if (!campaignExists) {
-                  // Add campaign to existing contact - use $ne to prevent race conditions
-                  bulkOps.push({
-                    updateOne: {
-                      filter: { 
-                        recipientPhoneNumber: cleanPhone,
-                        userId,
-                        'campaigns.campaignId': { $ne: new mongoose.Types.ObjectId(campaignId) }
+                // Always use updateOne with $ne filter - let MongoDB handle duplicate prevention
+                bulkOps.push({
+                  updateOne: {
+                    filter: { 
+                      recipientPhoneNumber: cleanPhone,
+                      userId,
+                      'campaigns.campaignId': { $ne: new mongoose.Types.ObjectId(campaignId) }
+                    },
+                    update: {
+                      $push: {
+                        campaigns: {
+                          campaignId,
+                          templateId,
+                          messageId,
+                          status: 'pending',
+                          queuedAt: new Date(),
+                          userClickCount: 0,
+                          userReplyCount: 0
+                        }
                       },
-                      update: {
-                        $push: {
-                          campaigns: {
-                            campaignId,
-                            templateId,
-                            messageId,
-                            status: 'pending',
-                            queuedAt: new Date(),
-                            userClickCount: 0,
-                            userReplyCount: 0
-                          }
-                        },
-                        $addToSet: { campaignIds: campaignId }
-                      }
+                      $addToSet: { campaignIds: campaignId }
                     }
-                  });
-                } else {
-                  skippedDuplicates++;
-                }
+                  }
+                });
               }
-            }
-            
-            if (skippedDuplicates > 0) {
-              console.log(`[BatchConsumer] ⚠️ Skipped ${skippedDuplicates} duplicate campaign entries for campaign ${campaignId}`);
             }
             
             console.log(`[BatchConsumer] 📝 Prepared ${bulkOps.length} bulk operations for ${phoneNumbers.length} contacts`);
@@ -143,7 +130,12 @@ async function startBatchEntriesConsumer() {
                   writeConcern: { w: 1, j: false }
                 });
                 console.log(`[BatchConsumer] 💾 BulkWrite result:`, JSON.stringify(result, null, 2));
-                console.log(`[BatchConsumer] 💾 Summary: inserted=${result.insertedCount}, modified=${result.modifiedCount}, upserted=${result.upsertedCount}`);
+                console.log(`[BatchConsumer] 💾 Summary: inserted=${result.insertedCount}, modified=${result.modifiedCount}, matched=${result.matchedCount}`);
+                
+                const skippedDuplicates = bulkOps.length - result.insertedCount - result.modifiedCount;
+                if (skippedDuplicates > 0) {
+                  console.log(`[BatchConsumer] ⚠️ Skipped ${skippedDuplicates} duplicate campaign entries (already exist in DB)`);
+                }
               } catch (bulkError) {
                 console.error(`[BatchConsumer] ❌ BulkWrite error:`, bulkError.message);
                 if (bulkError.writeErrors) {
