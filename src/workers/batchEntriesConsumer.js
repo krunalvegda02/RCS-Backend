@@ -123,13 +123,23 @@ async function startBatchEntriesConsumer() {
             }
             
             console.log(`[BatchConsumer] 📝 Prepared ${bulkOps.length} bulk operations for ${phoneNumbers.length} contacts`);
+            console.log(`[BatchConsumer] 🔍 Sample operation:`, JSON.stringify(bulkOps[0], null, 2));
             
             if (bulkOps.length > 0) {
-              const result = await ContactCampaignMessage.bulkWrite(bulkOps, {
-                ordered: false,
-                writeConcern: { w: 1, j: false }
-              });
-              console.log(`[BatchConsumer] 💾 BulkWrite result: inserted=${result.insertedCount}, modified=${result.modifiedCount}, upserted=${result.upsertedCount}`);
+              try {
+                const result = await ContactCampaignMessage.bulkWrite(bulkOps, {
+                  ordered: false,
+                  writeConcern: { w: 1, j: false }
+                });
+                console.log(`[BatchConsumer] 💾 BulkWrite result:`, JSON.stringify(result, null, 2));
+                console.log(`[BatchConsumer] 💾 Summary: inserted=${result.insertedCount}, modified=${result.modifiedCount}, upserted=${result.upsertedCount}`);
+              } catch (bulkError) {
+                console.error(`[BatchConsumer] ❌ BulkWrite error:`, bulkError.message);
+                if (bulkError.writeErrors) {
+                  console.error(`[BatchConsumer] ❌ Write errors:`, bulkError.writeErrors.slice(0, 3));
+                }
+                throw bulkError;
+              }
             } else {
               console.log(`[BatchConsumer] ⚠️ No bulk operations to perform - all contacts already exist with this campaign`);
             }
