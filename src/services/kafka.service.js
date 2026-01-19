@@ -71,7 +71,7 @@ export async function sendWebhookToKafka(webhookData) {
   await connectProducer();
 
   await producer.send({
-    topic: 'webhook-events',
+    topic: 'rcs-webhooks',
     messages: [{
       key: webhookData.messageId || Date.now().toString(),
       value: JSON.stringify(webhookData),
@@ -105,7 +105,7 @@ export async function sendStatsToKafka(data, isBatch = false) {
     if (isBatch && Array.isArray(data)) {
       await statsProducer.sendBatch({
         topicMessages: [{
-          topic: 'message-stats',
+          topic: 'message-log-processing',
           messages: data
         }]
       });
@@ -143,7 +143,7 @@ async function flushStatsBuffer() {
   try {
     await statsProducer.sendBatch({
       topicMessages: [{
-        topic: 'message-stats',
+        topic: 'message-log-processing',
         messages
       }]
     });
@@ -158,9 +158,9 @@ export async function connectConsumer() {
     await consumer.connect();
     console.log('[Consumer] Connected successfully');
 
-    console.log('[Consumer] Subscribing to webhook-events topic...');
+    console.log('[Consumer] Subscribing to rcs-webhooks topic...');
     await consumer.subscribe({
-      topic: 'webhook-events',
+      topic: 'rcs-webhooks',
       fromBeginning: true
     });
     console.log('✅ Kafka Consumer connected and subscribed');
@@ -178,7 +178,7 @@ export async function connectConsumer() {
     } else if (error.message.includes('timeout')) {
       console.error('🔴 Connection timeout - Kafka may be starting up');
     } else if (error.message.includes('topic')) {
-      console.error('🔴 Topic webhook-events may not exist');
+      console.error('🔴 Topic rcs-webhooks may not exist');
     }
 
     throw error;
