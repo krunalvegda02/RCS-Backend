@@ -54,11 +54,10 @@ services:
       - |
         echo 'Waiting for Kafka to be ready...'
         cub kafka-ready -b kafka:9092 1 30
-        echo 'Creating topics with proper partitions for 4k+ msg/sec...'
-        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic rcs-webhooks --partitions 12 --replication-factor 1 --config retention.ms=86400000 --config compression.type=gzip --config min.insync.replicas=1
-        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic message-log-processing --partitions 6 --replication-factor 1 --config retention.ms=86400000 --config compression.type=gzip
-        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic campaign-batch-entries --partitions 4 --replication-factor 1 --config retention.ms=86400000 --config compression.type=gzip
-        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic rcs-db-updates --partitions 3 --replication-factor 1 --config retention.ms=86400000 --config compression.type=gzip
+        echo 'Creating topics with proper partitions...'
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic webhook-events --partitions 8 --replication-factor 1 --config retention.ms=86400000 --config compression.type=gzip --config min.insync.replicas=1
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic message-stats --partitions 6 --replication-factor 1 --config retention.ms=86400000 --config compression.type=gzip
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic campaign-batch-entries --partitions 3 --replication-factor 1 --config retention.ms=86400000 --config compression.type=gzip
         echo 'Topics created successfully!'
         kafka-topics --bootstrap-server kafka:9092 --list
     networks:
