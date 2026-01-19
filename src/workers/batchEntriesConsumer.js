@@ -20,9 +20,10 @@ async function startBatchEntriesConsumer() {
     
     const consumer = kafka.consumer({ 
       groupId: `batch-entries-processor-${process.env.NODE_ENV || 'dev'}`,
-      sessionTimeout: 60000,
-      heartbeatInterval: 3000,
-      maxWaitTimeInMs: 100
+      sessionTimeout: 120000,
+      heartbeatInterval: 10000,
+      maxWaitTimeInMs: 100,
+      rebalanceTimeout: 120000
     });
     
     await consumer.connect();
@@ -248,7 +249,7 @@ async function startBatchEntriesConsumer() {
     });
     
     const shutdown = async () => {
-      console.log('🛑 Shutting down batch entries consumer...');
+      console.log('🛑 🛑 🛑  Shutting down batch entries consumer...🛑 🛑 🛑 ');
       await consumer.disconnect();
       await mongoose.connection.close();
       process.exit(0);
@@ -256,6 +257,8 @@ async function startBatchEntriesConsumer() {
     
     process.on('SIGTERM', shutdown);
     process.on('SIGINT', shutdown);
+
+
     
   } catch (error) {
     console.error('❌ Batch entries consumer startup failed:', error);
