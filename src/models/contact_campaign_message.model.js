@@ -22,7 +22,6 @@ const campaignStateSchema = new mongoose.Schema(
     rcsMessageId: String,
     jioMessageId: {
       type: String,
-      index: true,
     },
     externalMessageId: String,
     assistantId: String,

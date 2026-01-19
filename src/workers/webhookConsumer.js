@@ -100,7 +100,7 @@ async function startWebhookConsumer() {
         if (uncachedIds.length > 0) {
           console.log(`[WebhookConsumer] 🔍 Querying DB for ${uncachedIds.length} uncached IDs`);
 
-          const CHUNK_SIZE = 500;
+          const CHUNK_SIZE = 200;
           const chunks = [];
           for (let i = 0; i < uncachedIds.length; i += CHUNK_SIZE) {
             chunks.push(uncachedIds.slice(i, i + CHUNK_SIZE));
@@ -111,13 +111,15 @@ async function startWebhookConsumer() {
           // Process chunks sequentially to avoid overwhelming the DB
           for (const chunk of chunks) {
             try {
-              const messageDocs = await ContactCampaignMessage.find({
-                $or: [
-                  { 'campaigns.messageId': { $in: chunk } },
-                  { 'campaigns.jioMessageId': { $in: chunk } },
-                  { 'campaigns.rcsMessageId': { $in: chunk } }
-                ]
-              }, { userId: 1, campaigns: 1 }).lean().maxTimeMS(20000);
+              // 🔥 FIX: Split $or query into 3 specific queries to force index usage and avoid timeouts
+              const [byMsgId, byJioId, byRcsId] = await Promise.all([
+                ContactCampaignMessage.find({ 'campaigns.messageId': { $in: chunk } }, { userId: 1, campaigns: 1 }).lean().maxTimeMS(20000),
+                ContactCampaignMessage.find({ 'campaigns.jioMessageId': { $in: chunk } }, { userId: 1, campaigns: 1 }).lean().maxTimeMS(20000),
+                ContactCampaignMessage.find({ 'campaigns.rcsMessageId': { $in: chunk } }, { userId: 1, campaigns: 1 }).lean().maxTimeMS(20000)
+              ]);
+
+              // Merge results (deduplicate by _id)
+              const messageDocs = [...byMsgId, ...byJioId, ...byRcsId];
 
               totalFound += messageDocs.length;
 
