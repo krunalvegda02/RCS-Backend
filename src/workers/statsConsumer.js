@@ -208,7 +208,7 @@ async function startStatsConsumer() {
         const duration = Date.now() - startTime;
         console.log(`[StatsConsumer] Batch complete: ${logs.length} logs in ${duration}ms`);
 
-        // AUTO-SYNC CAMPAIGN STATS
+        // AUTO-SYNC CAMPAIGN STATS - Efficient batch sync
         if (allSuccess && bulkOps.length > 0) {
           const Campaign = (await import('../models/campaign.model.js')).default;
           const affectedCampaigns = new Set();
@@ -219,17 +219,52 @@ async function startStatsConsumer() {
           
           if (affectedCampaigns.size > 0) {
             console.log(`[StatsConsumer] Auto-syncing stats for ${affectedCampaigns.size} campaigns`);
-            for (const campaignId of affectedCampaigns) {
-              try {
-                const campaign = await Campaign.findById(campaignId);
-                if (campaign && campaign.status !== 'settled') {
-                  await campaign.syncStats();
-                  console.log(`[StatsConsumer] ✅ Synced stats for campaign ${campaignId}`);
+            
+            // Batch sync all campaigns in parallel
+            await Promise.all(
+              Array.from(affectedCampaigns).map(async (campaignId) => {
+                try {
+                  const campaign = await Campaign.findById(campaignId);
+                  if (!campaign || campaign.status === 'settled') return;
+                  
+                  // Efficient aggregation sync
+                  const aggregatedStats = await ContactCampaignMessage.aggregate([
+                    { $match: { 'campaigns.campaignId': new mongoose.Types.ObjectId(campaignId) } },
+                    { $unwind: '$campaigns' },
+                    { $match: { 'campaigns.campaignId': new mongoose.Types.ObjectId(campaignId) } },
+                    {
+                      $group: {
+                        _id: null,
+                        total: { $sum: 1 },
+                        pending: { $sum: { $cond: [{ $in: ['$campaigns.status', ['pending', 'draft', 'queued']] }, 1, 0] } },
+                        sent: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'sent'] }, 1, 0] } },
+                        delivered: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'delivered'] }, 1, 0] } },
+                        read: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'read'] }, 1, 0] } },
+                        replied: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'replied'] }, 1, 0] } },
+                        failed: { $sum: { $cond: [{ $in: ['$campaigns.status', ['failed', 'bounced', 'expired']] }, 1, 0] } }
+                      }
+                    }
+                  ]);
+                  
+                  const stats = aggregatedStats[0] || { total: 0, pending: 0, sent: 0, delivered: 0, read: 0, replied: 0, failed: 0 };
+                  
+                  await Campaign.findByIdAndUpdate(campaignId, {
+                    'stats.total': stats.total,
+                    'stats.pending': stats.pending,
+                    'stats.sent': stats.sent,
+                    'stats.delivered': stats.delivered,
+                    'stats.read': stats.read,
+                    'stats.replied': stats.replied,
+                    'stats.failed': stats.failed,
+                    'stats.bounced': 0
+                  });
+                  
+                  console.log(`[StatsConsumer] ✅ Synced campaign ${campaignId}: total=${stats.total}, delivered=${stats.delivered}, failed=${stats.failed}`);
+                } catch (err) {
+                  console.error(`[StatsConsumer] Failed to sync campaign ${campaignId}:`, err.message);
                 }
-              } catch (err) {
-                console.error(`[StatsConsumer] Failed to sync campaign ${campaignId}:`, err.message);
-              }
-            }
+              })
+            );
           }
         }
 

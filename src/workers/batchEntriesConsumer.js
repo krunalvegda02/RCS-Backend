@@ -200,20 +200,46 @@ async function startBatchEntriesConsumer() {
             
             console.log(`[BatchConsumer] 📊 Campaign ${campaignKey}: ${contactCount} contacts in database`);
             
-            // Update campaign status
+            // Sync stats efficiently using aggregation
+            const aggregatedStats = await ContactCampaignMessage.aggregate([
+              { $match: { 'campaigns.campaignId': new mongoose.Types.ObjectId(campaignKey) } },
+              { $unwind: '$campaigns' },
+              { $match: { 'campaigns.campaignId': new mongoose.Types.ObjectId(campaignKey) } },
+              {
+                $group: {
+                  _id: null,
+                  total: { $sum: 1 },
+                  pending: { $sum: { $cond: [{ $in: ['$campaigns.status', ['pending', 'draft', 'queued']] }, 1, 0] } },
+                  sent: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'sent'] }, 1, 0] } },
+                  delivered: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'delivered'] }, 1, 0] } },
+                  read: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'read'] }, 1, 0] } },
+                  replied: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'replied'] }, 1, 0] } },
+                  failed: { $sum: { $cond: [{ $in: ['$campaigns.status', ['failed', 'bounced', 'expired']] }, 1, 0] } }
+                }
+              }
+            ]);
+            
+            const stats = aggregatedStats[0] || { total: 0, pending: 0, sent: 0, delivered: 0, read: 0, replied: 0, failed: 0 };
+            
+            // Update campaign with stats and status in one operation
             const campaign = await Campaign.findByIdAndUpdate(
               campaignKey,
-              { status: 'pending' },
+              {
+                status: 'pending',
+                'stats.total': stats.total,
+                'stats.pending': stats.pending,
+                'stats.sent': stats.sent,
+                'stats.delivered': stats.delivered,
+                'stats.read': stats.read,
+                'stats.replied': stats.replied,
+                'stats.failed': stats.failed,
+                'stats.bounced': 0
+              },
               { new: true }
             );
             
-            // Sync stats from ContactCampaignMessage
-            if (campaign && campaign.syncStats) {
-              await campaign.syncStats();
-              console.log(`[BatchConsumer] 🔄 Synced stats for campaign ${campaignKey}:`, campaign.stats);
-            }
-            
-            console.log(`[BatchConsumer] ✅✅✅ Campaign ${campaignKey} ALL ${progress.total} chunks completed - STATUS: ${campaign?.status}, TOTAL: ${campaign?.stats?.total} ✅✅✅`);
+            console.log(`[BatchConsumer] ✅✅✅ Campaign ${campaignKey} ALL ${progress.total} chunks completed`);
+            console.log(`[BatchConsumer] 📊 Final Stats: total=${stats.total}, pending=${stats.pending}, sent=${stats.sent}, delivered=${stats.delivered}, read=${stats.read}, replied=${stats.replied}, failed=${stats.failed}`);
             campaignChunks.delete(campaignKey);
           }
         }
