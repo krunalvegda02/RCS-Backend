@@ -65,6 +65,7 @@ async function startBatchEntriesConsumer() {
             });
             
             const bulkOps = [];
+            let skippedDuplicates = 0;
             
             for (const phone of phoneNumbers) {
               const cleanPhone = phone.replace(/^\+?91/, '').replace(/\D/g, '');
@@ -92,16 +93,20 @@ async function startBatchEntriesConsumer() {
                   }
                 });
               } else {
-                // Check if campaign already exists
+                // Check if campaign already exists in this contact
                 const campaignExists = existingContact.campaigns?.some(
                   c => c.campaignId.toString() === campaignId.toString()
                 );
                 
                 if (!campaignExists) {
-                  // Update existing contact - add campaign
+                  // Add campaign to existing contact - use $ne to prevent race conditions
                   bulkOps.push({
                     updateOne: {
-                      filter: { _id: existingContact._id },
+                      filter: { 
+                        recipientPhoneNumber: cleanPhone,
+                        userId,
+                        'campaigns.campaignId': { $ne: new mongoose.Types.ObjectId(campaignId) }
+                      },
                       update: {
                         $push: {
                           campaigns: {
@@ -118,8 +123,14 @@ async function startBatchEntriesConsumer() {
                       }
                     }
                   });
+                } else {
+                  skippedDuplicates++;
                 }
               }
+            }
+            
+            if (skippedDuplicates > 0) {
+              console.log(`[BatchConsumer] ⚠️ Skipped ${skippedDuplicates} duplicate campaign entries for campaign ${campaignId}`);
             }
             
             console.log(`[BatchConsumer] 📝 Prepared ${bulkOps.length} bulk operations for ${phoneNumbers.length} contacts`);
