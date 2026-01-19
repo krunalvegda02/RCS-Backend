@@ -20,8 +20,9 @@ async function startBatchEntriesConsumer() {
     
     const consumer = kafka.consumer({ 
       groupId: `batch-entries-processor-${process.env.NODE_ENV || 'dev'}`,
-      sessionTimeout: 30000,
-      heartbeatInterval: 3000
+      sessionTimeout: 60000,
+      heartbeatInterval: 3000,
+      maxWaitTimeInMs: 100
     });
     
     await consumer.connect();
