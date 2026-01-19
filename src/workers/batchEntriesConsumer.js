@@ -83,7 +83,7 @@ async function startBatchEntriesConsumer() {
                         campaignId,
                         templateId,
                         messageId,
-                        status: 'draft',
+                        status: 'pending',
                         queuedAt: new Date(),
                         userClickCount: 0,
                         userReplyCount: 0
@@ -108,7 +108,7 @@ async function startBatchEntriesConsumer() {
                             campaignId,
                             templateId,
                             messageId,
-                            status: 'draft',
+                            status: 'pending',
                             queuedAt: new Date(),
                             userClickCount: 0,
                             userReplyCount: 0
