@@ -122,11 +122,16 @@ async function startBatchEntriesConsumer() {
               }
             }
             
+            console.log(`[BatchConsumer] 📝 Prepared ${bulkOps.length} bulk operations for ${phoneNumbers.length} contacts`);
+            
             if (bulkOps.length > 0) {
-              await ContactCampaignMessage.bulkWrite(bulkOps, {
+              const result = await ContactCampaignMessage.bulkWrite(bulkOps, {
                 ordered: false,
                 writeConcern: { w: 1, j: false }
               });
+              console.log(`[BatchConsumer] 💾 BulkWrite result: inserted=${result.insertedCount}, modified=${result.modifiedCount}, upserted=${result.upsertedCount}`);
+            } else {
+              console.log(`[BatchConsumer] ⚠️ No bulk operations to perform - all contacts already exist with this campaign`);
             }
             
             totalProcessed += phoneNumbers.length;
