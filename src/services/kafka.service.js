@@ -40,7 +40,7 @@ const dbProducer = kafka.producer({
 });
 
 const consumer = kafka.consumer({
-  groupId: `webhook-processor-${process.env.NODE_ENV || 'dev'}`,
+  groupId: `webhook-processor-${process.env.NODE_ENV || 'dev'}-new`,
   sessionTimeout: 30000,
   heartbeatInterval: 3000,
   maxBytesPerPartition: 1048576,
@@ -161,7 +161,7 @@ export async function connectConsumer() {
     console.log('[Consumer] Subscribing to rcs-webhooks topic...');
     await consumer.subscribe({
       topic: 'rcs-webhooks',
-      fromBeginning: true
+      fromBeginning: false
     });
     console.log('✅ Kafka Consumer connected and subscribed');
     return consumer;
