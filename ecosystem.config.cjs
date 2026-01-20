@@ -71,7 +71,7 @@ module.exports = {
     {
       name: 'batch-consumer',
       script: 'src/workers/batchEntriesConsumer.js',
-      instances: 5,
+      instances: 3,
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',

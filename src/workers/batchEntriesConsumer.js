@@ -166,8 +166,8 @@ async function startBatchEntriesConsumer() {
 
   const consumer = kafka.consumer({
     groupId: 'batch-entries-processor-prod-final',
-    sessionTimeout: 600000,
-    heartbeatInterval: 3000
+    sessionTimeout: 1200000,     
+  heartbeatInterval: 5000,   
   });
 
   await consumer.connect();
@@ -211,14 +211,18 @@ async function startBatchEntriesConsumer() {
 
           return {
             updateOne: {
-              filter: { recipientPhoneNumber: cleanPhone, userId },
+              filter: { 
+                recipientPhoneNumber: cleanPhone, 
+                userId,
+                'campaigns.campaignId': { $ne: campaignObjectId }
+              },
               update: {
                 $setOnInsert: {
                   recipientPhoneNumber: cleanPhone,
                   userId
                 },
-                $addToSet: {
-                  campaignIds: campaignObjectId,
+                $addToSet: { campaignIds: campaignObjectId },
+                $push: {
                   campaigns: {
                     campaignId: campaignObjectId,
                     templateId,
