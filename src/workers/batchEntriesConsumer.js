@@ -176,8 +176,7 @@ async function startBatchEntriesConsumer() {
                     updateOne: {
                       filter: {
                         recipientPhoneNumber: cleanPhone,
-                        userId,
-                        'campaigns.campaignId': { $ne: new mongoose.Types.ObjectId(campaignId) }
+                        userId
                       },
                       update: {
                         $push: {
