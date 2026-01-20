@@ -57,7 +57,7 @@ async function startBatchEntriesConsumer() {
     });
 
     consumer = kafka.consumer({
-      groupId: `batch-entries-processor-v5-${process.env.NODE_ENV || 'dev'}`,
+      groupId: `batch-entries-processor-${process.env.NODE_ENV || 'dev'}`,
       sessionTimeout: 300000,
       heartbeatInterval: 10000,
       maxWaitTimeInMs: 100,
@@ -158,8 +158,7 @@ async function startBatchEntriesConsumer() {
                 await ContactCampaignMessage.updateMany(
                   {
                     recipientPhoneNumber: { $in: phones },
-                    userId,
-                    'campaigns.campaignId': { $ne: campaignId }
+                    userId
                   },
                   {
                     $push: {
