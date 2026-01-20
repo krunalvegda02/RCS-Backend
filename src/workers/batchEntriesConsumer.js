@@ -52,15 +52,16 @@ async function startBatchEntriesConsumer() {
       retry: {
         initialRetryTime: 100,
         retries: 8
-      }
+      },
+      requestTimeout: 120000 // 2 minutes for slow operations
     });
 
     consumer = kafka.consumer({
       groupId: `batch-entries-processor-${process.env.NODE_ENV || 'dev'}`,
-      sessionTimeout: 300000,
-      heartbeatInterval: 3000,
+      sessionTimeout: 300000, // 5 minutes
+      heartbeatInterval: 10000, // 10 seconds
       maxWaitTimeInMs: 100,
-      rebalanceTimeout: 300000
+      rebalanceTimeout: 300000 // 5 minutes
     });
 
     await consumer.connect();
@@ -78,7 +79,7 @@ async function startBatchEntriesConsumer() {
     const userCampaignCache = new Map();
     
     await consumer.run({
-      partitionsConsumedConcurrently: 1, // Process all partitions in parallel
+      partitionsConsumedConcurrently: 3, // Process all partitions in parallel
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
         const messages = batch.messages;
@@ -185,7 +186,7 @@ async function startBatchEntriesConsumer() {
             }
 
             // Phase 4: Execute inserts first (faster), then updates
-            const BULK_WRITE_BATCH_SIZE = 500; // Increased for faster throughput
+            const BULK_WRITE_BATCH_SIZE = 1000; // Increased for faster throughput
             let successCount = 0;
             let modifiedCount = 0;
 
