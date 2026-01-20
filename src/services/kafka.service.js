@@ -185,16 +185,75 @@ export async function connectConsumer() {
   }
 }
 
+// export async function sendBatchEntriesToKafka(batchData) {
+//   try {
+//     if (!batchData || !batchData.campaignId || !batchData.phoneNumbers) {
+//       console.error('[Kafka] Invalid batchData:', batchData);
+//       return { success: false, error: 'Invalid batch data structure' };
+//     }
+
+//     const campaignId = batchData.campaignId?.toString ? batchData.campaignId.toString() : batchData.campaignId;
+//     const templateId = batchData.templateId?.toString ? batchData.templateId.toString() : batchData.templateId;
+//     const userId = batchData.userId?.toString ? batchData.userId.toString() : batchData.userId;
+//     const phoneNumbers = batchData.phoneNumbers;
+
+//     if (!dbProducerConnected) {
+//       if (!dbConnectingPromise) {
+//         dbConnectingPromise = dbProducer.connect().then(() => {
+//           dbProducerConnected = true;
+//           dbConnectingPromise = null;
+//           console.log('✅ Kafka DB Producer connected');
+//         });
+//       }
+//       await dbConnectingPromise;
+//     }
+
+//     // Split into 5K chunks for fast parallel processing
+//     const CHUNK_SIZE = 500;
+//     const chunks = [];
+//     for (let i = 0; i < phoneNumbers.length; i += CHUNK_SIZE) {
+//       chunks.push(phoneNumbers.slice(i, i + CHUNK_SIZE));
+//     }
+
+//     // Send all chunks in parallel using sendBatch
+//     const messages = chunks.map((chunk, index) => ({
+//       key: campaignId.toString(),
+//       value: JSON.stringify({
+//         campaignId,
+//         templateId,
+//         userId,
+//         phoneNumbers: chunk,
+//         totalContacts: chunk.length,
+//         chunkIndex: index,
+//         totalChunks: chunks.length
+//       }),
+//       timestamp: Date.now()
+//     }));
+
+//     await dbProducer.sendBatch({
+//       topicMessages: [{
+//         topic: 'campaign-batch-entries',
+//         messages
+//       }]
+//     });
+
+//     console.log(`[Kafka] ✅ Sent ${phoneNumbers.length} contacts in ${chunks.length} chunks`);
+//     return { success: true, chunks: chunks.length };
+//   } catch (error) {
+//     console.error('[Kafka] Batch entries send error:', error.message);
+//     return { success: false, error: error.message };
+//   }
+// }
+
 export async function sendBatchEntriesToKafka(batchData) {
   try {
-    if (!batchData || !batchData.campaignId || !batchData.phoneNumbers) {
-      console.error('[Kafka] Invalid batchData:', batchData);
-      return { success: false, error: 'Invalid batch data structure' };
+    if (!batchData?.campaignId || !Array.isArray(batchData.phoneNumbers)) {
+      return { success: false, error: 'Invalid batch data' };
     }
 
-    const campaignId = batchData.campaignId?.toString ? batchData.campaignId.toString() : batchData.campaignId;
-    const templateId = batchData.templateId?.toString ? batchData.templateId.toString() : batchData.templateId;
-    const userId = batchData.userId?.toString ? batchData.userId.toString() : batchData.userId;
+    const campaignId = batchData.campaignId.toString();
+    const templateId = batchData.templateId?.toString();
+    const userId = batchData.userId.toString();
     const phoneNumbers = batchData.phoneNumbers;
 
     if (!dbProducerConnected) {
@@ -208,27 +267,31 @@ export async function sendBatchEntriesToKafka(batchData) {
       await dbConnectingPromise;
     }
 
-    // Split into 5K chunks for fast parallel processing
-    const CHUNK_SIZE = 3000;
-    const chunks = [];
-    for (let i = 0; i < phoneNumbers.length; i += CHUNK_SIZE) {
-      chunks.push(phoneNumbers.slice(i, i + CHUNK_SIZE));
-    }
+    /* 🔥 CRITICAL: SMALL CHUNKS */
+    const CHUNK_SIZE = 500;
+    const totalChunks = Math.ceil(phoneNumbers.length / CHUNK_SIZE);
 
-    // Send all chunks in parallel using sendBatch
-    const messages = chunks.map((chunk, index) => ({
-      key: campaignId.toString(),
-      value: JSON.stringify({
-        campaignId,
-        templateId,
-        userId,
-        phoneNumbers: chunk,
-        totalContacts: chunk.length,
-        chunkIndex: index,
-        totalChunks: chunks.length
-      }),
-      timestamp: Date.now()
-    }));
+    const messages = [];
+    const batchId = `${campaignId}-${Date.now()}`;
+
+    for (let i = 0; i < phoneNumbers.length; i += CHUNK_SIZE) {
+      const chunkIndex = Math.floor(i / CHUNK_SIZE);
+      const chunk = phoneNumbers.slice(i, i + CHUNK_SIZE);
+
+      messages.push({
+        key: campaignId,
+        value: JSON.stringify({
+          campaignId,
+          templateId,
+          userId,
+          phoneNumbers: chunk,
+          chunkIndex,
+          totalChunks,
+          batchId // 🔐 idempotency helper
+        }),
+        timestamp: Date.now()
+      });
+    }
 
     await dbProducer.sendBatch({
       topicMessages: [{
@@ -237,13 +300,17 @@ export async function sendBatchEntriesToKafka(batchData) {
       }]
     });
 
-    console.log(`[Kafka] ✅ Sent ${phoneNumbers.length} contacts in ${chunks.length} chunks`);
-    return { success: true, chunks: chunks.length };
+    console.log(
+      `[Kafka] ✅ Sent ${phoneNumbers.length} contacts in ${totalChunks} chunks`
+    );
+
+    return { success: true, chunks: totalChunks };
   } catch (error) {
     console.error('[Kafka] Batch entries send error:', error.message);
     return { success: false, error: error.message };
   }
 }
+
 
 export async function disconnectKafka() {
   await producer.disconnect();

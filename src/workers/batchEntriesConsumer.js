@@ -145,183 +145,149 @@
 
 
 
+
 import mongoose from 'mongoose';
 import { Kafka } from 'kafkajs';
 import connectDB from '../db/index.js';
+import { v4 as uuidv4 } from 'uuid';
 
 process.env.WORKER_MODE = 'true';
 
-const BULK_WRITE_SIZE = 500;            // SAFE & FAST
-const MAX_PARTITION_CONCURRENCY = 1;    // IMPORTANT for MongoDB M10
+const BULK_SIZE = 500;
 
 async function startBatchEntriesConsumer() {
-  try {
-    /* -------------------- DB CONNECT -------------------- */
-    await connectDB();
-    console.log('✅ Batch Entries Consumer connected to MongoDB');
+  await connectDB();
+  console.log('✅ MongoDB connected');
 
-    /* -------------------- KAFKA SETUP -------------------- */
-    const kafka = new Kafka({
-      clientId: 'batch-entries-consumer',
-      brokers: [process.env.KAFKA_BROKER || 'localhost:9092'],
-      retry: { initialRetryTime: 100, retries: 8 }
-    });
+  const kafka = new Kafka({
+    clientId: 'batch-entries-consumer',
+    brokers: [process.env.KAFKA_BROKER || 'localhost:9092']
+  });
 
-    const consumer = kafka.consumer({
-      groupId: 'batch-entries-processor-production-v3',
-      sessionTimeout: 600000,
-      heartbeatInterval: 3000
-    });
+  const consumer = kafka.consumer({
+    groupId: 'batch-entries-processor-prod-final',
+    sessionTimeout: 600000,
+    heartbeatInterval: 3000
+  });
 
-    await consumer.connect();
-    await consumer.subscribe({ topic: 'campaign-batch-entries', fromBeginning: false });
-    console.log('✅ Subscribed to campaign-batch-entries');
+  await consumer.connect();
+  await consumer.subscribe({ topic: 'campaign-batch-entries', fromBeginning: false });
 
-    /* -------------------- MODELS -------------------- */
-    const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
-    const Campaign = (await import('../models/campaign.model.js')).default;
-    const { v4: uuidv4 } = await import('uuid');
+  console.log('✅ Subscribed to campaign-batch-entries');
 
-    /* -------------------- CONSUMER RUN -------------------- */
-    await consumer.run({
-      partitionsConsumedConcurrently: MAX_PARTITION_CONCURRENCY,
-      eachBatchAutoResolve: false,
+  const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
+  const Campaign = (await import('../models/campaign.model.js')).default;
 
-      eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
-        for (const message of batch.messages) {
-          if (!isRunning() || isStale()) break;
+  await consumer.run({
+    partitionsConsumedConcurrently: 1,
+    eachBatchAutoResolve: false,
 
-          const batchStart = Date.now();
+    eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
+      for (const message of batch.messages) {
+        if (!isRunning() || isStale()) break;
 
-          try {
-            const payload = JSON.parse(message.value.toString());
-            const {
-              campaignId,
-              templateId,
-              userId,
-              phoneNumbers,
-              totalChunks,
-              chunkIndex
-            } = payload;
+        await heartbeat(); // 🔥 PREVENT REBALANCE
 
-            const campaignObjectId = new mongoose.Types.ObjectId(campaignId);
+        const start = Date.now();
+        const data = JSON.parse(message.value.toString());
 
-            console.log(
-              `[BatchConsumer] Campaign ${campaignId} | Chunk ${chunkIndex + 1}/${totalChunks} | Contacts ${phoneNumbers.length}`
-            );
+        const {
+          campaignId,
+          templateId,
+          userId,
+          phoneNumbers,
+          chunkIndex,
+          totalChunks
+        } = data;
 
-            /* -------------------- BUILD BULK OPS -------------------- */
-            const ops = [];
+        const campaignObjectId = new mongoose.Types.ObjectId(campaignId);
 
-            for (const phone of phoneNumbers) {
-              const cleanPhone = phone.replace(/^\+?91/, '').replace(/\D/g, '');
+        console.log(
+          `[BatchConsumer] Campaign ${campaignId} | Chunk ${chunkIndex + 1}/${totalChunks} | ${phoneNumbers.length}`
+        );
 
-              ops.push({
-                updateOne: {
-                  filter: {
-                    recipientPhoneNumber: cleanPhone,
-                    userId,
-                    'campaigns.campaignId': { $ne: campaignObjectId }
-                  },
-                  update: {
-                    $setOnInsert: {
-                      recipientPhoneNumber: cleanPhone,
-                      userId
-                    },
-                    $push: {
-                      campaigns: {
-                        campaignId: campaignObjectId,
-                        templateId,
-                        messageId: uuidv4(),
-                        status: 'pending',
-                        queuedAt: new Date(),
-                        userClickCount: 0,
-                        userReplyCount: 0
-                      }
-                    },
-                    $addToSet: { campaignIds: campaignObjectId }
-                  },
-                  upsert: true
-                }
-              });
-            }
+        const ops = phoneNumbers.map(phone => {
+          const cleanPhone = phone.replace(/^\+?91/, '').replace(/\D/g, '');
 
-            /* -------------------- EXECUTE BULK WRITES -------------------- */
-            for (let i = 0; i < ops.length; i += BULK_WRITE_SIZE) {
-              await ContactCampaignMessage.bulkWrite(
-                ops.slice(i, i + BULK_WRITE_SIZE),
-                {
-                  ordered: false,
-                  writeConcern: { w: 1, j: false }
-                }
-              );
-              await heartbeat();
-            }
-
-            /* -------------------- TRACK CHUNK COMPLETION -------------------- */
-            await Campaign.findByIdAndUpdate(
-              campaignObjectId,
-              {
-                $addToSet: { completedChunks: chunkIndex },
-                $set: { totalChunks }
-              }
-            );
-
-            /* -------------------- AUTO CAMPAIGN STATUS UPDATE -------------------- */
-            // 🔥 Fast, single atomic DB check (runs only once)
-            setImmediate(async () => {
-              try {
-                const updated = await Campaign.findOneAndUpdate(
-                  {
-                    _id: campaignObjectId,
-                    status: 'draft',
-                    $expr: { $eq: [{ $size: '$completedChunks' }, '$totalChunks'] }
-                  },
-                  {
+          return {
+            updateOne: {
+              filter: { recipientPhoneNumber: cleanPhone, userId },
+              update: {
+                $setOnInsert: {
+                  recipientPhoneNumber: cleanPhone,
+                  userId
+                },
+                $addToSet: {
+                  campaignIds: campaignObjectId,
+                  campaigns: {
+                    campaignId: campaignObjectId,
+                    templateId,
+                    messageId: uuidv4(),
                     status: 'pending',
-                    completedAt: new Date(),
-                    $unset: { completedChunks: '', totalChunks: '' }
+                    queuedAt: new Date(),
+                    userClickCount: 0,
+                    userReplyCount: 0
                   }
-                );
-
-                if (updated) {
-                  console.log(`🚀 Campaign ${campaignId} moved to PENDING`);
                 }
-              } catch (err) {
-                console.error(`[CampaignStatusError] ${campaignId}`, err.message);
-              }
-            });
+              },
+              upsert: true
+            }
+          };
+        });
 
-            /* -------------------- COMMIT OFFSET -------------------- */
-            await resolveOffset(message.offset);
-            await heartbeat();
-
-            console.log(
-              `[BatchConsumer] Done chunk ${chunkIndex + 1}/${totalChunks} in ${Date.now() - batchStart}ms`
-            );
-
-          } catch (err) {
-            console.error('[BatchConsumer] Processing error:', err.message);
-          }
+        // Execute in mini-batches
+        for (let i = 0; i < ops.length; i += BULK_SIZE) {
+          await ContactCampaignMessage.bulkWrite(
+            ops.slice(i, i + BULK_SIZE),
+            { ordered: false, writeConcern: { w: 1 } }
+          );
+          await heartbeat(); // 🔥 KEEP SESSION ALIVE
         }
+
+        // Track chunk completion
+        await Campaign.findByIdAndUpdate(
+          campaignObjectId,
+          {
+            $addToSet: { completedChunks: chunkIndex },
+            $set: { totalChunks }
+          }
+        );
+
+        // Update campaign status ONCE
+        setImmediate(async () => {
+          await Campaign.findOneAndUpdate(
+            {
+              _id: campaignObjectId,
+              status: 'draft',
+              $expr: { $eq: [{ $size: '$completedChunks' }, '$totalChunks'] }
+            },
+            {
+              status: 'pending',
+              completedAt: new Date(),
+              $unset: { completedChunks: '', totalChunks: '' }
+            }
+          );
+        });
+
+        await resolveOffset(message.offset);
+        await heartbeat();
+
+        console.log(
+          `[BatchConsumer] Finished chunk ${chunkIndex + 1}/${totalChunks} in ${Date.now() - start}ms`
+        );
       }
-    });
+    }
+  });
 
-    /* -------------------- SHUTDOWN -------------------- */
-    const shutdown = async () => {
-      console.log('🛑 Shutting down batch entries consumer...');
-      await consumer.disconnect();
-      await mongoose.connection.close();
-      process.exit(0);
-    };
+  const shutdown = async () => {
+    console.log('🛑 Shutting down consumer');
+    await consumer.disconnect();
+    await mongoose.connection.close();
+    process.exit(0);
+  };
 
-    process.on('SIGTERM', shutdown);
-    process.on('SIGINT', shutdown);
-
-  } catch (error) {
-    console.error('❌ Batch consumer startup failed:', error);
-    process.exit(1);
-  }
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }
 
 startBatchEntriesConsumer();
