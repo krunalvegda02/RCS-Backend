@@ -153,7 +153,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 process.env.WORKER_MODE = 'true';
 
-const BULK_SIZE = 500;
+const BULK_SIZE = 1000;
 
 async function startBatchEntriesConsumer() {
   await connectDB();

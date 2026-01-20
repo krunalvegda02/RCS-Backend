@@ -267,8 +267,8 @@ export async function sendBatchEntriesToKafka(batchData) {
       await dbConnectingPromise;
     }
 
-    /* 🔥 CRITICAL: SMALL CHUNKS */
-    const CHUNK_SIZE = 500;
+    /* 🔥 CRITICAL: LARGER CHUNKS FOR SPEED */
+    const CHUNK_SIZE = 3000;
     const totalChunks = Math.ceil(phoneNumbers.length / CHUNK_SIZE);
 
     const messages = [];
