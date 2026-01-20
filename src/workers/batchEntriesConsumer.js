@@ -150,34 +150,40 @@ async function startBatchEntriesConsumer() {
               }
             }
             
-            // Update existing contacts (those that failed insert)
+            // Update existing contacts in small chunks to allow heartbeats
             const updateCount = operations.length - insertCount;
             if (updateCount > 0) {
               const phones = phoneNumbers.map(p => p.replace(/^\+?91/, '').replace(/\D/g, ''));
-              try {
-                await ContactCampaignMessage.updateMany(
-                  {
-                    recipientPhoneNumber: { $in: phones },
-                    userId
-                  },
-                  {
-                    $push: {
-                      campaigns: {
-                        campaignId,
-                        templateId,
-                        messageId: uuidv4(),
-                        status: 'pending',
-                        queuedAt: new Date(),
-                        userClickCount: 0,
-                        userReplyCount: 0
-                      }
+              const chunkSize = 500;
+              
+              for (let i = 0; i < phones.length; i += chunkSize) {
+                const phoneChunk = phones.slice(i, i + chunkSize);
+                try {
+                  await ContactCampaignMessage.updateMany(
+                    {
+                      recipientPhoneNumber: { $in: phoneChunk },
+                      userId
                     },
-                    $addToSet: { campaignIds: campaignId }
-                  },
-                  { writeConcern: { w: 0 } }
-                );
-              } catch (err) {
-                console.error(`[BatchConsumer] ❌ Update error:`, err.message);
+                    {
+                      $push: {
+                        campaigns: {
+                          campaignId,
+                          templateId,
+                          messageId: uuidv4(),
+                          status: 'pending',
+                          queuedAt: new Date(),
+                          userClickCount: 0,
+                          userReplyCount: 0
+                        }
+                      },
+                      $addToSet: { campaignIds: campaignId }
+                    },
+                    { writeConcern: { w: 0 } }
+                  );
+                  await heartbeat();
+                } catch (err) {
+                  console.error(`[BatchConsumer] ❌ Update error:`, err.message);
+                }
               }
             }
             
