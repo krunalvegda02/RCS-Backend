@@ -57,7 +57,7 @@ async function startBatchEntriesConsumer() {
     });
 
     consumer = kafka.consumer({
-      groupId: `batch-entries-processor-${process.env.NODE_ENV || 'dev'}`,
+      groupId: `batch-entries-processor-production-v2`,
       sessionTimeout: 300000,
       heartbeatInterval: 10000,
       maxWaitTimeInMs: 100,
@@ -67,7 +67,7 @@ async function startBatchEntriesConsumer() {
     await consumer.connect();
     console.log('✅ Batch Entries Consumer connected to Kafka');
 
-    await consumer.subscribe({ topic: 'campaign-batch-entries', fromBeginning: false });
+    await consumer.subscribe({ topic: 'campaign-batch-entries', fromBeginning: true });
     console.log('✅ Batch Entries Consumer subscribed to campaign-batch-entries');
 
     // Load model dynamically
