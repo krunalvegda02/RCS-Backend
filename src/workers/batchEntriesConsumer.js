@@ -41,8 +41,13 @@ async function startBatchEntriesConsumer() {
         const messages = batch.messages;
         const { v4: uuidv4 } = await import('uuid');
         
-        const processPromises = messages.map(async (message) => {
-          if (!isRunning() || isStale()) return null;
+        // Process messages with heartbeats between each
+        const results = [];
+        for (const message of messages) {
+          if (!isRunning() || isStale()) {
+            results.push(null);
+            continue;
+          }
           
           try {
             const batchData = JSON.parse(message.value.toString());
@@ -84,14 +89,13 @@ async function startBatchEntriesConsumer() {
             const duration = Date.now() - startTime;
             console.log(`[BatchConsumer] ✅ Chunk ${chunkIndex + 1}/${totalChunks} completed: ${phoneNumbers.length} contacts in ${duration}ms | Total: ${totalProcessed}`);
             
-            return { offset: message.offset, campaignId, totalChunks, chunkIndex };
+            results.push({ offset: message.offset, campaignId, totalChunks, chunkIndex });
+            await heartbeat(); // Heartbeat after each chunk
           } catch (error) {
             console.error('[BatchConsumer] ❌ Processing error:', error.message);
-            return null;
+            results.push(null);
           }
-        });
-        
-        const results = await Promise.all(processPromises);
+        }
         
         for (const result of results) {
           if (result) {
