@@ -99,30 +99,16 @@ async function startBatchEntriesConsumer() {
         for (const result of results) {
           if (result) {
             const { offset, campaignId, totalChunks, chunkIndex } = result;
-            const Campaign = (await import('../models/campaign.model.js')).default;
-            
-            // Store chunk in DB with proper initialization
-            const updated = await Campaign.findByIdAndUpdate(
-              campaignId,
-              { 
-                $push: { completedChunks: chunkIndex },
-                $setOnInsert: { completedChunks: [] },
-                $set: { totalChunks }
-              },
-              { upsert: false, new: true }
-            );
-            
-            console.log(`[BatchConsumer] Chunk ${chunkIndex} saved. Campaign ${campaignId}: ${updated?.completedChunks?.length || 0}/${totalChunks} chunks`);
             
             await resolveOffset(offset);
             
-            // Check if all chunks completed
-            if (updated && updated.completedChunks?.length === totalChunks) {
-              await Campaign.findByIdAndUpdate(campaignId, { 
-                status: 'pending',
-                $unset: { completedChunks: '', totalChunks: '' }
+            // Update campaign status directly when last chunk (simple approach)
+            if (chunkIndex === totalChunks - 1) {
+              const Campaign = (await import('../models/campaign.model.js')).default;
+              await Campaign.findByIdAndUpdate(campaignId, { status: 'pending' }).catch(err => {
+                console.log(`[BatchConsumer] Campaign ${campaignId} not found or already updated`);
               });
-              console.log(`[BatchConsumer] ✅✅✅ Campaign ${campaignId}: ALL ${totalChunks} chunks completed - STATUS UPDATED TO PENDING ✅✅✅`);
+              console.log(`[BatchConsumer] ✅✅✅ Campaign ${campaignId}: Last chunk processed - STATUS UPDATED TO PENDING ✅✅✅`);
             }
           }
         }
