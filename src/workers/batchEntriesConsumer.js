@@ -57,7 +57,7 @@ async function startBatchEntriesConsumer() {
     });
 
     consumer = kafka.consumer({
-      groupId: `batch-entries-processor-${process.env.NODE_ENV || 'dev'}`,
+      groupId: `batch-entries-processor-v3-${process.env.NODE_ENV || 'dev'}`, // New group to skip old messages
       sessionTimeout: 300000, // 5 minutes
       heartbeatInterval: 10000, // 10 seconds
       maxWaitTimeInMs: 100,
