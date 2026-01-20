@@ -140,29 +140,36 @@ async function startBatchEntriesConsumer() {
             try {
               const result = await ContactCampaignMessage.bulkWrite(operations, {
                 ordered: false,
-                writeConcern: { w: 0 }
+                writeConcern: { w: 1 } // Changed to w:1 for reliability
               });
               insertCount = result.insertedCount;
+              console.log(`[BatchConsumer] ✅ Inserted ${insertCount} new contacts`);
             } catch (err) {
               // Extract successful inserts from error
               if (err.result) {
                 insertCount = err.result.nInserted || 0;
+                console.log(`[BatchConsumer] ⚠️ Partial insert: ${insertCount} succeeded, ${err.writeErrors?.length || 0} duplicates`);
+              } else {
+                console.error(`[BatchConsumer] ❌ Insert failed:`, err.message);
               }
             }
             
             // Update existing contacts in small chunks to allow heartbeats
             const updateCount = operations.length - insertCount;
             if (updateCount > 0) {
+              console.log(`[BatchConsumer] 🔄 Updating ${updateCount} existing contacts...`);
               const phones = phoneNumbers.map(p => p.replace(/^\+?91/, '').replace(/\D/g, ''));
               const chunkSize = 500;
+              let updatedTotal = 0;
               
               for (let i = 0; i < phones.length; i += chunkSize) {
                 const phoneChunk = phones.slice(i, i + chunkSize);
                 try {
-                  await ContactCampaignMessage.updateMany(
+                  const updateResult = await ContactCampaignMessage.updateMany(
                     {
                       recipientPhoneNumber: { $in: phoneChunk },
-                      userId
+                      userId,
+                      'campaigns.campaignId': { $ne: campaignId }
                     },
                     {
                       $push: {
@@ -178,21 +185,24 @@ async function startBatchEntriesConsumer() {
                       },
                       $addToSet: { campaignIds: campaignId }
                     },
-                    { writeConcern: { w: 0 } }
+                    { writeConcern: { w: 1 } }
                   );
+                  updatedTotal += updateResult.modifiedCount || 0;
                   await heartbeat();
                 } catch (err) {
-                  console.error(`[BatchConsumer] ❌ Update error:`, err.message);
+                  console.error(`[BatchConsumer] ❌ Update chunk error:`, err.message);
                 }
               }
+              console.log(`[BatchConsumer] ✅ Updated ${updatedTotal} existing contacts`);
             }
             
             await heartbeat();
-            console.log(`[BatchConsumer] 💾 Summary: inserted=${insertCount}, updated=${updateCount}`);
+            console.log(`[BatchConsumer] ✅ Chunk complete: ${insertCount} inserted, ${updateCount} existing`);
 
             results.push({ offset: message.offset, campaignId, totalChunks, chunkIndex });
           } catch (error) {
             console.error('[BatchConsumer] ❌ Processing error:', error.message);
+            console.error('[BatchConsumer] ❌ Stack:', error.stack);
           }
         }
 
