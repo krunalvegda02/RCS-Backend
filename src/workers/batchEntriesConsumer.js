@@ -140,7 +140,7 @@ async function startBatchEntriesConsumer() {
             try {
               const result = await ContactCampaignMessage.bulkWrite(operations, {
                 ordered: false,
-                writeConcern: { w: 1 } // Changed to w:1 for reliability
+                writeConcern: { w: 0 } // Fire and forget for speed
               });
               insertCount = result.insertedCount;
               console.log(`[BatchConsumer] ✅ Inserted ${insertCount} new contacts`);
@@ -184,7 +184,7 @@ async function startBatchEntriesConsumer() {
                       },
                       $addToSet: { campaignIds: campaignId }
                     },
-                    { writeConcern: { w: 1 } }
+                    { writeConcern: { w: 0 } }
                   );
                   updatedTotal += updateResult.modifiedCount || 0;
                   await heartbeat();
