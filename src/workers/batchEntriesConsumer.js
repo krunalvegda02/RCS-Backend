@@ -101,20 +101,23 @@ async function startBatchEntriesConsumer() {
             const { offset, campaignId, totalChunks, chunkIndex } = result;
             const Campaign = (await import('../models/campaign.model.js')).default;
             
-            // Store chunk in DB
-            await Campaign.findByIdAndUpdate(
+            // Store chunk in DB with proper initialization
+            const updated = await Campaign.findByIdAndUpdate(
               campaignId,
               { 
-                $addToSet: { completedChunks: chunkIndex },
+                $push: { completedChunks: chunkIndex },
+                $setOnInsert: { completedChunks: [] },
                 $set: { totalChunks }
-              }
+              },
+              { upsert: false, new: true }
             );
+            
+            console.log(`[BatchConsumer] Chunk ${chunkIndex} saved. Campaign ${campaignId}: ${updated?.completedChunks?.length || 0}/${totalChunks} chunks`);
             
             await resolveOffset(offset);
             
             // Check if all chunks completed
-            const campaign = await Campaign.findById(campaignId).lean();
-            if (campaign && campaign.completedChunks?.length === totalChunks) {
+            if (updated && updated.completedChunks?.length === totalChunks) {
               await Campaign.findByIdAndUpdate(campaignId, { 
                 status: 'pending',
                 $unset: { completedChunks: '', totalChunks: '' }
