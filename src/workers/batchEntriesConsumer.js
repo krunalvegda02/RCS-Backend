@@ -111,7 +111,7 @@ async function startBatchEntriesConsumer() {
           if (progress.completed.size === progress.total) {
             const Campaign = (await import('../models/campaign.model.js')).default;
             await Campaign.findByIdAndUpdate(campaignKey, { status: 'pending' });
-            console.log(`[BatchConsumer] ✅ Campaign ${campaignKey}: ALL ${progress.total} chunks completed - STATUS UPDATED`);
+            console.log(`[BatchConsumer] ✅✅✅ Campaign ${campaignKey}: ALL ${progress.total} chunks completed - STATUS UPDATED TO PENDING ✅✅✅`);
             campaignChunks.delete(campaignKey);
           }
         }
