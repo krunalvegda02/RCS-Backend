@@ -31,7 +31,6 @@ async function startBatchEntriesConsumer() {
     const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
     
     let totalProcessed = 0;
-    const campaignChunks = new Map();
     
     await consumer.run({
       partitionsConsumedConcurrently: 3,
@@ -100,23 +99,28 @@ async function startBatchEntriesConsumer() {
         for (const result of results) {
           if (result) {
             const { offset, campaignId, totalChunks, chunkIndex } = result;
+            const Campaign = (await import('../models/campaign.model.js')).default;
             
-            const campaignKey = campaignId.toString();
-            if (!campaignChunks.has(campaignKey)) {
-              campaignChunks.set(campaignKey, { total: totalChunks, completed: new Set() });
-            }
-            campaignChunks.get(campaignKey).completed.add(chunkIndex);
+            // Store chunk in DB
+            await Campaign.findByIdAndUpdate(
+              campaignId,
+              { 
+                $addToSet: { completedChunks: chunkIndex },
+                $set: { totalChunks }
+              }
+            );
             
             await resolveOffset(offset);
-          }
-        }
-        
-        for (const [campaignKey, progress] of campaignChunks.entries()) {
-          if (progress.completed.size === progress.total) {
-            const Campaign = (await import('../models/campaign.model.js')).default;
-            await Campaign.findByIdAndUpdate(campaignKey, { status: 'pending' });
-            console.log(`[BatchConsumer] ✅✅✅ Campaign ${campaignKey}: ALL ${progress.total} chunks completed - STATUS UPDATED TO PENDING ✅✅✅`);
-            campaignChunks.delete(campaignKey);
+            
+            // Check if all chunks completed
+            const campaign = await Campaign.findById(campaignId).lean();
+            if (campaign && campaign.completedChunks?.length === totalChunks) {
+              await Campaign.findByIdAndUpdate(campaignId, { 
+                status: 'pending',
+                $unset: { completedChunks: '', totalChunks: '' }
+              });
+              console.log(`[BatchConsumer] ✅✅✅ Campaign ${campaignId}: ALL ${totalChunks} chunks completed - STATUS UPDATED TO PENDING ✅✅✅`);
+            }
           }
         }
         
