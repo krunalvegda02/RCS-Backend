@@ -72,11 +72,13 @@ async function startBatchEntriesConsumer() {
     // Load model dynamically
     const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
 
-    const campaignChunks = new Map(); // Track: campaignId -> { total, completed: Set() }
-
     console.log('🚀 Starting consumer run loop...');
+    
+    // Cache per-user campaign count to avoid repeated queries
+    const userCampaignCache = new Map();
+    
     await consumer.run({
-      partitionsConsumedConcurrently: 1,
+      partitionsConsumedConcurrently: 1, // Process all partitions in parallel
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
         const messages = batch.messages;
@@ -95,19 +97,41 @@ async function startBatchEntriesConsumer() {
 
             console.log(`[BatchConsumer] Processing chunk ${chunkIndex + 1}/${totalChunks} (${phoneNumbers.length} contacts) for campaign ${campaignId}`);
 
-            // Map phone numbers for query
+            // Phase 1: Collect all phones
             const cleanPhones = phoneNumbers.map(phone => phone.replace(/^\+?91/, '').replace(/\D/g, ''));
-            const existingContacts = await ContactCampaignMessage.find({
-              recipientPhoneNumber: { $in: cleanPhones },
-              userId
-            }).lean();
-
+            
+            // Phase 2: Check if first campaign (cached to avoid repeated queries)
+            const Campaign = (await import('../models/campaign.model.js')).default;
+            const userIdStr = userId.toString();
+            
+            if (!userCampaignCache.has(userIdStr)) {
+              const campaignCount = await Campaign.countDocuments({ userId });
+              userCampaignCache.set(userIdStr, campaignCount === 1);
+            }
+            const isFirstCampaign = userCampaignCache.get(userIdStr);
+            
             const contactMap = new Map();
-            existingContacts.forEach(contact => {
-              contactMap.set(contact.recipientPhoneNumber, contact);
-            });
+            
+            if (!isFirstCampaign) {
+              const QUERY_CHUNK_SIZE = 100;
+              for (let i = 0; i < cleanPhones.length; i += QUERY_CHUNK_SIZE) {
+                const phoneChunk = cleanPhones.slice(i, i + QUERY_CHUNK_SIZE);
+                const existingContacts = await ContactCampaignMessage.find({
+                  recipientPhoneNumber: { $in: phoneChunk },
+                  userId
+                }).lean();
+                
+                existingContacts.forEach(contact => {
+                  contactMap.set(contact.recipientPhoneNumber, contact);
+                });
+              }
+            } else {
+              console.log(`[BatchConsumer] ⚡ First campaign - skipping queries, all inserts`);
+            }
 
-            const bulkOps = [];
+            // Phase 3: Build bulk operations - SEPARATE inserts and updates
+            const insertOps = [];
+            const updateOps = [];
 
             for (const phone of phoneNumbers) {
               const cleanPhone = phone.replace(/^\+?91/, '').replace(/\D/g, '');
@@ -115,7 +139,7 @@ async function startBatchEntriesConsumer() {
               const existingContact = contactMap.get(cleanPhone);
 
               if (!existingContact) {
-                bulkOps.push({
+                insertOps.push({
                   insertOne: {
                     document: {
                       recipientPhoneNumber: cleanPhone,
@@ -134,7 +158,7 @@ async function startBatchEntriesConsumer() {
                   }
                 });
               } else {
-                bulkOps.push({
+                updateOps.push({
                   updateOne: {
                     filter: {
                       recipientPhoneNumber: cleanPhone,
@@ -160,49 +184,48 @@ async function startBatchEntriesConsumer() {
               }
             }
 
-            // Chunk the bulk writes to avoid timeouts
-            const BULK_WRITE_BATCH_SIZE = 500;
-            const totalOps = bulkOps.length;
-            let processedOps = 0;
+            // Phase 4: Execute inserts first (faster), then updates
+            const BULK_WRITE_BATCH_SIZE = 500; // Increased for faster throughput
             let successCount = 0;
             let modifiedCount = 0;
 
-            if (totalOps > 0) {
-              console.log(`[BatchConsumer] 📝 Splitting ${totalOps} operations into batches of ${BULK_WRITE_BATCH_SIZE}`);
-
-              for (let i = 0; i < totalOps; i += BULK_WRITE_BATCH_SIZE) {
-                const chunkOps = bulkOps.slice(i, i + BULK_WRITE_BATCH_SIZE);
+            // Execute inserts
+            if (insertOps.length > 0) {
+              console.log(`[BatchConsumer] 📝 Inserting ${insertOps.length} new contacts`);
+              for (let i = 0; i < insertOps.length; i += BULK_WRITE_BATCH_SIZE) {
+                const chunk = insertOps.slice(i, i + BULK_WRITE_BATCH_SIZE);
                 try {
-                  const dbStart = Date.now();
-                  const result = await ContactCampaignMessage.bulkWrite(chunkOps, {
+                  const result = await ContactCampaignMessage.bulkWrite(chunk, {
                     ordered: false,
                     writeConcern: { w: 1, j: false }
                   });
-                  const dbDuration = Date.now() - dbStart;
-
                   successCount += result.insertedCount;
-                  modifiedCount += result.modifiedCount;
-                  processedOps += chunkOps.length;
-
-                  // Critical: Heartbeat after each mini-batch
                   await heartbeat();
-
-                  if ((i + BULK_WRITE_BATCH_SIZE < totalOps) || dbDuration > 1000) {
-                    console.log(`[BatchConsumer] ... processed batch ${Math.floor(i / BULK_WRITE_BATCH_SIZE) + 1} (${chunkOps.length} ops) in ${dbDuration}ms`);
-                  }
-
-                } catch (chunkError) {
-                  console.error(`[BatchConsumer] ❌ Batch BulkWrite error (idx ${i}):`, chunkError.message);
-                  // If we lost Kafka connection, there's no point continuing the loop as we can't notify
-                  if (chunkError.message.includes('rebalancing') || chunkError.message.includes('not aware of this member')) {
-                    throw chunkError;
-                  }
+                } catch (err) {
+                  console.error(`[BatchConsumer] ❌ Insert error:`, err.message);
                 }
               }
-              console.log(`[BatchConsumer] 💾 BulkWrite summary: inserted=${successCount}, modified=${modifiedCount}`);
-            } else {
-              console.log(`[BatchConsumer] ⚠️ No bulk operations needed (all exist)`);
             }
+
+            // Execute updates
+            if (updateOps.length > 0) {
+              console.log(`[BatchConsumer] 🔄 Updating ${updateOps.length} existing contacts`);
+              for (let i = 0; i < updateOps.length; i += BULK_WRITE_BATCH_SIZE) {
+                const chunk = updateOps.slice(i, i + BULK_WRITE_BATCH_SIZE);
+                try {
+                  const result = await ContactCampaignMessage.bulkWrite(chunk, {
+                    ordered: false,
+                    writeConcern: { w: 1, j: false }
+                  });
+                  modifiedCount += result.modifiedCount;
+                  await heartbeat();
+                } catch (err) {
+                  console.error(`[BatchConsumer] ❌ Update error:`, err.message);
+                }
+              }
+            }
+
+            console.log(`[BatchConsumer] 💾 Summary: inserted=${successCount}, modified=${modifiedCount}`);
 
             results.push({ offset: message.offset, campaignId, totalChunks, chunkIndex });
           } catch (error) {
@@ -210,73 +233,62 @@ async function startBatchEntriesConsumer() {
           }
         }
 
-        // Track chunks and update status
+        // Track chunks in DB (stateless - survives restarts)
         for (const result of results) {
           if (result) {
             const { offset, campaignId, totalChunks, chunkIndex } = result;
-
-            const campaignKey = campaignId.toString();
-            if (!campaignChunks.has(campaignKey)) {
-              campaignChunks.set(campaignKey, { total: totalChunks, completed: new Set() });
-            }
-            campaignChunks.get(campaignKey).completed.add(chunkIndex);
-
-            await resolveOffset(offset);
-          }
-        }
-
-        // Check completions
-        for (const [campaignKey, progress] of campaignChunks.entries()) {
-          console.log(`[BatchConsumer] 🔍 Campaign ${campaignKey}: ${progress.completed.size}/${progress.total} chunks completed`);
-
-          if (progress.completed.size === progress.total) {
             const Campaign = (await import('../models/campaign.model.js')).default;
 
-            const contactCount = await ContactCampaignMessage.countDocuments({
-              'campaigns.campaignId': new mongoose.Types.ObjectId(campaignKey)
-            });
-
-            console.log(`[BatchConsumer] 📊 Campaign ${campaignKey}: ${contactCount} contacts in database`);
-
-            const aggregatedStats = await ContactCampaignMessage.aggregate([
-              { $match: { 'campaigns.campaignId': new mongoose.Types.ObjectId(campaignKey) } },
-              { $unwind: '$campaigns' },
-              { $match: { 'campaigns.campaignId': new mongoose.Types.ObjectId(campaignKey) } },
-              {
-                $group: {
-                  _id: null,
-                  total: { $sum: 1 },
-                  pending: { $sum: { $cond: [{ $in: ['$campaigns.status', ['pending', 'draft', 'queued']] }, 1, 0] } },
-                  sent: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'sent'] }, 1, 0] } },
-                  delivered: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'delivered'] }, 1, 0] } },
-                  read: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'read'] }, 1, 0] } },
-                  replied: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'replied'] }, 1, 0] } },
-                  failed: { $sum: { $cond: [{ $in: ['$campaigns.status', ['failed', 'bounced', 'expired']] }, 1, 0] } }
-                }
-              }
-            ]);
-
-            const stats = aggregatedStats[0] || { total: 0, pending: 0, sent: 0, delivered: 0, read: 0, replied: 0, failed: 0 };
-
+            // Store chunk completion in DB
             await Campaign.findByIdAndUpdate(
-              campaignKey,
-              {
-                status: 'pending',
-                'stats.total': stats.total,
-                'stats.pending': stats.pending,
-                'stats.sent': stats.sent,
-                'stats.delivered': stats.delivered,
-                'stats.read': stats.read,
-                'stats.replied': stats.replied,
-                'stats.failed': stats.failed,
-                'stats.bounced': 0
-              },
-              { new: true }
+              campaignId,
+              { 
+                $addToSet: { completedChunks: chunkIndex },
+                $set: { totalChunks }
+              }
             );
 
-            console.log(`[BatchConsumer] ✅✅✅ Campaign ${campaignKey} ALL chunks completed & stats updated`);
-            await heartbeat();
-            campaignChunks.delete(campaignKey);
+            await resolveOffset(offset);
+            
+            // Check if campaign completed (read from DB)
+            const campaign = await Campaign.findById(campaignId).lean();
+            if (campaign && campaign.completedChunks?.length === totalChunks) {
+              console.log(`[BatchConsumer] ✅ Campaign ${campaignId}: ALL ${totalChunks} chunks completed`);
+              
+              // Run stats update async
+              setImmediate(async () => {
+                try {
+                  const aggregatedStats = await ContactCampaignMessage.aggregate([
+                    { $match: { 'campaigns.campaignId': new mongoose.Types.ObjectId(campaignId) } },
+                    { $unwind: '$campaigns' },
+                    { $match: { 'campaigns.campaignId': new mongoose.Types.ObjectId(campaignId) } },
+                    {
+                      $group: {
+                        _id: null,
+                        total: { $sum: 1 },
+                        pending: { $sum: { $cond: [{ $in: ['$campaigns.status', ['pending', 'draft', 'queued']] }, 1, 0] } }
+                      }
+                    }
+                  ]);
+
+                  const stats = aggregatedStats[0] || { total: 0, pending: 0 };
+
+                  await Campaign.findByIdAndUpdate(
+                    campaignId,
+                    {
+                      status: 'pending',
+                      'stats.total': stats.total,
+                      'stats.pending': stats.pending,
+                      $unset: { completedChunks: '', totalChunks: '' }
+                    }
+                  );
+
+                  console.log(`[BatchConsumer] 📊 Campaign ${campaignId} stats synced: total=${stats.total}`);
+                } catch (err) {
+                  console.error(`[BatchConsumer] ❌ Stats sync error:`, err.message);
+                }
+              });
+            }
           }
         }
         await heartbeat();

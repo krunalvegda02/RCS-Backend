@@ -110,19 +110,21 @@ const contactCampaignMessageSchema = new mongoose.Schema(
   }
 );
 
-// Indexes
-contactCampaignMessageSchema.index({ userId: 1, "campaigns.campaignId": 1 }); // 🔥 Optimized for getCampaignMessages
-contactCampaignMessageSchema.index({ userId: 1, createdAt: -1 });
-contactCampaignMessageSchema.index({ "campaigns.campaignId": 1 });
-contactCampaignMessageSchema.index({ "campaigns.status": 1 });
-contactCampaignMessageSchema.index({ "campaigns.messageId": 1 });
-contactCampaignMessageSchema.index({ "campaigns.jioMessageId": 1 });
-contactCampaignMessageSchema.index({ "campaigns.rcsMessageId": 1 });
+// CRITICAL: Only unique index for bulk insert performance
 contactCampaignMessageSchema.index(
   { recipientPhoneNumber: 1, userId: 1 },
   { unique: true }
 );
-contactCampaignMessageSchema.index({ "campaigns.status": 1, createdAt: 1 }); // 🔥 Optimized for expirePendingMessages job
+
+// Query indexes - create AFTER bulk insert completes
+// Uncomment these after campaign ingestion finishes:
+// contactCampaignMessageSchema.index({ userId: 1, "campaigns.campaignId": 1 });
+// contactCampaignMessageSchema.index({ "campaigns.campaignId": 1 });
+// contactCampaignMessageSchema.index({ "campaigns.status": 1 });
+// contactCampaignMessageSchema.index({ "campaigns.status": 1, createdAt: 1 });
+// contactCampaignMessageSchema.index({ "campaigns.messageId": 1 });
+// contactCampaignMessageSchema.index({ "campaigns.jioMessageId": 1 });
+// contactCampaignMessageSchema.index({ "campaigns.rcsMessageId": 1 });
 
 export default mongoose.model(
   "ContactCampaignMessage",

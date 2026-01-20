@@ -103,6 +103,10 @@ const campaignSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    
+    // Chunk tracking for stateless worker
+    completedChunks: [Number],
+    totalChunks: Number,
   },
   {
     timestamps: true,

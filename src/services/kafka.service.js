@@ -209,7 +209,7 @@ export async function sendBatchEntriesToKafka(batchData) {
     }
 
     // Split into 5K chunks for fast parallel processing
-    const CHUNK_SIZE = 5000;
+    const CHUNK_SIZE = 3000;
     const chunks = [];
     for (let i = 0; i < phoneNumbers.length; i += CHUNK_SIZE) {
       chunks.push(phoneNumbers.slice(i, i + CHUNK_SIZE));
