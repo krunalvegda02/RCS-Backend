@@ -57,7 +57,7 @@ async function startBatchEntriesConsumer() {
     });
 
     consumer = kafka.consumer({
-      groupId: `batch-entries-processor-v4-${process.env.NODE_ENV || 'dev'}`,
+      groupId: `batch-entries-processor-v5-${process.env.NODE_ENV || 'dev'}`,
       sessionTimeout: 300000,
       heartbeatInterval: 10000,
       maxWaitTimeInMs: 100,
