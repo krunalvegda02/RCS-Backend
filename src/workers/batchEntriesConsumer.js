@@ -105,148 +105,85 @@ async function startBatchEntriesConsumer() {
 
             console.log(`[BatchConsumer] Processing chunk ${chunkIndex + 1}/${totalChunks} (${phoneNumbers.length} contacts) for campaign ${campaignId}`);
 
-            // Phase 1: Collect all phones
-            const cleanPhones = phoneNumbers.map(phone => phone.replace(/^\+?91/, '').replace(/\D/g, ''));
+            // Build operations - try insert first, update if exists
+            const operations = [];
             
-            // Phase 2: Check if first campaign (cached to avoid repeated queries)
-            const Campaign = (await import('../models/campaign.model.js')).default;
-            const userIdStr = userId.toString();
-            
-            if (!userCampaignCache.has(userIdStr)) {
-              const campaignCount = await Campaign.countDocuments({ userId });
-              userCampaignCache.set(userIdStr, campaignCount === 1);
-            }
-            const isFirstCampaign = userCampaignCache.get(userIdStr);
-            
-            const contactMap = new Map();
-            
-            if (!isFirstCampaign) {
-              const QUERY_CHUNK_SIZE = 500;
-              const queryPromises = [];
-              
-              for (let i = 0; i < cleanPhones.length; i += QUERY_CHUNK_SIZE) {
-                const phoneChunk = cleanPhones.slice(i, i + QUERY_CHUNK_SIZE);
-                queryPromises.push(
-                  ContactCampaignMessage.find({
-                    recipientPhoneNumber: { $in: phoneChunk },
-                    userId
-                  }).lean()
-                );
-              }
-              
-              const results = await Promise.all(queryPromises);
-              results.flat().forEach(contact => {
-                contactMap.set(contact.recipientPhoneNumber, contact);
-              });
-            } else {
-              console.log(`[BatchConsumer] ⚡ First campaign - skipping queries, all inserts`);
-            }
-
-            // Phase 3: Build bulk operations - SEPARATE inserts and updates
-            const insertOps = [];
-            const updateOps = [];
-
             for (const phone of phoneNumbers) {
               const cleanPhone = phone.replace(/^\+?91/, '').replace(/\D/g, '');
               const messageId = uuidv4();
-              const existingContact = contactMap.get(cleanPhone);
 
-              if (!existingContact) {
-                insertOps.push({
-                  insertOne: {
-                    document: {
-                      recipientPhoneNumber: cleanPhone,
-                      userId,
-                      campaignIds: [campaignId],
-                      campaigns: [{
+              // Try insert with unique constraint - if fails, it exists
+              operations.push({
+                insertOne: {
+                  document: {
+                    recipientPhoneNumber: cleanPhone,
+                    userId,
+                    campaignIds: [campaignId],
+                    campaigns: [{
+                      campaignId,
+                      templateId,
+                      messageId,
+                      status: 'pending',
+                      queuedAt: new Date(),
+                      userClickCount: 0,
+                      userReplyCount: 0
+                    }]
+                  }
+                }
+              });
+            }
+            
+            console.log(`[BatchConsumer] 📊 Processing ${operations.length} contacts`);
+
+            // Execute inserts - duplicates will fail silently
+            let insertCount = 0;
+            try {
+              const result = await ContactCampaignMessage.bulkWrite(operations, {
+                ordered: false,
+                writeConcern: { w: 0 }
+              });
+              insertCount = result.insertedCount;
+            } catch (err) {
+              // Extract successful inserts from error
+              if (err.result) {
+                insertCount = err.result.nInserted || 0;
+              }
+            }
+            
+            // Update existing contacts (those that failed insert)
+            const updateCount = operations.length - insertCount;
+            if (updateCount > 0) {
+              const phones = phoneNumbers.map(p => p.replace(/^\+?91/, '').replace(/\D/g, ''));
+              try {
+                await ContactCampaignMessage.updateMany(
+                  {
+                    recipientPhoneNumber: { $in: phones },
+                    userId,
+                    'campaigns.campaignId': { $ne: campaignId }
+                  },
+                  {
+                    $push: {
+                      campaigns: {
                         campaignId,
                         templateId,
-                        messageId,
+                        messageId: uuidv4(),
                         status: 'pending',
                         queuedAt: new Date(),
                         userClickCount: 0,
                         userReplyCount: 0
-                      }]
-                    }
-                  }
-                });
-              } else {
-                // Check if campaign already exists - skip if yes
-                const hasCampaign = existingContact.campaigns?.some(
-                  c => c.campaignId.toString() === campaignId.toString()
-                );
-                
-                if (!hasCampaign) {
-                  updateOps.push({
-                    updateOne: {
-                      filter: {
-                        recipientPhoneNumber: cleanPhone,
-                        userId
-                      },
-                      update: {
-                        $push: {
-                          campaigns: {
-                            campaignId,
-                            templateId,
-                            messageId,
-                            status: 'pending',
-                            queuedAt: new Date(),
-                            userClickCount: 0,
-                            userReplyCount: 0
-                          }
-                        },
-                        $addToSet: { campaignIds: campaignId }
                       }
-                    }
-                  });
-                }
+                    },
+                    $addToSet: { campaignIds: campaignId }
+                  },
+                  { writeConcern: { w: 0 } }
+                );
+              } catch (err) {
+                console.error(`[BatchConsumer] ❌ Update error:`, err.message);
               }
             }
             
-            console.log(`[BatchConsumer] 📊 Prepared: ${insertOps.length} inserts, ${updateOps.length} updates (skipped ${phoneNumbers.length - insertOps.length - updateOps.length} duplicates)`);
-
-            // Phase 4: Execute inserts first (faster), then updates
-            const BULK_WRITE_BATCH_SIZE = 2000; // Larger batches for faster throughput
-            let successCount = 0;
-            let modifiedCount = 0;
-
-            // Execute inserts
-            if (insertOps.length > 0) {
-              console.log(`[BatchConsumer] 📝 Inserting ${insertOps.length} new contacts`);
-              for (let i = 0; i < insertOps.length; i += BULK_WRITE_BATCH_SIZE) {
-                const chunk = insertOps.slice(i, i + BULK_WRITE_BATCH_SIZE);
-                try {
-                  const result = await ContactCampaignMessage.bulkWrite(chunk, {
-                    ordered: false,
-                    writeConcern: { w: 1, j: false }
-                  });
-                  successCount += result.insertedCount;
-                  await heartbeat();
-                } catch (err) {
-                  console.error(`[BatchConsumer] ❌ Insert error:`, err.message);
-                }
-              }
-            }
-
-            // Execute updates
-            if (updateOps.length > 0) {
-              console.log(`[BatchConsumer] 🔄 Updating ${updateOps.length} existing contacts`);
-              for (let i = 0; i < updateOps.length; i += BULK_WRITE_BATCH_SIZE) {
-                const chunk = updateOps.slice(i, i + BULK_WRITE_BATCH_SIZE);
-                try {
-                  const result = await ContactCampaignMessage.bulkWrite(chunk, {
-                    ordered: false,
-                    writeConcern: { w: 1, j: false }
-                  });
-                  modifiedCount += result.modifiedCount;
-                  await heartbeat();
-                } catch (err) {
-                  console.error(`[BatchConsumer] ❌ Update error:`, err.message);
-                }
-              }
-            }
-
-            console.log(`[BatchConsumer] 💾 Summary: inserted=${successCount}, modified=${modifiedCount}`);
+            await heartbeat();
+            console.log(`[BatchConsumer] 💾 Summary: inserted=${insertCount}, updated=${updateCount}`);
 
             results.push({ offset: message.offset, campaignId, totalChunks, chunkIndex });
           } catch (error) {
