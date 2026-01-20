@@ -57,17 +57,17 @@ async function startBatchEntriesConsumer() {
     });
 
     consumer = kafka.consumer({
-      groupId: `batch-entries-processor-v3-${process.env.NODE_ENV || 'dev'}`, // New group to skip old messages
-      sessionTimeout: 300000, // 5 minutes
-      heartbeatInterval: 10000, // 10 seconds
+      groupId: `batch-entries-processor-v4-${process.env.NODE_ENV || 'dev'}`,
+      sessionTimeout: 300000,
+      heartbeatInterval: 10000,
       maxWaitTimeInMs: 100,
-      rebalanceTimeout: 300000 // 5 minutes
+      rebalanceTimeout: 300000
     });
 
     await consumer.connect();
     console.log('✅ Batch Entries Consumer connected to Kafka');
 
-    await consumer.subscribe({ topic: 'campaign-batch-entries', fromBeginning: false });
+    await consumer.subscribe({ topic: 'campaign-batch-entries', fromBeginning: true });
     console.log('✅ Batch Entries Consumer subscribed to campaign-batch-entries');
 
     // Load model dynamically
