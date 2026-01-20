@@ -79,10 +79,17 @@ async function startBatchEntriesConsumer() {
     const userCampaignCache = new Map();
     
     await consumer.run({
-      partitionsConsumedConcurrently: 3, // Process all partitions in parallel
+      partitionsConsumedConcurrently: 3,
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
+        console.log(`[BatchConsumer] 📦 Received batch: ${batch.messages.length} messages from partition ${batch.partition}`);
         const messages = batch.messages;
+        
+        if (messages.length === 0) {
+          console.log('[BatchConsumer] ⚠️ Empty batch received');
+          await heartbeat();
+          return;
+        }
 
         // Process messages sequentially
         const results = [];
