@@ -166,31 +166,40 @@ async function startBatchEntriesConsumer() {
                   }
                 });
               } else {
-                updateOps.push({
-                  updateOne: {
-                    filter: {
-                      recipientPhoneNumber: cleanPhone,
-                      userId,
-                      'campaigns.campaignId': { $ne: new mongoose.Types.ObjectId(campaignId) }
-                    },
-                    update: {
-                      $push: {
-                        campaigns: {
-                          campaignId,
-                          templateId,
-                          messageId,
-                          status: 'pending',
-                          queuedAt: new Date(),
-                          userClickCount: 0,
-                          userReplyCount: 0
-                        }
+                // Check if campaign already exists - skip if yes
+                const hasCampaign = existingContact.campaigns?.some(
+                  c => c.campaignId.toString() === campaignId.toString()
+                );
+                
+                if (!hasCampaign) {
+                  updateOps.push({
+                    updateOne: {
+                      filter: {
+                        recipientPhoneNumber: cleanPhone,
+                        userId,
+                        'campaigns.campaignId': { $ne: new mongoose.Types.ObjectId(campaignId) }
                       },
-                      $addToSet: { campaignIds: campaignId }
+                      update: {
+                        $push: {
+                          campaigns: {
+                            campaignId,
+                            templateId,
+                            messageId,
+                            status: 'pending',
+                            queuedAt: new Date(),
+                            userClickCount: 0,
+                            userReplyCount: 0
+                          }
+                        },
+                        $addToSet: { campaignIds: campaignId }
+                      }
                     }
-                  }
-                });
+                  });
+                }
               }
             }
+            
+            console.log(`[BatchConsumer] 📊 Prepared: ${insertOps.length} inserts, ${updateOps.length} updates (skipped ${phoneNumbers.length - insertOps.length - updateOps.length} duplicates)`);
 
             // Phase 4: Execute inserts first (faster), then updates
             const BULK_WRITE_BATCH_SIZE = 1000; // Increased for faster throughput
