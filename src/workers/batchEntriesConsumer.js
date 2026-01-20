@@ -168,8 +168,7 @@ async function startBatchEntriesConsumer() {
                   const updateResult = await ContactCampaignMessage.updateMany(
                     {
                       recipientPhoneNumber: { $in: phoneChunk },
-                      userId,
-                      'campaigns.campaignId': { $ne: campaignId }
+                      userId
                     },
                     {
                       $push: {
