@@ -67,7 +67,7 @@ async function startBatchEntriesConsumer() {
     await consumer.connect();
     console.log('✅ Batch Entries Consumer connected to Kafka');
 
-    await consumer.subscribe({ topic: 'campaign-batch-entries', fromBeginning: true });
+    await consumer.subscribe({ topic: 'campaign-batch-entries', fromBeginning: false });
     console.log('✅ Batch Entries Consumer subscribed to campaign-batch-entries');
 
     // Load model dynamically
