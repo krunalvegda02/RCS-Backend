@@ -121,18 +121,23 @@ async function startBatchEntriesConsumer() {
             const contactMap = new Map();
             
             if (!isFirstCampaign) {
-              const QUERY_CHUNK_SIZE = 100;
+              const QUERY_CHUNK_SIZE = 500;
+              const queryPromises = [];
+              
               for (let i = 0; i < cleanPhones.length; i += QUERY_CHUNK_SIZE) {
                 const phoneChunk = cleanPhones.slice(i, i + QUERY_CHUNK_SIZE);
-                const existingContacts = await ContactCampaignMessage.find({
-                  recipientPhoneNumber: { $in: phoneChunk },
-                  userId
-                }).lean();
-                
-                existingContacts.forEach(contact => {
-                  contactMap.set(contact.recipientPhoneNumber, contact);
-                });
+                queryPromises.push(
+                  ContactCampaignMessage.find({
+                    recipientPhoneNumber: { $in: phoneChunk },
+                    userId
+                  }).lean()
+                );
               }
+              
+              const results = await Promise.all(queryPromises);
+              results.flat().forEach(contact => {
+                contactMap.set(contact.recipientPhoneNumber, contact);
+              });
             } else {
               console.log(`[BatchConsumer] ⚡ First campaign - skipping queries, all inserts`);
             }
@@ -201,7 +206,7 @@ async function startBatchEntriesConsumer() {
             console.log(`[BatchConsumer] 📊 Prepared: ${insertOps.length} inserts, ${updateOps.length} updates (skipped ${phoneNumbers.length - insertOps.length - updateOps.length} duplicates)`);
 
             // Phase 4: Execute inserts first (faster), then updates
-            const BULK_WRITE_BATCH_SIZE = 1000; // Increased for faster throughput
+            const BULK_WRITE_BATCH_SIZE = 2000; // Larger batches for faster throughput
             let successCount = 0;
             let modifiedCount = 0;
 
@@ -271,39 +276,16 @@ async function startBatchEntriesConsumer() {
             if (campaign && campaign.completedChunks?.length === totalChunks) {
               console.log(`[BatchConsumer] ✅ Campaign ${campaignId}: ALL ${totalChunks} chunks completed`);
               
-              // Run stats update async
-              setImmediate(async () => {
-                try {
-                  const aggregatedStats = await ContactCampaignMessage.aggregate([
-                    { $match: { 'campaigns.campaignId': new mongoose.Types.ObjectId(campaignId) } },
-                    { $unwind: '$campaigns' },
-                    { $match: { 'campaigns.campaignId': new mongoose.Types.ObjectId(campaignId) } },
-                    {
-                      $group: {
-                        _id: null,
-                        total: { $sum: 1 },
-                        pending: { $sum: { $cond: [{ $in: ['$campaigns.status', ['pending', 'draft', 'queued']] }, 1, 0] } }
-                      }
-                    }
-                  ]);
-
-                  const stats = aggregatedStats[0] || { total: 0, pending: 0 };
-
-                  await Campaign.findByIdAndUpdate(
-                    campaignId,
-                    {
-                      status: 'pending',
-                      'stats.total': stats.total,
-                      'stats.pending': stats.pending,
-                      $unset: { completedChunks: '', totalChunks: '' }
-                    }
-                  );
-
-                  console.log(`[BatchConsumer] 📊 Campaign ${campaignId} stats synced: total=${stats.total}`);
-                } catch (err) {
-                  console.error(`[BatchConsumer] ❌ Stats sync error:`, err.message);
+              // Just update status to pending - stats-consumer will handle counting
+              await Campaign.findByIdAndUpdate(
+                campaignId,
+                {
+                  status: 'pending',
+                  $unset: { completedChunks: '', totalChunks: '' }
                 }
-              });
+              );
+              
+              console.log(`[BatchConsumer] 📊 Campaign ${campaignId} status set to pending`);
             }
           }
         }
