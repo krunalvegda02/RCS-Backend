@@ -66,14 +66,10 @@ async function startStatsConsumer() {
         const bulkOps = [];
 
         for (const log of logs) {
-          const { messageId, webhookData, campaignId, userId, eventType: logEventType } = log;
+          const { messageId, webhookData, eventType: logEventType } = log;
           const eventType = webhookData?.eventType;
           const entity = webhookData?.rawPayload?.entity;
           const entityType = webhookData?.rawPayload?.entityType;
-
-          // Convert ObjectIds to strings for Map keys
-          const userIdStr = userId?.toString ? userId.toString() : userId;
-          const campaignIdObj = campaignId;
 
           const webhookTimestamp = entity?.sendTime || entity?.deliveryTime ||
             entity?.readTime || entity?.receiveTime || log.timestamp;
@@ -82,7 +78,6 @@ async function startStatsConsumer() {
           let newStatus = null;
           let updateFields = {};
 
-          // Check if this is a user interaction (click or reply)
           const isUserInteraction = logEventType === 'user_interaction' || entityType === 'USER_MESSAGE';
 
           if (isUserInteraction) {
@@ -129,8 +124,7 @@ async function startStatsConsumer() {
             bulkOps.push({
               updateOne: {
                 filter: {
-                  'campaigns.messageId': messageId,
-                  'campaigns.campaignId': campaignIdObj
+                  'campaigns.messageId': messageId
                 },
                 update: {
                   $set: {
@@ -211,23 +205,29 @@ async function startStatsConsumer() {
         // AUTO-SYNC CAMPAIGN STATS - Efficient batch sync
         if (allSuccess && bulkOps.length > 0) {
           const Campaign = (await import('../models/campaign.model.js')).default;
-          const affectedCampaigns = new Set();
           
-          logs.forEach(log => {
-            if (log.campaignId) affectedCampaigns.add(log.campaignId.toString());
+          // Extract campaignIds from updated documents
+          const updatedDocs = await ContactCampaignMessage.find(
+            { 'campaigns.messageId': { $in: logs.map(l => l.messageId) } },
+            { 'campaigns.campaignId': 1 }
+          ).lean();
+          
+          const affectedCampaigns = new Set();
+          updatedDocs.forEach(doc => {
+            doc.campaigns?.forEach(c => {
+              if (c.campaignId) affectedCampaigns.add(c.campaignId.toString());
+            });
           });
           
           if (affectedCampaigns.size > 0) {
             console.log(`[StatsConsumer] Auto-syncing stats for ${affectedCampaigns.size} campaigns`);
             
-            // Batch sync all campaigns in parallel
             await Promise.all(
               Array.from(affectedCampaigns).map(async (campaignId) => {
                 try {
                   const campaign = await Campaign.findById(campaignId);
                   if (!campaign || campaign.status === 'settled') return;
                   
-                  // Efficient aggregation sync
                   const aggregatedStats = await ContactCampaignMessage.aggregate([
                     { $match: { 'campaigns.campaignId': new mongoose.Types.ObjectId(campaignId) } },
                     { $unwind: '$campaigns' },

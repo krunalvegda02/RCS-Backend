@@ -8,17 +8,17 @@ const messageLogSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
-    campaignId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Campaign',
-      index: true,
-    },
-    userId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      required: true,
-      index: true,
-    },
+    // campaignId: {
+    //   type: mongoose.Schema.Types.ObjectId,
+    //   ref: 'Campaign',
+    //   index: true,
+    // },
+    // userId: {
+    //   type: mongoose.Schema.Types.ObjectId,
+    //   ref: 'User',
+    //   required: true,
+    //   index: true,
+    // },
 
     // Event Type
     eventType: {
@@ -78,7 +78,7 @@ const messageLogSchema = new mongoose.Schema(
       phoneNumber: String,
       interactionType: String,
       suggestionResponse: mongoose.Schema.Types.Mixed,
-      rawPayload: mongoose.Schema.Types.Mixed, // Store full webhook payload
+      rawPayload: mongoose.Schema.Types.Mixed,
     },
 
     // Processing Status
@@ -113,17 +113,15 @@ const messageLogSchema = new mongoose.Schema(
     },
   },
   {
-    timestamps: false, 
+    timestamps: false,
     collection: 'message_logs',
   }
 );
 
 // Optimized indexes for high volume
-messageLogSchema.index({ userId: 1, timestamp: -1 });
-messageLogSchema.index({ campaignId: 1, status: 1 });
-messageLogSchema.index({ status: 1, timestamp: -1 });
-messageLogSchema.index({ eventType: 1, timestamp: -1 });
 messageLogSchema.index({ processed: 1, _id: 1 });
+messageLogSchema.index({ eventType: 1, timestamp: -1 });
+messageLogSchema.index({ status: 1, timestamp: -1 });
 
 // 🔥 BUG FIX: More lenient unique index to handle webhook retries
 // Use messageId + timestamp for uniqueness instead of messageId + eventType
@@ -132,123 +130,49 @@ messageLogSchema.index(
   { unique: true, sparse: true }
 );
 
-// TTL Index - auto-delete after 90 days
+// TTL Index - auto-delete after 3 days
 messageLogSchema.index(
   { timestamp: 1 },
-  { expireAfterSeconds: 7776000 } // 90 days
+  { expireAfterSeconds: 259200 } // 3 days
 );
 
-// ❌ DEPRECATED: Individual DB writes, not scalable for high throughput
-// Use MessageLog.insertMany() in kafkaConsumer.js instead
-messageLogSchema.statics.logCapabilityCheck = function(data) {
-  console.warn('[DEPRECATED] logCapabilityCheck: Use insertMany() for bulk operations');
-  return this.create({
-    messageId: data.messageId,
-    userId: data.userId,
-    eventType: 'capability_check',
-    status: data.isCapable ? 'success' : 'failed',
-    statusCode: data.statusCode,
-    rcsData: {
-      capabilityStatus: data.isCapable ? 'rcs_capable' : 'not_capable',
-      capabilityToken: data.token,
-    },
-    error: data.error ? {
-      code: data.errorCode,
-      message: data.errorMessage,
-      type: data.errorType,
-    } : undefined,
-    responseTimeMs: data.responseTimeMs,
-    metadata: {
-      requestId: data.requestId,
-      source: 'api',
-    },
-  });
-};
 
-// ❌ DEPRECATED: Individual DB writes, not scalable for high throughput
-// Use MessageLog.insertMany() in kafkaConsumer.js instead
-messageLogSchema.statics.logMessageSend = function(data) {
-  console.warn('[DEPRECATED] logMessageSend: Use insertMany() for bulk operations');
-  return this.create({
-    messageId: data.messageId,
-    campaignId: data.campaignId,
-    userId: data.userId,
-    eventType: 'message_send',
-    status: data.success ? 'success' : 'failed',
-    statusCode: data.statusCode,
-    rcsData: {
-      rcsMessageId: data.rcsMessageId,
-      capabilityToken: data.capabilityToken,
-      assistantId: data.assistantId,
-    },
-    error: data.error ? {
-      code: data.errorCode,
-      message: data.errorMessage,
-      type: data.errorType,
-    } : undefined,
-    cost: data.cost || 1,
-    responseTimeMs: data.responseTimeMs,
-    retryCount: data.retryCount || 0,
-    metadata: {
-      requestId: data.requestId,
-      batchId: data.batchId,
-      source: 'api',
-    },
-  });
-};
-
-// ❌ DEPRECATED: Individual DB writes, not scalable for high throughput
-// Use MessageLog.insertMany() in kafkaConsumer.js instead
-messageLogSchema.statics.logWebhookEvent = function(data) {
-  console.warn('[DEPRECATED] logWebhookEvent: Use insertMany() for bulk operations');
-  return this.create({
-    messageId: data.messageId,
-    campaignId: data.campaignId,
-    userId: data.userId,
-    eventType: data.isUserInteraction ? 'user_interaction' : 'status_update',
-    status: 'success',
-    webhookData: {
-      eventType: data.eventType,
-      phoneNumber: data.phoneNumber,
-      interactionType: data.interactionType,
-      suggestionResponse: data.suggestionResponse,
-      rawPayload: data.rawPayload
-    },
-    processed: false,
-    metadata: {
-      source: 'webhook'
-    }
-  });
-};
 
 // Get unprocessed webhook logs for batch processing
-messageLogSchema.statics.getUnprocessedLogs = function(limit = 1000) {
+messageLogSchema.statics.getUnprocessedLogs = function (limit = 1000) {
   return this.find({
     processed: false,
     eventType: { $in: ['status_update', 'user_interaction'] }
   })
-  .sort({ timestamp: 1 })
-  .limit(limit)
-  .lean();
+    .sort({ timestamp: 1 })
+    .limit(limit)
+    .lean();
 };
 
+
+
 // Mark logs as processed
-messageLogSchema.statics.markAsProcessed = function(logIds) {
+messageLogSchema.statics.markAsProcessed = function (logIds) {
   return this.updateMany(
     { _id: { $in: logIds } },
     { $set: { processed: true, processedAt: new Date() } }
   );
 };
 
+
+
 // Bulk insert for high performance
-messageLogSchema.statics.bulkLog = function(logs) {
+messageLogSchema.statics.bulkLog = function (logs) {
   return this.insertMany(logs, { ordered: false });
 };
 
+
+
+
 // Analytics methods
-messageLogSchema.statics.getCampaignAnalytics = function(campaignId, timeframe = 24) {
+messageLogSchema.statics.getCampaignAnalytics = function (campaignId, timeframe = 24) {
   const timeAgo = new Date(Date.now() - timeframe * 60 * 60 * 1000);
-  
+
   return this.aggregate([
     {
       $match: {
@@ -270,9 +194,11 @@ messageLogSchema.statics.getCampaignAnalytics = function(campaignId, timeframe =
   ]);
 };
 
-messageLogSchema.statics.getUserStats = function(userId, timeframe = 24) {
+
+
+messageLogSchema.statics.getUserStats = function (userId, timeframe = 24) {
   const timeAgo = new Date(Date.now() - timeframe * 60 * 60 * 1000);
-  
+
   return this.aggregate([
     {
       $match: {
