@@ -66,6 +66,8 @@ async function startWebhookConsumer() {
         let dbSuccess = false;
 
         if (logsToInsert.length > 0) {
+          await heartbeat(); // 🔥 Heartbeat BEFORE DB write
+          
           try {
             const insertedLogs = await MessageLog.insertMany(logsToInsert, { ordered: false });
             dbSuccess = true;
@@ -74,6 +76,7 @@ async function startWebhookConsumer() {
             console.log(`[WebhookConsumer] ✅ ${logsToInsert.length} logs processed in ${duration}ms | Total: ${totalProcessed}`);
 
             if (insertedLogs.length > 0) {
+              await heartbeat(); // 🔥 Heartbeat BEFORE Kafka send
               const { sendStatsToKafka } = await import('../services/kafka.service.js');
               const messages = insertedLogs.map(log => ({
                 key: log._id.toString(),
