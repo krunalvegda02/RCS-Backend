@@ -69,11 +69,26 @@ async function startWebhookConsumer() {
           await heartbeat(); // 🔥 Heartbeat BEFORE DB write
           
           try {
-            const insertedLogs = await MessageLog.insertMany(logsToInsert, { ordered: false });
+            // Insert in chunks to prevent timeout
+            const CHUNK_SIZE = 1000;
+            const insertedLogs = [];
+            
+            for (let i = 0; i < logsToInsert.length; i += CHUNK_SIZE) {
+              const chunk = logsToInsert.slice(i, i + CHUNK_SIZE);
+              const result = await MessageLog.insertMany(chunk, { 
+                ordered: false,
+                writeConcern: { w: 1, wtimeout: 10000 }
+              });
+              insertedLogs.push(...result);
+              if (i + CHUNK_SIZE < logsToInsert.length) {
+                await heartbeat(); // Heartbeat between chunks
+              }
+            }
+            
             dbSuccess = true;
-            totalProcessed += logsToInsert.length;
+            totalProcessed += insertedLogs.length;
             const duration = Date.now() - startTime;
-            console.log(`[WebhookConsumer] ✅ ${logsToInsert.length} logs processed in ${duration}ms | Total: ${totalProcessed}`);
+            console.log(`[WebhookConsumer] ✅ ${insertedLogs.length} logs processed in ${duration}ms | Total: ${totalProcessed}`);
 
             if (insertedLogs.length > 0) {
               await heartbeat(); // 🔥 Heartbeat BEFORE Kafka send
