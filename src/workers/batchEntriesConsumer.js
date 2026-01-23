@@ -5,8 +5,6 @@ import { v4 as uuidv4 } from 'uuid';
 
 process.env.WORKER_MODE = 'true';
 
-const completedChunks = new Map();
-
 async function startBatchEntriesConsumer() {
   await connectDB();
   console.log('✅ MongoDB connected');
@@ -61,23 +59,19 @@ async function startBatchEntriesConsumer() {
         // Single fire-and-forget insert
         await ContactCampaignMessage.insertMany(docs, { ordered: false, writeConcern: { w: 0 } });
 
-        // Track completion in memory
-        if (!completedChunks.has(campaignId)) completedChunks.set(campaignId, { completed: new Set(), total: totalChunks });
-        completedChunks.get(campaignId).completed.add(chunkIndex);
+        // Track chunk completion and update status atomically
+        const updated = await Campaign.findOneAndUpdate(
+          { _id: campaignObjectId, status: 'draft' },
+          { $addToSet: { completedChunks: chunkIndex }, $set: { totalChunks } },
+          { new: true, writeConcern: { w: 0 } }
+        );
 
-        const tracker = completedChunks.get(campaignId);
-        console.log(`[BatchConsumer] Tracker: ${tracker.completed.size}/${tracker.total} chunks`);
-
-        // Update campaign status if all chunks done
-        if (tracker.completed.size === tracker.total) {
-          console.log(`[BatchConsumer] Updating campaign ${campaignId} to pending...`);
-          const result = await Campaign.findByIdAndUpdate(
-            campaignObjectId,
-            { status: 'pending' },
-            { new: true }
-          );
-          console.log(`[BatchConsumer] Update result: ${result ? result.status : 'NULL'}`);
-          completedChunks.delete(campaignId);
+        // Update to pending if all chunks done (fire-and-forget)
+        if (updated && updated.completedChunks.length === totalChunks) {
+          Campaign.findByIdAndUpdate(campaignObjectId, {
+            status: 'pending',
+            $unset: { completedChunks: '', totalChunks: '' }
+          }, { writeConcern: { w: 0 } }).exec();
           console.log(`[BatchConsumer] 🎯 Campaign ${campaignId} → pending`);
         }
 
