@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 process.env.WORKER_MODE = 'true';
 
-const BULK_SIZE = 1000;
+const BULK_SIZE = 2000; // Increased from 1000
 
 async function startBatchEntriesConsumer() {
   await connectDB();
@@ -75,11 +75,11 @@ async function startBatchEntriesConsumer() {
           };
         });
 
-        // Insert in mini-batches
+        // Insert in mini-batches with unacknowledged writes
         for (let i = 0; i < docs.length; i += BULK_SIZE) {
           await ContactCampaignMessage.insertMany(
             docs.slice(i, i + BULK_SIZE),
-            { ordered: false, writeConcern: { w: 1 } }
+            { ordered: false, writeConcern: { w: 0 } } // Fire and forget
           );
           await heartbeat();
         }
