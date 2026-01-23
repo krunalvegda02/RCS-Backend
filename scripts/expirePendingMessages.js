@@ -26,7 +26,7 @@ async function expirePendingMessages() {
 
 
 
-    // 2. Expire the messages
+    // 2. Expire the messages using arrayFilters to update ALL matching campaigns
     const result = await ContactCampaignMessage.updateMany(
       {
         'campaigns.status': { $in: ['pending', 'sent', 'draft'] },
@@ -34,11 +34,14 @@ async function expirePendingMessages() {
       },
       {
         $set: {
-          'campaigns.$.status': 'expired',
-          'campaigns.$.failedAt': new Date(),
-          'campaigns.$.errorCode': 'TIMEOUT',
-          'campaigns.$.errorMessage': 'No webhook received within 48 hours'
+          'campaigns.$[elem].status': 'expired',
+          'campaigns.$[elem].failedAt': new Date(),
+          'campaigns.$[elem].errorCode': 'TIMEOUT',
+          'campaigns.$[elem].errorMessage': 'No webhook received within 48 hours'
         }
+      },
+      {
+        arrayFilters: [{ 'elem.status': { $in: ['pending', 'sent', 'draft'] } }]
       }
     );
 
