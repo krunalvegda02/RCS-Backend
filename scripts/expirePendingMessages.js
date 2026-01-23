@@ -6,7 +6,7 @@ async function expirePendingMessages() {
     await connectDB();
     console.log('🔄 Starting pending message expiration job...');
 
-    const ContactCampaignMessage = (await import('../src/models/contact_campaign_message.model.js')).default;
+    const ContactCampaignMessage = (await import('../src/models/contactMessage.model.js')).default;
 
     // Find messages that are pending OR sent for more than 48 hours without response
     // const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);

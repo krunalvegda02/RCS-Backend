@@ -11,7 +11,7 @@ async function startWebhookConsumer() {
     await connectDB();
     console.log('✅ Webhook Consumer connected to MongoDB');
 
-    console.log('[WebhookConsumer] Connecting to Kafka...');
+
     const consumer = await connectConsumer();
     console.log('[WebhookConsumer] Kafka connection successful');
 
@@ -20,7 +20,7 @@ async function startWebhookConsumer() {
     let totalProcessed = 0;
 
     await consumer.run({
-      partitionsConsumedConcurrently: 1, // Process 1 partition at a time to prevent timeout
+      partitionsConsumedConcurrently: 1,
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
         const startTime = Date.now();

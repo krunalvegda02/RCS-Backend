@@ -1,6 +1,6 @@
 import User from '../models/user.model.js';
 import Campaign from '../models/campaign.model.js';
-import ContactCampaignMessage from '../models/contact_campaign_message.model.js';
+import ContactCampaignMessage from '../models/contactMessage.model.js';
 
 export const getUserReport = async (req, res) => {
   try {

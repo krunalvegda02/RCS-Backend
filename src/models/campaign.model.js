@@ -134,27 +134,25 @@ campaignSchema.index({ botId: 1, status: 1 });
 
 
 
-// Sync stats from ContactCampaignMessage - AUTOMATIC
+// Sync stats from ContactCampaignMessage - FLAT MODEL
 campaignSchema.methods.syncStats = async function () {
   if (!ContactCampaignMessage) {
     ContactCampaignMessage = mongoose.model('ContactCampaignMessage');
   }
 
   const stats = await ContactCampaignMessage.aggregate([
-    { $match: { userId: this.userId } },
-    { $unwind: '$campaigns' },
-    { $match: { 'campaigns.campaignId': this._id } },
+    { $match: { campaignId: this._id } },
     {
       $group: {
         _id: null,
         total: { $sum: 1 },
-        pending: { $sum: { $cond: [{ $in: ['$campaigns.status', ['pending', 'draft', 'queued']] }, 1, 0] } },
-        sent: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'sent'] }, 1, 0] } },
-        delivered: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'delivered'] }, 1, 0] } },
-        read: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'read'] }, 1, 0] } },
-        replied: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'replied'] }, 1, 0] } },
-        expired: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'expired'] }, 1, 0] } },
-        failed: { $sum: { $cond: [{ $in: ['$campaigns.status', ['failed', 'bounced']] }, 1, 0] } }
+        pending: { $sum: { $cond: [{ $in: ['$status', ['pending', 'draft', 'queued']] }, 1, 0] } },
+        sent: { $sum: { $cond: [{ $eq: ['$status', 'sent'] }, 1, 0] } },
+        delivered: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] } },
+        read: { $sum: { $cond: [{ $eq: ['$status', 'read'] }, 1, 0] } },
+        replied: { $sum: { $cond: [{ $eq: ['$status', 'replied'] }, 1, 0] } },
+        expired: { $sum: { $cond: [{ $eq: ['$status', 'expired'] }, 1, 0] } },
+        failed: { $sum: { $cond: [{ $in: ['$status', ['failed', 'bounced']] }, 1, 0] } }
       }
     }
   ]);
@@ -187,11 +185,9 @@ campaignSchema.methods.syncStats = async function () {
 
 
 
-
-// Find available bot (bot1-bot50)
 // Find available bot (bot1-bot50) with Load Balancing
 campaignSchema.statics.findAvailableBot = async function () {
-  const TOTAL_BOTS = 2;
+  const TOTAL_BOTS = 1;
   const botLoads = [];
 
   // 1. Check load for all bots
@@ -247,23 +243,21 @@ campaignSchema.methods.completeCampaign = async function () {
       ContactCampaignMessage = mongoose.model('ContactCampaignMessage');
     }
 
-    // 1. Aggregate message stats
+    // 1. Aggregate message stats - FLAT MODEL
     const stats = await ContactCampaignMessage.aggregate([
-      { $match: { userId: this.userId } },
-      { $unwind: '$campaigns' },
-      { $match: { 'campaigns.campaignId': this._id } },
+      { $match: { campaignId: this._id } },
       {
         $group: {
           _id: null,
           total: { $sum: 1 },
-          sent: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'sent'] }, 1, 0] } },
-          delivered: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'delivered'] }, 1, 0] } },
-          read: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'read'] }, 1, 0] } },
-          replied: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'replied'] }, 1, 0] } },
-          expired: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'expired'] }, 1, 0] } },
-          failed: { $sum: { $cond: [{ $in: ['$campaigns.status', ['failed', 'bounced']] }, 1, 0] } },
+          sent: { $sum: { $cond: [{ $eq: ['$status', 'sent'] }, 1, 0] } },
+          delivered: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] } },
+          read: { $sum: { $cond: [{ $eq: ['$status', 'read'] }, 1, 0] } },
+          replied: { $sum: { $cond: [{ $eq: ['$status', 'replied'] }, 1, 0] } },
+          expired: { $sum: { $cond: [{ $eq: ['$status', 'expired'] }, 1, 0] } },
+          failed: { $sum: { $cond: [{ $in: ['$status', ['failed', 'bounced']] }, 1, 0] } },
           deliveredTotal: {
-            $sum: { $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0] }
+            $sum: { $cond: [{ $in: ['$status', ['delivered', 'read', 'replied']] }, 1, 0] }
           }
         }
       }

@@ -111,7 +111,7 @@ export const createMasterCampaign = async (req, res) => {
       console.error('[Campaign] Kafka send failed, falling back to direct processing');
       
       const { v4: uuidv4 } = await import('uuid');
-      const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
+      const ContactCampaignMessage = (await import('../models/contactMessage.model.js')).default;
       
       const bulkOps = phoneNumbers.map(phone => {
         const cleanPhone = phone.replace(/^\+?91/, '').replace(/\D/g, '');

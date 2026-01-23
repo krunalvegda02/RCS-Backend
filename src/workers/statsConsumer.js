@@ -7,7 +7,6 @@ process.env.WORKER_MODE = 'true';
 async function startStatsConsumer() {
   try {
     await connectDB();
-    console.log('✅ Stats Consumer connected to MongoDB');
 
     const kafka = new Kafka({
       clientId: 'stats-consumer',
@@ -27,22 +26,29 @@ async function startStatsConsumer() {
 
     await consumer.connect();
     await consumer.subscribe({ topic: 'message-stats', fromBeginning: true });
+
+
     console.log('✅ Stats Consumer subscribed to message-stats');
 
+
+
     const MessageLog = (await import('../models/messageLog.model.js')).default;
-    const ContactCampaignMessage = (await import('../models/contact_campaign_message.model.js')).default;
+    const ContactCampaignMessage = (await import('../models/contactMessage.model.js')).default;
+
 
     let totalProcessed = 0;
 
-    // NOTE: Proactive polling for stuck campaigns has been REMOVED
-    // Wallet settlement now happens via expirePendingMessages.js cron job
 
     await consumer.run({
-      partitionsConsumedConcurrently: 1, // Process 1 partition at a time
+      partitionsConsumedConcurrently: 1,
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
+
+
         const startTime = Date.now();
-        // 🔥 FIX #1 & #2: Process ALL messages in batch, ACK only on success
+        
+        
+        // 🔥 FIX : Process ALL messages in batch, ACK only on success
         const messages = batch.messages;
         const logIds = messages.map(m => JSON.parse(m.value.toString()).logId);
 
@@ -67,6 +73,8 @@ async function startStatsConsumer() {
         const bulkOps = [];
 
         for (const log of logs) {
+
+
           const { messageId, webhookData, eventType: logEventType } = log;
           const eventType = webhookData?.eventType;
           const entity = webhookData?.rawPayload?.entity;
@@ -83,108 +91,93 @@ async function startStatsConsumer() {
 
           if (isUserInteraction) {
             newStatus = 'replied';
-            updateFields['campaigns.$.lastInteractionAt'] = timestamp;
+            updateFields.lastInteractionAt = timestamp;
             if (webhookData.suggestionResponse) {
-              updateFields['campaigns.$.suggestionResponse'] = webhookData.suggestionResponse;
-              updateFields['campaigns.$.clickedAt'] = timestamp;
-              updateFields['campaigns.$.clickedAction'] = webhookData.suggestionResponse.plainText;
+              updateFields.suggestionResponse = webhookData.suggestionResponse;
+              updateFields.clickedAt = timestamp;
+              updateFields.clickedAction = webhookData.suggestionResponse.plainText;
             }
             if (webhookData.rawPayload?.entity?.text) {
-              updateFields['campaigns.$.userText'] = webhookData.rawPayload.entity.text;
+              updateFields.userText = webhookData.rawPayload.entity.text;
             }
           } else {
             switch (eventType) {
               case 'MESSAGE_SENT':
               case 'SEND_MESSAGE_SUCCESS':
                 newStatus = 'sent';
-                updateFields['campaigns.$.sentAt'] = timestamp;
+                updateFields.sentAt = timestamp;
                 break;
 
               case 'MESSAGE_DELIVERED':
                 newStatus = 'delivered';
-                updateFields['campaigns.$.deliveredAt'] = timestamp;
+                updateFields.deliveredAt = timestamp;
                 break;
 
               case 'MESSAGE_READ':
                 newStatus = 'read';
-                updateFields['campaigns.$.readAt'] = timestamp;
+                updateFields.readAt = timestamp;
                 break;
 
               case 'SEND_MESSAGE_FAILURE':
               case 'MESSAGE_EXPIRED':
               case 'MESSAGE_REVOKED':
                 newStatus = 'failed';
-                updateFields['campaigns.$.failedAt'] = timestamp;
-                updateFields['campaigns.$.errorCode'] = webhookData.rawPayload?.entity?.error?.code || 'UNKNOWN';
-                updateFields['campaigns.$.errorMessage'] = webhookData.rawPayload?.entity?.error?.message || 'Failed';
+                updateFields.failedAt = timestamp;
+                updateFields.errorCode = webhookData.rawPayload?.entity?.error?.code || 'UNKNOWN';
+                updateFields.errorMessage = webhookData.rawPayload?.entity?.error?.message || 'Failed';
                 break;
             }
           }
 
+
+
           if (newStatus) {
             bulkOps.push({
               updateOne: {
-                filter: {
-                  'campaigns.messageId': messageId
-                },
+                filter: { messageId },
                 update: {
                   $set: {
-                    'campaigns.$.status': newStatus,
-                    'campaigns.$.lastWebhookAt': timestamp,
+                    status: newStatus,
+                    lastWebhookAt: timestamp,
                     ...updateFields
                   },
                   $inc: {
-                    ...(webhookData.suggestionResponse && { 'campaigns.$.userClickCount': 1 }),
-                    ...(webhookData.rawPayload?.entity?.text && { 'campaigns.$.userReplyCount': 1 })
+                    ...(webhookData.suggestionResponse && { userClickCount: 1 }),
+                    ...(webhookData.rawPayload?.entity?.text && { userReplyCount: 1 })
                   }
-                }
+                },
+                upsert: false 
               }
             });
           }
         }
 
+
+
         // Bulk update messages
         let messageUpdateSuccess = false;
         if (bulkOps.length > 0) {
           try {
+            
             const result = await ContactCampaignMessage.bulkWrite(bulkOps, { ordered: false });
             totalProcessed += result.modifiedCount;
             messageUpdateSuccess = true;
+            
+            
             console.log(`[StatsConsumer] ✅ Updated ${result.modifiedCount} messages | Total: ${totalProcessed}`);
           } catch (error) {
             console.error('[StatsConsumer] Bulk write error:', error.message);
           }
+
+
         } else {
           console.log('[StatsConsumer] No message updates needed');
-          messageUpdateSuccess = true; // No updates needed is success
+          messageUpdateSuccess = true; 
         }
 
 
-        // if (messageUpdateSuccess && walletOps.size > 0) {
-        //   const walletBulk = [];
-        //   for (const [userIdStr, ops] of walletOps.entries()) {
-        //     walletBulk.push({
-        //       updateOne: {
-        //         filter: { _id: userIdStr },
-        //         update: {
-        //           $inc: {
-        //             'wallet.blockedBalance': -(ops.delivered + ops.refund),
-        //             'wallet.balance': ops.refund
-        //           },
-        //           $set: { 'wallet.lastUpdated': new Date() }
-        //         }
-        //       }
-        //     });
-        //   }
-        //   try {
-        //     await User.bulkWrite(walletBulk, { ordered: false });
-        //     console.log(`[StatsConsumer] ✅ Updated ${walletOps.size} wallets`);
-        //   } catch (error) {
-        //     console.error('[StatsConsumer] Wallet error:', error.message);
-        //   }
-        // }
 
-        // 🔥 FIX #1: Mark as processed ONLY AFTER successful updates
+        // 🔥 FIX : Mark as processed ONLY AFTER successful updates
         let allSuccess = false;
 
         if (messageUpdateSuccess) {
@@ -200,24 +193,30 @@ async function startStatsConsumer() {
           }
         }
 
+
+
+
+
         const duration = Date.now() - startTime;
         console.log(`[StatsConsumer] Batch complete: ${logs.length} logs in ${duration}ms`);
 
-        // AUTO-SYNC CAMPAIGN STATS - Efficient batch sync
+
+
+
+
+        // AUTO-SYNC CAMPAIGN STATS 
         if (allSuccess && bulkOps.length > 0) {
           const Campaign = (await import('../models/campaign.model.js')).default;
           
-          // Extract campaignIds from updated documents
+          // Extract campaignIds from updated messages
           const updatedDocs = await ContactCampaignMessage.find(
-            { 'campaigns.messageId': { $in: logs.map(l => l.messageId) } },
-            { 'campaigns.campaignId': 1 }
+            { messageId: { $in: logs.map(l => l.messageId) } },
+            { campaignId: 1 }
           ).lean();
           
           const affectedCampaigns = new Set();
           updatedDocs.forEach(doc => {
-            doc.campaigns?.forEach(c => {
-              if (c.campaignId) affectedCampaigns.add(c.campaignId.toString());
-            });
+            if (doc.campaignId) affectedCampaigns.add(doc.campaignId.toString());
           });
           
           if (affectedCampaigns.size > 0) {
@@ -229,20 +228,19 @@ async function startStatsConsumer() {
                   const campaign = await Campaign.findById(campaignId);
                   if (!campaign || campaign.status === 'settled') return;
                   
+                  // Flat model aggregation - no $unwind needed
                   const aggregatedStats = await ContactCampaignMessage.aggregate([
-                    { $match: { 'campaigns.campaignId': new mongoose.Types.ObjectId(campaignId) } },
-                    { $unwind: '$campaigns' },
-                    { $match: { 'campaigns.campaignId': new mongoose.Types.ObjectId(campaignId) } },
+                    { $match: { campaignId: new mongoose.Types.ObjectId(campaignId) } },
                     {
                       $group: {
                         _id: null,
                         total: { $sum: 1 },
-                        pending: { $sum: { $cond: [{ $in: ['$campaigns.status', ['pending', 'draft', 'queued']] }, 1, 0] } },
-                        sent: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'sent'] }, 1, 0] } },
-                        delivered: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'delivered'] }, 1, 0] } },
-                        read: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'read'] }, 1, 0] } },
-                        replied: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'replied'] }, 1, 0] } },
-                        failed: { $sum: { $cond: [{ $in: ['$campaigns.status', ['failed', 'bounced', 'expired']] }, 1, 0] } }
+                        pending: { $sum: { $cond: [{ $in: ['$status', ['pending', 'draft', 'queued']] }, 1, 0] } },
+                        sent: { $sum: { $cond: [{ $eq: ['$status', 'sent'] }, 1, 0] } },
+                        delivered: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] } },
+                        read: { $sum: { $cond: [{ $eq: ['$status', 'read'] }, 1, 0] } },
+                        replied: { $sum: { $cond: [{ $eq: ['$status', 'replied'] }, 1, 0] } },
+                        failed: { $sum: { $cond: [{ $in: ['$status', ['failed', 'bounced', 'expired']] }, 1, 0] } }
                       }
                     }
                   ]);
@@ -269,16 +267,25 @@ async function startStatsConsumer() {
           }
         }
 
-        // Campaign completion/wallet settlement now handled by expirePendingMessages.js script
-        // No real-time wallet adjustments - only status tracking here
 
-        // 🔥 FIX #1: ACK only if everything succeeded
+
+
+
+        // 🔥 FIX: ACK only if everything succeeded
         if (allSuccess && messages.length > 0) {
           await resolveOffset(messages[messages.length - 1].offset);
         }
+
+
+
         await heartbeat();
       }
     });
+
+
+
+
+
 
     const shutdown = async () => {
       console.log('🛑 Shutting down stats consumer...');
@@ -287,8 +294,13 @@ async function startStatsConsumer() {
       process.exit(0);
     };
 
+
     process.on('SIGTERM', shutdown);
     process.on('SIGINT', shutdown);
+
+
+
+
 
   } catch (error) {
     console.error('❌ Stats consumer startup failed:', error);

@@ -4,7 +4,7 @@ import Campaign from '../models/campaign.model.js';
 import Template from '../models/template.model.js';
 import MessageLog from '../models/messageLog.model.js';
 import WalletRequest from '../models/walletRequest.model.js';
-import ContactCampaignMessage from '../models/contact_campaign_message.model.js';
+import ContactCampaignMessage from '../models/contactMessage.model.js';
 import statsService from '../services/CampaignStatsService.js';
 
 // Get complete admin dashboard data

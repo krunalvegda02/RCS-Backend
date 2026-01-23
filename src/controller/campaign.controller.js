@@ -1,6 +1,6 @@
 import Campaign from '../models/campaign.model.js';
 import Template from '../models/template.model.js';
-import ContactCampaignMessage from '../models/contact_campaign_message.model.js';
+import ContactCampaignMessage from '../models/contactMessage.model.js';
 import jioRCSService from '../services/JioRCS.service.js'; // Still needed for capability check
 import mongoose from 'mongoose';
 import pLimit from "p-limit";
