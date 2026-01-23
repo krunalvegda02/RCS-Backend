@@ -41,10 +41,11 @@ const dbProducer = kafka.producer({
 
 const consumer = kafka.consumer({
   groupId: `webhook-processor-${process.env.NODE_ENV || 'dev'}`,
-  sessionTimeout: 30000,
-  heartbeatInterval: 3000,
+  sessionTimeout: 120000, // 2 minutes - increased for slow MongoDB
+  heartbeatInterval: 10000, // 10 seconds
   maxBytesPerPartition: 1048576,
-  maxWaitTimeInMs: 100
+  maxWaitTimeInMs: 100,
+  rebalanceTimeout: 120000 // 2 minutes for rebalance
 });
 
 let producerConnected = false;

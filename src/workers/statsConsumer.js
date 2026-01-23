@@ -20,8 +20,9 @@ async function startStatsConsumer() {
 
     const consumer = kafka.consumer({
       groupId: `stats-processor-${process.env.NODE_ENV || 'dev'}`,
-      sessionTimeout: 30000,
-      heartbeatInterval: 3000
+      sessionTimeout: 120000, // 2 minutes
+      heartbeatInterval: 10000, // 10 seconds
+      rebalanceTimeout: 120000
     });
 
     await consumer.connect();
@@ -37,7 +38,7 @@ async function startStatsConsumer() {
     // Wallet settlement now happens via expirePendingMessages.js cron job
 
     await consumer.run({
-      partitionsConsumedConcurrently: 4,
+      partitionsConsumedConcurrently: 1, // Process 1 partition at a time
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
         const startTime = Date.now();
