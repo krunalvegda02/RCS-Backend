@@ -67,7 +67,7 @@ async function startBatchEntriesConsumer() {
 
         // Update campaign status if all chunks done
         if (completedChunks.get(campaignId).completed.size === totalChunks) {
-          await Campaign.findByIdAndUpdate(campaignObjectId, { status: 'pending' }, { writeConcern: { w: 0 } });
+          await Campaign.findByIdAndUpdate(campaignObjectId, { status: 'pending' });
           completedChunks.delete(campaignId);
           console.log(`[BatchConsumer] 🎯 Campaign ${campaignId} → pending`);
         }
