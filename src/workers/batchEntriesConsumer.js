@@ -5,6 +5,8 @@ import { v4 as uuidv4 } from 'uuid';
 
 process.env.WORKER_MODE = 'true';
 
+const completedChunks = new Map();
+
 async function startBatchEntriesConsumer() {
   await connectDB();
   console.log('✅ MongoDB connected');
@@ -26,6 +28,7 @@ async function startBatchEntriesConsumer() {
   console.log('✅ Subscribed to campaign-batch-entries');
 
   const ContactCampaignMessage = (await import('../models/contactMessage.model.js')).default;
+  const Campaign = (await import('../models/campaign.model.js')).default;
 
   await consumer.run({
     partitionsConsumedConcurrently: 1,
@@ -57,6 +60,17 @@ async function startBatchEntriesConsumer() {
 
         // Single fire-and-forget insert
         await ContactCampaignMessage.insertMany(docs, { ordered: false, writeConcern: { w: 0 } });
+
+        // Track completion in memory
+        if (!completedChunks.has(campaignId)) completedChunks.set(campaignId, { completed: new Set(), total: totalChunks });
+        completedChunks.get(campaignId).completed.add(chunkIndex);
+
+        // Update campaign status if all chunks done
+        if (completedChunks.get(campaignId).completed.size === totalChunks) {
+          await Campaign.findByIdAndUpdate(campaignObjectId, { status: 'pending' }, { writeConcern: { w: 0 } });
+          completedChunks.delete(campaignId);
+          console.log(`[BatchConsumer] 🎯 Campaign ${campaignId} → pending`);
+        }
 
         await resolveOffset(message.offset);
         await heartbeat();
