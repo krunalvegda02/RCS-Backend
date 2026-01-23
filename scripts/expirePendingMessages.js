@@ -56,10 +56,17 @@ async function expirePendingMessages() {
       for (const campaignId of affectedCampaignIds) {
         try {
           const campaign = await Campaign.findById(campaignId);
-          if (!campaign || campaign.status === 'completed') continue;
+          if (!campaign) {
+            console.log(`[ExpirationJob] Campaign ${campaignId} not found, skipping`);
+            continue;
+          }
+          
+          if (campaign.status === 'settled') {
+            console.log(`[ExpirationJob] Campaign ${campaign._id} already settled, skipping`);
+            continue;
+          }
 
           // Check if any pending messages remain for this campaign
-          // (We just expired the old ones, but are there new ones?)
           const stats = await ContactCampaignMessage.aggregate([
             { $match: { userId: campaign.userId } },
             { $unwind: '$campaigns' },
@@ -67,19 +74,25 @@ async function expirePendingMessages() {
             {
               $group: {
                 _id: null,
-                pending: { $sum: { $cond: [{ $in: ['$campaigns.status', ['draft', 'queued', 'pending']] }, 1, 0] } }
+                pending: { $sum: { $cond: [{ $in: ['$campaigns.status', ['draft', 'queued', 'pending', 'sent']] }, 1, 0] } },
+                total: { $sum: 1 }
               }
             }
           ]);
 
           const pendingCount = stats[0]?.pending || 0;
+          const totalCount = stats[0]?.total || 0;
 
-          if (pendingCount === 0) {
-            console.log(`[ExpirationJob] Completing campaign ${campaign._id} and refunding wallet...`);
+          console.log(`[ExpirationJob] Campaign ${campaign._id}: ${pendingCount} pending out of ${totalCount} total messages`);
+
+          if (pendingCount === 0 && totalCount > 0) {
+            console.log(`[ExpirationJob] ✅ All messages processed for campaign ${campaign._id}. Settling wallet...`);
             await campaign.completeCampaign();
-            console.log(`[ExpirationJob] ✅ Campaign ${campaign._id} completed`);
+            console.log(`[ExpirationJob] ✅ Campaign ${campaign._id} settled successfully`);
+          } else if (totalCount === 0) {
+            console.log(`[ExpirationJob] ⚠️ Campaign ${campaign._id} has no messages, skipping`);
           } else {
-            console.log(`[ExpirationJob] Campaign ${campaign._id} still has ${pendingCount} new pending messages. Skipping completion.`);
+            console.log(`[ExpirationJob] Campaign ${campaign._id} still has ${pendingCount} pending messages. Skipping settlement.`);
           }
         } catch (err) {
           console.error(`[ExpirationJob] ❌ Error processing campaign ${campaignId}:`, err.message);
