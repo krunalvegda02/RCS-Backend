@@ -77,7 +77,7 @@ export const createMasterCampaign = async (req, res) => {
       userId,
       templateId,
       botId,
-      status: 'draft',
+      status: 'processing',
       payload: JSON.stringify(template.generatePayload()),
       estimatedCost,
       blockedAmount: estimatedCost,

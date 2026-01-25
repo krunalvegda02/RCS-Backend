@@ -195,7 +195,7 @@ campaignSchema.statics.findAvailableBot = async function () {
     const botId = `bot${i}`;
     const activeCampaignsCount = await this.countDocuments({
       botId,
-      status: { $in: ['pending', 'processing', 'running'] }
+      status: { $in: ['pending', 'processing', 'running', 'draft'] }
     });
 
     // If completely free, return immediately
