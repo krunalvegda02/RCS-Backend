@@ -929,27 +929,25 @@ export const getUserCampaignReports = async (req, res) => {
 
     console.log('[Campaign] Sample report with recipients:', reports[0]);
 
-    // Calculate aggregate stats for all campaigns (not just current page) - exclude archived
+    // Calculate aggregate stats from ContactCampaignMessage collection
     const userObjectIdForStats = typeof userId === 'string' ? new mongoose.Types.ObjectId(userId) : userId;
 
-    // Optimized: Aggregate stats from Campaign collection
-    const sentStats = await Campaign.aggregate([
+    const messageStats = await ContactCampaignMessage.aggregate([
       { $match: { userId: userObjectIdForStats } },
       {
         $group: {
           _id: null,
-          totalMessages: { $sum: '$stats.total' },  // All messages
-          totalDelivered: { $sum: '$stats.delivered' },
-          totalFailed: { $sum: '$stats.failed' }
+          totalMessages: { $sum: 1 },
+          totalDelivered: { $sum: { $cond: [{ $in: ['$status', ['delivered', 'read', 'replied']] }, 1, 0] } },
+          totalFailed: { $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] } },
+          totalExpired: { $sum: { $cond: [{ $eq: ['$status', 'expired'] }, 1, 0] } },
+          totalSent: { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read', 'replied', 'failed', 'expired']] }, 1, 0] } }
         }
       }
     ]);
 
-    const aggregateStats = sentStats[0] || { totalMessages: 0, totalDelivered: 0, totalFailed: 0 };
-    // totalSent = all messages that are not draft (calculated as delivered + failed + everything else that was sent)
-    // totalExpired = total - delivered - failed (messages that didn't get a final status)
-    const totalSent = aggregateStats.totalMessages; // All messages created
-    const totalExpired = Math.max(0, aggregateStats.totalMessages - aggregateStats.totalDelivered - aggregateStats.totalFailed);
+    const aggregateStats = messageStats[0] || { totalMessages: 0, totalDelivered: 0, totalFailed: 0, totalExpired: 0, totalSent: 0 };
+    const totalSent = aggregateStats.totalSent;
 
     res.json({
       success: true,
@@ -962,7 +960,7 @@ export const getUserCampaignReports = async (req, res) => {
         totalSent,
         totalDelivered: aggregateStats.totalDelivered,
         totalFailed: aggregateStats.totalFailed,
-        totalExpired
+        totalExpired: aggregateStats.totalExpired
       }
     });
 

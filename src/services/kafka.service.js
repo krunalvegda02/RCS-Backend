@@ -3,40 +3,35 @@ import { Kafka } from 'kafkajs';
 const kafka = new Kafka({
   clientId: 'rcs-webhook-service',
   brokers: [process.env.KAFKA_BROKER || 'localhost:9092'],
+  connectionTimeout: 30000,
+  requestTimeout: 30000,
   retry: {
-    initialRetryTime: 100,
-    retries: 8
+    initialRetryTime: 300,
+    retries: 5,
+    maxRetryTime: 30000,
+    multiplier: 2
   }
 });
 
 const producer = kafka.producer({
   allowAutoTopicCreation: false,
   maxInFlightRequests: 5,
-  idempotent: true,
-  retry: {
-    retries: 2,
-    initialRetryTime: 100
-  }
+  idempotent: false,
+  transactionalId: undefined
 });
 
 const statsProducer = kafka.producer({
   allowAutoTopicCreation: false,
   maxInFlightRequests: 5,
-  idempotent: true,
-  retry: {
-    retries: 2,
-    initialRetryTime: 100
-  }
+  idempotent: false,
+  transactionalId: undefined
 });
 
 const dbProducer = kafka.producer({
   allowAutoTopicCreation: false,
   maxInFlightRequests: 10,
-  idempotent: true,
-  retry: {
-    retries: 2,
-    initialRetryTime: 100
-  }
+  idempotent: false,
+  transactionalId: undefined
 });
 
 const consumer = kafka.consumer({

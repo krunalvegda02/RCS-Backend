@@ -287,7 +287,7 @@ campaignSchema.methods.completeCampaign = async function () {
       // Release blocked amount and deduct actual cost
       await User.findByIdAndUpdate(this.userId, {
         $inc: {
-          'wallet.balance': refundAmount, // Add refund back to balance
+          'wallet.balance': -actualCost, // Deduct actual cost from available balance
           'wallet.blockedBalance': -blockedAmount // Release all blocked amount
         },
         $set: { 'wallet.lastUpdated': new Date() }
@@ -295,7 +295,7 @@ campaignSchema.methods.completeCampaign = async function () {
 
       const updatedUser = await User.findById(this.userId);
       console.log(`[SettleCampaign] After: balance=₹${updatedUser.wallet.balance}, blocked=₹${updatedUser.wallet.blockedBalance}`);
-      console.log(`[SettleCampaign] ✅ Wallet updated: Released ₹${blockedAmount} blocked, Refunded ₹${refundAmount}`);
+      console.log(`[SettleCampaign] ✅ Wallet updated: Released ₹${blockedAmount} blocked, Charged ₹${actualCost}, Refunded ₹${refundAmount}`);
     } else {
       console.log(`[SettleCampaign] No blocked amount to settle`);
     }
@@ -309,6 +309,7 @@ campaignSchema.methods.completeCampaign = async function () {
         blockedAmount: 0,
         completedAt: new Date(),
         'stats.total': deliveryStats.total,
+        'stats.pending': 0,
         'stats.sent': deliveryStats.sent,
         'stats.delivered': deliveryStats.delivered,
         'stats.read': deliveryStats.read,
@@ -324,6 +325,7 @@ campaignSchema.methods.completeCampaign = async function () {
     this.refundedAmount = refundAmount;
     this.blockedAmount = 0;
     this.stats.total = deliveryStats.total;
+    this.stats.pending = 0;
     this.stats.sent = deliveryStats.sent;
     this.stats.delivered = deliveryStats.delivered;
     this.stats.read = deliveryStats.read;

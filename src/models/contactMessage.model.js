@@ -7,14 +7,12 @@ const contactCampaignMessageSchema = new mongoose.Schema(
     messageId: {
       type: String,
       required: true,
-      unique: true,
-      index: true // Critical for webhook lookups
+      unique: true
     },
 
     recipientPhoneNumber: {
       type: String,
       required: true,
-      index: true, 
       match: /^[0-9]{10,15}$/,
     },
 
@@ -22,14 +20,12 @@ const contactCampaignMessageSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
-      index: true,
     },
 
     campaignId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Campaign",
       required: true,
-      index: true,
     },
 
     templateId: {
@@ -38,8 +34,8 @@ const contactCampaignMessageSchema = new mongoose.Schema(
       required: true,
     },
 
-    rcsMessageId: { type: String, index: true, sparse: true },
-    jioMessageId: { type: String, index: true, sparse: true },
+    rcsMessageId: { type: String, sparse: true },
+    jioMessageId: { type: String, sparse: true },
     externalMessageId: String,
     assistantId: String,
 
