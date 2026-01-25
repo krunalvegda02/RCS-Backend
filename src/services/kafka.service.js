@@ -278,16 +278,22 @@ export async function sendBatchEntriesToKafka(batchData) {
       const chunkIndex = Math.floor(i / CHUNK_SIZE);
       const chunk = phoneNumbers.slice(i, i + CHUNK_SIZE);
 
+      // Generate messageIds here to avoid duplicates on consumer retry
+      const phoneNumbersWithIds = chunk.map(phone => ({
+        phone,
+        messageId: `${campaignId}-${phone}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+      }));
+
       messages.push({
         key: campaignId,
         value: JSON.stringify({
           campaignId,
           templateId,
           userId,
-          phoneNumbers: chunk,
+          phoneNumbers: phoneNumbersWithIds,
           chunkIndex,
           totalChunks,
-          batchId // 🔐 idempotency helper
+          batchId
         }),
         timestamp: Date.now()
       });
