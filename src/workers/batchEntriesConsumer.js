@@ -44,11 +44,8 @@ async function startBatchEntriesConsumer() {
 
         console.log(`[BatchConsumer] Campaign ${campaignId} | Chunk ${chunkIndex + 1}/${totalChunks} | ${phoneNumbers.length}`);
 
-        // Generate unique batchId if not present (for old messages)
-        const uniqueBatchId = batchId || `${campaignId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
         const docs = phoneNumbers.map((phone, index) => ({
-          messageId: `${uniqueBatchId}-${chunkIndex}-${index}`,
+          messageId: `${campaignId}-${chunkIndex}-${index}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
           recipientPhoneNumber: phone.replace(/^\+?91/, '').replace(/\D/g, ''),
           userId,
           campaignId: campaignObjectId,
