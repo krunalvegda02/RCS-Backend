@@ -59,19 +59,20 @@ async function startBatchEntriesConsumer() {
         // Single fire-and-forget insert
         await ContactCampaignMessage.insertMany(docs, { ordered: false, writeConcern: { w: 0 } });
 
-        // Track chunk completion and update status atomically
-        const updated = await Campaign.findOneAndUpdate(
+        // Track chunk completion (fire-and-forget)
+        Campaign.findOneAndUpdate(
           { _id: campaignObjectId, status: 'draft' },
-          { $addToSet: { completedChunks: chunkIndex }, $set: { totalChunks } },
-          { new: true, writeConcern: { w: 0 } }
-        );
+          { $addToSet: { completedChunks: chunkIndex }, $set: { totalChunks } }
+        ).exec();
 
-        // Update to pending if all chunks done (fire-and-forget)
-        if (updated && updated.completedChunks.length === totalChunks) {
-          Campaign.findByIdAndUpdate(campaignObjectId, {
-            status: 'pending',
-            $unset: { completedChunks: '', totalChunks: '' }
-          }, { writeConcern: { w: 0 } }).exec();
+        // Update to pending if last chunk (fire-and-forget)
+        if (chunkIndex === totalChunks - 1) {
+          setTimeout(() => {
+            Campaign.updateOne(
+              { _id: campaignObjectId },
+              { status: 'pending', $unset: { completedChunks: '', totalChunks: '' } }
+            ).exec();
+          }, 300);
           console.log(`[BatchConsumer] 🎯 Campaign ${campaignId} → pending`);
         }
 
