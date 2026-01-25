@@ -108,37 +108,15 @@ export const createMasterCampaign = async (req, res) => {
     });
     
     if (!kafkaResult.success) {
-      console.error('[Campaign] Kafka send failed, falling back to direct processing');
-      
-      const { v4: uuidv4 } = await import('uuid');
-      const ContactCampaignMessage = (await import('../models/contactMessage.model.js')).default;
-      
-      const bulkOps = phoneNumbers.map(phone => {
-        const cleanPhone = phone.replace(/^\+?91/, '').replace(/\D/g, '');
-        return {
-          updateOne: {
-            filter: { recipientPhoneNumber: cleanPhone, userId },
-            update: {
-              $setOnInsert: { recipientPhoneNumber: cleanPhone, userId },
-              $addToSet: { 
-                campaigns: {
-                  campaignId: campaign._id,
-                  templateId,
-                  messageId: uuidv4(),
-                  status: 'draft',
-                  queuedAt: new Date(),
-                  cost: 1
-                },
-                campaignIds: campaign._id
-              }
-            },
-            upsert: true
-          }
-        };
+      console.error('[Campaign] Kafka send failed:', kafkaResult.error);
+      // Rollback: unblock balance and delete campaign
+      await user.unblockBalanceForCampaign(estimatedCost, campaign._id);
+      await Campaign.findByIdAndDelete(campaign._id);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to queue campaign. Please try with fewer contacts or contact support.',
+        error: kafkaResult.error
       });
-
-      await ContactCampaignMessage.bulkWrite(bulkOps, { ordered: false });
-      await Campaign.findByIdAndUpdate(campaign._id, { status: 'pending' });
     }
 
     console.log(`[Campaign] ✅ Created campaign with ${phoneNumbers.length} contacts on ${botId}`);
@@ -150,8 +128,7 @@ export const createMasterCampaign = async (req, res) => {
         masterCampaign: campaign,
         subCampaignsCount: 1,
         totalContacts: phoneNumbers.length,
-        botId,
-        processingMethod: kafkaResult.success ? 'kafka' : 'direct'
+        botId
       }
     });
   } catch (error) {

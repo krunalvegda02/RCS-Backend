@@ -46,7 +46,7 @@ async function startBatchEntriesConsumer() {
 
         const docs = phoneNumbers.map((phone, index) => {
           const messageId = `${campaignId}-${chunkIndex}-${index}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-          console.log(`[BatchConsumer] Generated messageId: ${messageId}`);
+          // console.log(`[BatchConsumer] Generated messageId: ${messageId}`);
           return {
             messageId,
             recipientPhoneNumber: phone.replace(/^\+?91/, '').replace(/\D/g, ''),
