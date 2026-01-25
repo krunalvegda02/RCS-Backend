@@ -67,6 +67,7 @@ async function startBatchEntriesConsumer() {
         } catch (err) {
           if (err.writeErrors) {
             console.error(`[BatchConsumer] ${err.writeErrors.length} duplicates skipped, ${docs.length - err.writeErrors.length} inserted`);
+            console.error(`[BatchConsumer] First error:`, err.writeErrors[0]);
           } else {
             console.error(`[BatchConsumer] Insert error: ${err.message}`);
           }
