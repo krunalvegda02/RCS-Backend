@@ -39,6 +39,9 @@ services:
       KAFKA_COMPRESSION_TYPE: gzip
       KAFKA_LOG_DIRS: /var/lib/kafka/data
       KAFKA_HEAP_OPTS: "-Xmx2G -Xms2G"
+      KAFKA_MESSAGE_MAX_BYTES: 5242880
+      KAFKA_REPLICA_FETCH_MAX_BYTES: 5242880
+      KAFKA_MAX_REQUEST_SIZE: 5242880
     volumes:
       - kafka-data:/var/lib/kafka/data
     networks:
