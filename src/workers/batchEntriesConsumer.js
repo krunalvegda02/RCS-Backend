@@ -44,9 +44,9 @@ async function startBatchEntriesConsumer() {
 
         console.log(`[BatchConsumer] Campaign ${campaignId} | Chunk ${chunkIndex + 1}/${totalChunks} | ${phoneNumbers.length}`);
 
-        const docs = phoneNumbers.map(item => ({
-          messageId: item.messageId,
-          recipientPhoneNumber: item.phone.replace(/^\+?91/, '').replace(/\D/g, ''),
+        const docs = phoneNumbers.map((phone, index) => ({
+          messageId: `${campaignId}-${phone}-${chunkIndex}-${index}`,
+          recipientPhoneNumber: phone.replace(/^\+?91/, '').replace(/\D/g, ''),
           userId,
           campaignId: campaignObjectId,
           templateId,
