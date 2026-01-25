@@ -258,7 +258,7 @@ export const getCapabilityProgress = async (req, res) => {
 // Create simple campaign record
 export const createSimple = async (req, res) => {
   try {
-    const { name, templateId, userId, status = 'draft', totalRecipients, estimatedCost } = req.body;
+    const { name, templateId, userId, status = 'processing', totalRecipients, estimatedCost } = req.body;
     const requestUserId = req.user._id;
 
     const template = await Template.findById(templateId);
@@ -273,7 +273,7 @@ export const createSimple = async (req, res) => {
       name,
       userId: requestUserId,
       templateId,
-      status: 'draft', // Always start as draft
+      status: 'processing', // Always start as draft
       payload: JSON.stringify(template.generatePayload()),
       recipients: [],
       stats: {
@@ -467,7 +467,7 @@ export const create = async (req, res) => {
             processing: 0,
             rcsCapable: rcsCapableRecipients.length,
           },
-          status: autoStart ? 'running' : 'draft',
+          status: autoStart ? 'running' : 'processing',
           startedAt: autoStart ? new Date() : null,
 
           estimatedCost: actualCost,
@@ -500,7 +500,7 @@ export const create = async (req, res) => {
           processing: 0,
           rcsCapable: rcsCapableRecipients.length,
         },
-        status: autoStart ? 'running' : 'draft',
+        status: autoStart ? 'running' : 'processing',
         startedAt: autoStart ? new Date() : null,
 
         estimatedCost: actualCost,
@@ -663,7 +663,7 @@ export const start = async (req, res) => {
     const userId = req.user._id;
 
     const campaign = await Campaign.findOneAndUpdate(
-      { _id: id, userId, status: { $in: ['draft', 'pending'] } },
+      { _id: id, userId, status: { $in: ['processing', 'pending'] } },
       {
         status: 'running',
         startedAt: new Date(),
