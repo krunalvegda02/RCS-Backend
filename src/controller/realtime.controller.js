@@ -1,35 +1,9 @@
 import MessageLog from '../models/messageLog.model.js';
 import Campaign from '../models/campaign.model.js';
 import mongoose from 'mongoose';
-import statsService from '../services/CampaignStatsService.js';
 
-// Get real-time campaign stats
-export const getRealTimeCampaignStats = async (req, res) => {
-  try {
-    const { campaignId } = req.params;
-    
-    const stats = await statsService.getCampaignStats(campaignId);
-    
-    if (!stats) {
-      return res.status(404).json({
-        success: false,
-        message: 'Campaign not found'
-      });
-    }
-    
-    res.json({
-      success: true,
-      data: stats,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch real-time stats',
-      error: error.message
-    });
-  }
-};
+
+
 
 // Get live message feed for a campaign
 export const getLiveMessageFeed = async (req, res) => {

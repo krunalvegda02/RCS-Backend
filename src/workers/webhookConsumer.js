@@ -20,7 +20,7 @@ async function startWebhookConsumer() {
     let totalProcessed = 0;
 
     await consumer.run({
-      partitionsConsumedConcurrently: 1,
+      partitionsConsumedConcurrently: 1, 
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
         const startTime = Date.now();

@@ -78,7 +78,7 @@ export async function sendWebhookToKafka(webhookData) {
   return { success: true };
 }
 
-// 🔥 FIX #6: Batch message buffer for producer
+// 🔥 FIX: Batch message buffer for producer
 let messageBuffer = [];
 let bufferTimer = null;
 const BUFFER_SIZE = 100;
@@ -97,7 +97,7 @@ export async function sendStatsToKafka(data, isBatch = false) {
       await statsConnectingPromise;
     }
 
-    // 🔥 FIX #6: Use sendBatch for better performance
+    // 🔥 FIX : Use sendBatch for better performance
     if (isBatch && Array.isArray(data)) {
       await statsProducer.sendBatch({
         topicMessages: [{
@@ -181,65 +181,6 @@ export async function connectConsumer() {
   }
 }
 
-// export async function sendBatchEntriesToKafka(batchData) {
-//   try {
-//     if (!batchData || !batchData.campaignId || !batchData.phoneNumbers) {
-//       console.error('[Kafka] Invalid batchData:', batchData);
-//       return { success: false, error: 'Invalid batch data structure' };
-//     }
-
-//     const campaignId = batchData.campaignId?.toString ? batchData.campaignId.toString() : batchData.campaignId;
-//     const templateId = batchData.templateId?.toString ? batchData.templateId.toString() : batchData.templateId;
-//     const userId = batchData.userId?.toString ? batchData.userId.toString() : batchData.userId;
-//     const phoneNumbers = batchData.phoneNumbers;
-
-//     if (!dbProducerConnected) {
-//       if (!dbConnectingPromise) {
-//         dbConnectingPromise = dbProducer.connect().then(() => {
-//           dbProducerConnected = true;
-//           dbConnectingPromise = null;
-//           console.log('✅ Kafka DB Producer connected');
-//         });
-//       }
-//       await dbConnectingPromise;
-//     }
-
-//     // Split into 5K chunks for fast parallel processing
-//     const CHUNK_SIZE = 500;
-//     const chunks = [];
-//     for (let i = 0; i < phoneNumbers.length; i += CHUNK_SIZE) {
-//       chunks.push(phoneNumbers.slice(i, i + CHUNK_SIZE));
-//     }
-
-//     // Send all chunks in parallel using sendBatch
-//     const messages = chunks.map((chunk, index) => ({
-//       key: campaignId.toString(),
-//       value: JSON.stringify({
-//         campaignId,
-//         templateId,
-//         userId,
-//         phoneNumbers: chunk,
-//         totalContacts: chunk.length,
-//         chunkIndex: index,
-//         totalChunks: chunks.length
-//       }),
-//       timestamp: Date.now()
-//     }));
-
-//     await dbProducer.sendBatch({
-//       topicMessages: [{
-//         topic: 'campaign-batch-entries',
-//         messages
-//       }]
-//     });
-
-//     console.log(`[Kafka] ✅ Sent ${phoneNumbers.length} contacts in ${chunks.length} chunks`);
-//     return { success: true, chunks: chunks.length };
-//   } catch (error) {
-//     console.error('[Kafka] Batch entries send error:', error.message);
-//     return { success: false, error: error.message };
-//   }
-// }
 
 export async function sendBatchEntriesToKafka(batchData) {
   try {

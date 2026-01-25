@@ -1,6 +1,6 @@
 import express from 'express';
 import { 
-  getRealTimeCampaignStats,
+  // getRealTimeCampaignStats,
   getLiveMessageFeed,
   getRecentWebhookEvents,
   getMessageStatusBreakdown,
@@ -12,7 +12,7 @@ import { authenticateToken } from '../middlewares/auth.middleware.js';
 const router = express.Router();
 
 // Real-time campaign stats
-router.get('/campaign/:campaignId/stats', authenticateToken, getRealTimeCampaignStats);
+// router.get('/campaign/:campaignId/stats', authenticateToken, getRealTimeCampaignStats);
 
 // Live message feed
 router.get('/campaign/:campaignId/feed', authenticateToken, getLiveMessageFeed);

@@ -6,8 +6,7 @@ const contactCampaignMessageSchema = new mongoose.Schema(
     /* ---------------- IDENTIFIERS ---------------- */
     messageId: {
       type: String,
-      required: true,
-      unique: true
+      required: true
     },
 
     recipientPhoneNumber: {
@@ -34,8 +33,8 @@ const contactCampaignMessageSchema = new mongoose.Schema(
       required: true,
     },
 
-    rcsMessageId: { type: String, sparse: true },
-    jioMessageId: { type: String, sparse: true },
+    rcsMessageId: { type: String },
+    jioMessageId: { type: String },
     externalMessageId: String,
     assistantId: String,
 

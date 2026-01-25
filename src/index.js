@@ -7,8 +7,7 @@ import { dirname, join } from "path";
 
 import app from "./app.js";
 import connectDB from "./db/index.js";
-import JioRCSService from "./services/JioRCS.service.js";
-import MessageLogProcessor from "./services/MessageLogProcessor.js";
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
