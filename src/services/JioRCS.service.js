@@ -46,6 +46,7 @@ class JioRCSService {
 
   // ===================== CAPABILITY CHECK =====================
   async checkCapabilityFast(phoneNumbers, accessToken) {
+    const startTime = Date.now();
     const MAX_API_LIMIT = 10000;
     const MIN_BATCH_SIZE = 500;
     const CONCURRENCY = 30;
@@ -56,9 +57,11 @@ class JioRCSService {
     });
 
     const uniqueNumbers = [...new Set(formatted)];
+    console.log(`[RCS] Total unique numbers: ${uniqueNumbers.length} (prep: ${Date.now() - startTime}ms)`);
 
     // Smart batching to ensure all chunks are 500-10000
     const chunks = this.createSmartBatches(uniqueNumbers, MIN_BATCH_SIZE, MAX_API_LIMIT);
+    console.log(`[RCS] Created ${chunks.length} batches:`, chunks.map(c => c.length));
 
     const axiosInstance = axios.create({
       timeout: 60000,
@@ -78,21 +81,45 @@ class JioRCSService {
 
     let index = 0;
     const capableSet = new Set();
+    const batchTimings = [];
 
-    const workers = Array(CONCURRENCY).fill(null).map(async () => {
+    const workers = Array(CONCURRENCY).fill(null).map(async (_, threadId) => {
+      const threadStart = Date.now();
+      console.log(`[RCS] Thread ${threadId} started`);
+      let processed = 0;
+      
       while (index < chunks.length) {
         const i = index++;
-        const res = await axiosInstance.post(
-          "https://api.businessmessaging.jio.com/v1/messaging/usersBatchGet",
-          { phoneNumbers: chunks[i] }
-        );
+        const batchSize = chunks[i].length;
+        const batchStart = Date.now();
+        console.log(`[RCS] Thread ${threadId} processing batch ${i}/${chunks.length} (${batchSize} numbers)`);
+        
+        try {
+          const res = await axiosInstance.post(
+            "https://api.businessmessaging.jio.com/v1/messaging/usersBatchGet",
+            { phoneNumbers: chunks[i] }
+          );
+          const batchTime = Date.now() - batchStart;
 
-        const reachable = res.data?.reachableUsers || [];
-        for (const num of reachable) capableSet.add(num);
+          const reachable = res.data?.reachableUsers || [];
+          for (const num of reachable) capableSet.add(num);
+          processed++;
+          batchTimings.push(batchTime);
+          console.log(`[RCS] Thread ${threadId} batch ${i} done: ${reachable.length}/${batchSize} reachable (${batchTime}ms)`);
+        } catch (error) {
+          const batchTime = Date.now() - batchStart;
+          console.error(`[RCS] Thread ${threadId} batch ${i} failed: ${error.message} (${batchTime}ms)`);
+        }
       }
+      
+      const threadTime = Date.now() - threadStart;
+      console.log(`[RCS] Thread ${threadId} finished (processed ${processed} batches, ${threadTime}ms)`);
     });
 
     await Promise.all(workers);
+    const totalTime = Date.now() - startTime;
+    const avgBatchTime = batchTimings.length ? Math.round(batchTimings.reduce((a,b) => a+b, 0) / batchTimings.length) : 0;
+    console.log(`[RCS] All threads complete. Total reachable: ${capableSet.size}/${uniqueNumbers.length} | Total: ${totalTime}ms | Avg batch: ${avgBatchTime}ms`);
     return Array.from(capableSet);
   }
 
