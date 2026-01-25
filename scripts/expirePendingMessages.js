@@ -9,7 +9,7 @@ async function expirePendingMessages() {
     const ContactCampaignMessage = (await import('../src/models/contactMessage.model.js')).default;
     const Campaign = (await import('../src/models/campaign.model.js')).default;
 
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const fiveMinutesAgo = new Date(Date.now() - 20 * 60 * 1000);
 
     // 1. Identify affected campaigns FIRST
     const affectedCampaignIds = await ContactCampaignMessage.distinct('campaignId', {
