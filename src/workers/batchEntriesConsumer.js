@@ -57,7 +57,11 @@ async function startBatchEntriesConsumer() {
         }));
 
         // Single fire-and-forget insert
-        await ContactCampaignMessage.insertMany(docs, { ordered: false, writeConcern: { w: 0 } });
+        try {
+          await ContactCampaignMessage.insertMany(docs, { ordered: false, writeConcern: { w: 0 } });
+        } catch (err) {
+          console.error(`[BatchConsumer] Insert error: ${err.message}`);
+        }
 
         // Track chunk completion (fire-and-forget)
         Campaign.findOneAndUpdate(
