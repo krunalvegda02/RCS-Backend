@@ -887,6 +887,9 @@ export const getUserCampaignReports = async (req, res) => {
       if (c.isMaster) {
         console.log(`[Campaign] Syncing master campaign stats for: ${c.name}`);
         await c.syncMasterStats();
+      } else {
+        // Sync regular campaigns too
+        await c.syncStats();
       }
       return Promise.resolve();
     }));
