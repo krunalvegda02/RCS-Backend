@@ -9,12 +9,13 @@ async function expirePendingMessages() {
     const ContactCampaignMessage = (await import('../src/models/contactMessage.model.js')).default;
     const Campaign = (await import('../src/models/campaign.model.js')).default;
 
-    const fiveMinutesAgo = new Date(Date.now() - 20 * 60 * 1000);
+const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
+
 
     // 1. Identify affected campaigns FIRST
     const affectedCampaignIds = await ContactCampaignMessage.distinct('campaignId', {
       status: { $in: ['pending', 'sent', 'draft'] },
-      createdAt: { $lt: fiveMinutesAgo }
+      createdAt: { $lt: sixHoursAgo }
     });
 
     console.log(`Found ${affectedCampaignIds.length} campaigns with stale messages`);
@@ -23,7 +24,7 @@ async function expirePendingMessages() {
     const result = await ContactCampaignMessage.updateMany(
       {
         status: { $in: ['pending', 'sent', 'draft'] },
-        createdAt: { $lt: fiveMinutesAgo }
+        createdAt: { $lt: sixHoursAgo }
       },
       {
         $set: {

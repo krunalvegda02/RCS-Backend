@@ -187,7 +187,7 @@ campaignSchema.methods.syncStats = async function () {
 
 // Find available bot (bot1-bot50) with Load Balancing
 campaignSchema.statics.findAvailableBot = async function () {
-  const TOTAL_BOTS = 1;
+  const TOTAL_BOTS = 3;
   const botLoads = [];
 
   // 1. Check load for all bots
