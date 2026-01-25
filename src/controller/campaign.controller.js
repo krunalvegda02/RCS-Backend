@@ -1188,82 +1188,59 @@ export const getAllForAdmin = async (req, res) => {
   }
 };
 
-// Get campaign messages - OPTIMIZED for large datasets
+// Get campaign messages - OPTIMIZED for flat model
 export const getCampaignMessages = async (req, res) => {
   try {
     const { id } = req.params;
     const { search, status } = req.query;
     const page = parseInt(req.query.page) || 1;
-    const limit = Math.min(parseInt(req.query.limit) || 10, 50); // Cap at 50
+    const limit = Math.min(parseInt(req.query.limit) || 10, 50);
 
-    // Lightweight campaign lookup
-    const campaign = await Campaign.findById(id).select('_id userId isMaster').lean();
+    const campaign = await Campaign.findById(id).select('_id userId').lean();
     if (!campaign) {
       return res.status(404).json({ success: false, message: 'Campaign not found' });
     }
 
-    // Get sub-campaign IDs if master
-    let campaignIds = [campaign._id];
-    if (campaign.isMaster) {
-      const subCampaigns = await Campaign.find({ masterCampaignId: campaign._id }).select('_id').lean();
-      campaignIds = [...campaignIds, ...subCampaigns.map(s => s._id)];
-    }
-
-    // Build lightweight match stage
-    // Build lightweight match stage with $elemMatch to ensure exact match on array item
+    // Build match query for flat model
     const matchStage = {
-      userId: campaign.userId,
-      campaigns: {
-        $elemMatch: {
-          campaignId: { $in: campaignIds }
-        }
-      }
+      campaignId: campaign._id,
+      userId: campaign.userId
     };
 
     if (status && status !== 'all') {
-      matchStage.campaigns.$elemMatch.status = status;
+      matchStage.status = status;
     }
 
     if (search) {
       matchStage.recipientPhoneNumber = { $regex: search, $options: 'i' };
     }
 
+    // Count total
+    const total = await ContactCampaignMessage.countDocuments(matchStage);
 
-
-    // Optimized count: Use countDocuments which leverages the index directly
-    const total = await ContactCampaignMessage.countDocuments(matchStage).maxTimeMS(60000);
-
-    // Optimized Data Query: Use find() instead of aggregate() for maximum speed
-    // Use select() to fetch only necessary fields and campaigns.$ to get the matching campaign entry
-    const docs = await ContactCampaignMessage.find(matchStage)
-      .select({
-        recipientPhoneNumber: 1,
-        'campaigns.$': 1 // Project ONLY the first matching campaign element
-      })
+    // Get paginated messages
+    const messages = await ContactCampaignMessage.find(matchStage)
+      .select('recipientPhoneNumber status sentAt deliveredAt readAt failedAt errorCode errorMessage')
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
-      .lean()
-      .maxTimeMS(60000);
+      .lean();
 
-    // Map the results to the expected format
-    const messages = docs.map(doc => {
-      const camp = doc.campaigns?.[0] || {};
-      return {
-        _id: camp._id,
-        phoneNumber: doc.recipientPhoneNumber,
-        status: camp.status,
-        sentAt: camp.sentAt,
-        deliveredAt: camp.deliveredAt,
-        readAt: camp.readAt,
-        failedAt: camp.failedAt,
-        errorCode: camp.errorCode
-      };
-    });
+    // Map to expected format
+    const formattedMessages = messages.map(msg => ({
+      _id: msg._id,
+      phoneNumber: msg.recipientPhoneNumber,
+      status: msg.status,
+      sentAt: msg.sentAt,
+      deliveredAt: msg.deliveredAt,
+      readAt: msg.readAt,
+      failedAt: msg.failedAt,
+      errorCode: msg.errorCode
+    }));
 
     res.json({
       success: true,
-      data: messages,
+      data: formattedMessages,
       pagination: { page, limit, total, pages: Math.ceil(total / limit) }
     });
   } catch (error) {
@@ -1272,84 +1249,61 @@ export const getCampaignMessages = async (req, res) => {
   }
 };
 
-// Admin: Get ALL campaign messages for export (no pagination)
+// Admin: Get ALL campaign messages for export (no pagination) - FLAT MODEL
 export const getAllCampaignMessagesForExport = async (req, res) => {
   try {
     const { campaignId } = req.params;
     const userId = req.user._id;
     const isAdmin = req.user.role === 'admin' || req.user.role === 'ADMIN';
 
-    console.log('[Campaign] Export messages request:', { campaignId, userId, isAdmin, userRole: req.user.role });
+    console.log('[Campaign] Export messages request:', { campaignId, userId, isAdmin });
 
-    // Admin can access any campaign, regular users only their own
     let campaign;
     if (isAdmin) {
-      campaign = await Campaign.findById(campaignId).select('_id userId isMaster masterCampaignId').lean();
-      console.log('[Campaign] Admin looking for campaign:', campaignId, 'Found:', !!campaign);
+      campaign = await Campaign.findById(campaignId).select('_id userId').lean();
     } else {
-      campaign = await Campaign.findOne({ _id: campaignId, userId }).select('_id userId isMaster masterCampaignId').lean();
-      console.log('[Campaign] User looking for campaign:', campaignId, 'userId:', userId, 'Found:', !!campaign);
+      campaign = await Campaign.findOne({ _id: campaignId, userId }).select('_id userId').lean();
     }
 
     if (!campaign) {
-      console.log('[Campaign] Campaign not found');
-      return res.status(404).json({
-        success: false,
-        message: 'Campaign not found',
-      });
+      return res.status(404).json({ success: false, message: 'Campaign not found' });
     }
 
+    // Get all messages for this campaign using flat model
+    const messages = await ContactCampaignMessage.find({
+      campaignId: campaign._id,
+      userId: campaign.userId
+    })
+      .select('recipientPhoneNumber status sentAt deliveredAt readAt clickedAction userText suggestionResponse userClickCount userReplyCount errorMessage errorCode')
+      .lean();
 
-    // If master campaign, get messages from all sub-campaigns
-    let campaignIds = [campaign._id];
-    if (campaign.isMaster) {
-      const subCampaigns = await Campaign.find({ masterCampaignId: campaign._id }).select('_id').lean();
-      campaignIds = [...campaignIds, ...subCampaigns.map(s => s._id)];
-    }
+    // Format for export
+    const formattedMessages = messages.map(msg => ({
+      phoneNumber: msg.recipientPhoneNumber,
+      status: msg.status,
+      templateType: 'RCS',
+      sentAt: msg.sentAt,
+      deliveredAt: msg.deliveredAt,
+      readAt: msg.readAt,
+      clickedAction: msg.clickedAction,
+      userText: msg.userText,
+      suggestionResponse: msg.suggestionResponse,
+      interactions: msg.userClickCount || 0,
+      replies: msg.userReplyCount || 0,
+      errorMessage: msg.errorMessage,
+      errorCode: msg.errorCode
+    }));
 
-    // Optimized aggregation with index hints and limited projection
-    const messages = await ContactCampaignMessage.aggregate([
-      {
-        $match: {
-          userId: campaign.userId,
-          'campaigns.campaignId': { $in: campaignIds }
-        }
-      },
-      { $unwind: '$campaigns' },
-      { $match: { 'campaigns.campaignId': { $in: campaignIds } } },
-      {
-        $project: {
-          _id: 0,
-          phoneNumber: '$recipientPhoneNumber',
-          status: '$campaigns.status',
-          templateType: { $literal: 'RCS' },
-          sentAt: '$campaigns.sentAt',
-          deliveredAt: '$campaigns.deliveredAt',
-          readAt: '$campaigns.readAt',
-          clickedAction: '$campaigns.clickedAction',
-          userText: '$campaigns.userText',
-          suggestionResponse: '$campaigns.suggestionResponse',
-          interactions: '$campaigns.userClickCount',
-          replies: '$campaigns.userReplyCount',
-          errorMessage: '$campaigns.errorMessage',
-          errorCode: '$campaigns.errorCode'
-        }
-      }
-    ]).allowDiskUse(true);
-
-    console.log('[Campaign] Found', messages.length, 'messages');
+    console.log('[Campaign] Found', formattedMessages.length, 'messages');
 
     res.json({
       success: true,
-      data: messages,
-      total: messages.length
+      data: formattedMessages,
+      total: formattedMessages.length
     });
   } catch (error) {
     console.error('[Campaign] Export campaign messages error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
