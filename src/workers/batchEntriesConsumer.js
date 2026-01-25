@@ -56,11 +56,16 @@ async function startBatchEntriesConsumer() {
           userReplyCount: 0
         }));
 
-        // Single fire-and-forget insert
+        // Insert with acknowledgment to ensure writes succeed
         try {
-          await ContactCampaignMessage.insertMany(docs, { ordered: false, writeConcern: { w: 0 } });
+          const result = await ContactCampaignMessage.insertMany(docs, { ordered: false });
+          console.log(`[BatchConsumer] Inserted ${result.length} contacts`);
         } catch (err) {
-          console.error(`[BatchConsumer] Insert error: ${err.message}`);
+          if (err.writeErrors) {
+            console.error(`[BatchConsumer] ${err.writeErrors.length} duplicates skipped, ${docs.length - err.writeErrors.length} inserted`);
+          } else {
+            console.error(`[BatchConsumer] Insert error: ${err.message}`);
+          }
         }
 
         // Track chunk completion (fire-and-forget)
