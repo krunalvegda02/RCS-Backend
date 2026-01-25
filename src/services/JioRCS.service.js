@@ -48,7 +48,7 @@ class JioRCSService {
   async checkCapabilityFast(phoneNumbers, accessToken) {
     const MAX_API_LIMIT = 10000;
     const MIN_BATCH_SIZE = 500;
-    const CONCURRENCY = 20;
+    const CONCURRENCY = 30;
 
     const formatted = phoneNumbers.map(p => {
       const n = String(p).replace(/\D/g, "");
