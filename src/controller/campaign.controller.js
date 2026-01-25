@@ -907,7 +907,8 @@ export const getUserCampaignReports = async (req, res) => {
         delivered: 0,
         read: 0,
         replied: 0,
-        failed: 0
+        failed: 0,
+        expired: 0
       };
 
       return {
@@ -917,6 +918,7 @@ export const getUserCampaignReports = async (req, res) => {
         cost: campaign.stats?.total || 0,
         successCount: stats.sent,
         failedCount: stats.failed,
+        expiredCount: stats.expired,
         totalDelivered: stats.delivered,
         totalRead: stats.read,
         totalReplied: stats.replied,
