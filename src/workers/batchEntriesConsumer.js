@@ -39,13 +39,16 @@ async function startBatchEntriesConsumer() {
         const start = Date.now();
         const data = JSON.parse(message.value.toString());
 
-        const { campaignId, templateId, userId, phoneNumbers, chunkIndex, totalChunks } = data;
+        const { campaignId, templateId, userId, phoneNumbers, chunkIndex, totalChunks, batchId } = data;
         const campaignObjectId = new mongoose.Types.ObjectId(campaignId);
 
         console.log(`[BatchConsumer] Campaign ${campaignId} | Chunk ${chunkIndex + 1}/${totalChunks} | ${phoneNumbers.length}`);
 
+        // Generate unique batchId if not present (for old messages)
+        const uniqueBatchId = batchId || `${campaignId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
         const docs = phoneNumbers.map((phone, index) => ({
-          messageId: `${campaignId}-${phone}-${chunkIndex}-${index}`,
+          messageId: `${uniqueBatchId}-${chunkIndex}-${index}`,
           recipientPhoneNumber: phone.replace(/^\+?91/, '').replace(/\D/g, ''),
           userId,
           campaignId: campaignObjectId,
