@@ -109,9 +109,14 @@ export const createMasterCampaign = async (req, res) => {
     
     if (!kafkaResult.success) {
       console.error('[Campaign] Kafka send failed:', kafkaResult.error);
-      // Rollback: unblock balance and delete campaign
-      await user.unblockBalanceForCampaign(estimatedCost, campaign._id);
+      // Rollback: delete campaign and unblock balance
       await Campaign.findByIdAndDelete(campaign._id);
+      await User.findByIdAndUpdate(userId, {
+        $inc: {
+          'wallet.balance': estimatedCost,
+          'wallet.blockedBalance': -estimatedCost
+        }
+      });
       return res.status(500).json({
         success: false,
         message: 'Failed to queue campaign. Please try with fewer contacts or contact support.',
