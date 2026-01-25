@@ -922,7 +922,7 @@ export const getUserCampaignReports = async (req, res) => {
         totalDelivered: stats.delivered,
         totalRead: stats.read,
         totalReplied: stats.replied,
-        userClickCount: 0, // Clicks not stored on campaign stats yet, performance tradeoff
+        userClickCount: stats.replied, // Interactions count
         status: campaign.status,
         createdAt: campaign.createdAt,
         isMaster: campaign.isMaster || false
