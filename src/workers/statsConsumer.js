@@ -19,21 +19,24 @@ async function startStatsConsumer() {
 
     const consumer = kafka.consumer({
       groupId: `stats-processor-${process.env.NODE_ENV || 'dev'}`,
-      sessionTimeout: 120000, // 2 minutes
-      heartbeatInterval: 10000, // 10 seconds
-      rebalanceTimeout: 120000
+      sessionTimeout: 60000, // 1 minute 
+      heartbeatInterval: 3000, // 3 seconds (more frequent)
+      rebalanceTimeout: 60000, // 1 minute
+      maxWaitTimeInMs: 10000, // Wait max 5s for new messages
+      retry: {
+        retries: 5,
+        initialRetryTime: 300
+      }
     });
 
     await consumer.connect();
-    await consumer.subscribe({ topic: 'message-stats', fromBeginning: true });
-
+    await consumer.subscribe({ topic: 'message-stats', fromBeginning: false });
 
     console.log('✅ Stats Consumer subscribed to message-stats');
 
-
-
     const MessageLog = (await import('../models/messageLog.model.js')).default;
     const ContactCampaignMessage = (await import('../models/contactMessage.model.js')).default;
+    const Campaign = (await import('../models/campaign.model.js')).default;
 
 
     let totalProcessed = 0;
@@ -43,38 +46,54 @@ async function startStatsConsumer() {
       partitionsConsumedConcurrently: 1,
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
-
-
         const startTime = Date.now();
-        
-        
-        // 🔥 FIX : Process ALL messages in batch, ACK only on success
         const messages = batch.messages;
-        const logIds = messages.map(m => JSON.parse(m.value.toString()).logId);
+        
+        if (messages.length === 0) {
+          await heartbeat();
+          return;
+        }
 
-        console.log(`[StatsConsumer] Processing batch of ${logIds.length} log IDs`);
+        // Extract log IDs from Kafka messages
+        const logIds = [];
+        for (const message of messages) {
+          try {
+            const payload = JSON.parse(message.value.toString());
+            if (payload.logId) logIds.push(payload.logId);
+          } catch (err) {
+            console.error('[StatsConsumer] Parse error:', err.message);
+          }
+        }
 
+        if (logIds.length === 0) {
+          await resolveOffset(messages[messages.length - 1].offset);
+          await heartbeat();
+          return;
+        }
+
+        console.log(`[StatsConsumer] Processing ${logIds.length} log IDs`);
+
+        // Fetch unprocessed logs from DB
         const logs = await MessageLog.find({
           _id: { $in: logIds },
           processed: false
         }).lean();
 
-        console.log(`[StatsConsumer] Found ${logs.length} unprocessed logs in DB`);
-
         if (logs.length === 0) {
-          console.log('[StatsConsumer] No unprocessed logs, ACKing batch');
-          if (messages.length > 0) {
-            await resolveOffset(messages[messages.length - 1].offset);
-          }
+          console.log('[StatsConsumer] No unprocessed logs found');
+          await resolveOffset(messages[messages.length - 1].offset);
           await heartbeat();
           return;
         }
 
+        console.log(`[StatsConsumer] Found ${logs.length} unprocessed logs`);
+
         const bulkOps = [];
+        const affectedCampaigns = new Set();
+
+
 
         for (const log of logs) {
-
-
           const { messageId, webhookData, eventType: logEventType } = log;
           const eventType = webhookData?.eventType;
           const entity = webhookData?.rawPayload?.entity;
@@ -129,8 +148,6 @@ async function startStatsConsumer() {
             }
           }
 
-
-
           if (newStatus) {
             bulkOps.push({
               updateOne: {
@@ -146,138 +163,81 @@ async function startStatsConsumer() {
                     ...(webhookData.rawPayload?.entity?.text && { userReplyCount: 1 })
                   }
                 },
-                upsert: false 
+                upsert: false
               }
             });
           }
         }
 
-
-
-        // Bulk update messages
-        let messageUpdateSuccess = false;
+        // Bulk update ContactCampaignMessage
+        let updateSuccess = false;
         if (bulkOps.length > 0) {
           try {
-            
             const result = await ContactCampaignMessage.bulkWrite(bulkOps, { ordered: false });
             totalProcessed += result.modifiedCount;
-            messageUpdateSuccess = true;
-            
-            
+            updateSuccess = true;
             console.log(`[StatsConsumer] ✅ Updated ${result.modifiedCount} messages | Total: ${totalProcessed}`);
+
+            // Collect affected campaigns
+            const updatedMessages = await ContactCampaignMessage.find(
+              { messageId: { $in: logs.map(l => l.messageId) } },
+              { campaignId: 1 }
+            ).lean();
+            updatedMessages.forEach(msg => {
+              if (msg.campaignId) affectedCampaigns.add(msg.campaignId.toString());
+            });
           } catch (error) {
             console.error('[StatsConsumer] Bulk write error:', error.message);
           }
-
-
         } else {
-          console.log('[StatsConsumer] No message updates needed');
-          messageUpdateSuccess = true; 
+          updateSuccess = true;
         }
 
 
 
-        // 🔥 FIX : Mark as processed ONLY AFTER successful updates
-        let allSuccess = false;
-
-        if (messageUpdateSuccess) {
+        // Mark logs as processed
+        if (updateSuccess) {
           try {
-            const markResult = await MessageLog.updateMany(
-              { _id: { $in: logs.map(l => l._id) }, processed: false },
+            await MessageLog.updateMany(
+              { _id: { $in: logs.map(l => l._id) } },
               { $set: { processed: true, processedAt: new Date() } }
             );
-            console.log(`[StatsConsumer] Marked ${markResult.modifiedCount} logs as processed`);
-            allSuccess = true;
+            console.log(`[StatsConsumer] Marked ${logs.length} logs as processed`);
           } catch (error) {
-            console.error('[StatsConsumer] ❌ Mark processed failed:', error.message);
+            console.error('[StatsConsumer] Mark processed error:', error.message);
           }
         }
 
 
+
+        // Sync campaign stats
+        if (affectedCampaigns.size > 0) {
+          console.log(`[StatsConsumer] Syncing ${affectedCampaigns.size} campaigns`);
+          await Promise.all(
+            Array.from(affectedCampaigns).map(async (campaignId) => {
+              try {
+                const campaign = await Campaign.findById(campaignId);
+                if (campaign && campaign.status !== 'settled') {
+                  await campaign.syncStats();
+                }
+              } catch (err) {
+                console.error(`[StatsConsumer] Sync error for ${campaignId}:`, err.message);
+              }
+            })
+          );
+        }
 
 
 
         const duration = Date.now() - startTime;
-        console.log(`[StatsConsumer] Batch complete: ${logs.length} logs in ${duration}ms`);
+        console.log(`[StatsConsumer] Batch complete in ${duration}ms`);
 
 
 
-
-
-        // AUTO-SYNC CAMPAIGN STATS 
-        if (allSuccess && bulkOps.length > 0) {
-          const Campaign = (await import('../models/campaign.model.js')).default;
-          
-          // Extract campaignIds from updated messages
-          const updatedDocs = await ContactCampaignMessage.find(
-            { messageId: { $in: logs.map(l => l.messageId) } },
-            { campaignId: 1 }
-          ).lean();
-          
-          const affectedCampaigns = new Set();
-          updatedDocs.forEach(doc => {
-            if (doc.campaignId) affectedCampaigns.add(doc.campaignId.toString());
-          });
-          
-          if (affectedCampaigns.size > 0) {
-            console.log(`[StatsConsumer] Auto-syncing stats for ${affectedCampaigns.size} campaigns`);
-            
-            await Promise.all(
-              Array.from(affectedCampaigns).map(async (campaignId) => {
-                try {
-                  const campaign = await Campaign.findById(campaignId);
-                  if (!campaign || campaign.status === 'settled') return;
-                  
-                  // Flat model aggregation - no $unwind needed
-                  const aggregatedStats = await ContactCampaignMessage.aggregate([
-                    { $match: { campaignId: new mongoose.Types.ObjectId(campaignId) } },
-                    {
-                      $group: {
-                        _id: null,
-                        total: { $sum: 1 },
-                        pending: { $sum: { $cond: [{ $in: ['$status', ['pending', 'draft', 'queued']] }, 1, 0] } },
-                        sent: { $sum: { $cond: [{ $eq: ['$status', 'sent'] }, 1, 0] } },
-                        delivered: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] } },
-                        read: { $sum: { $cond: [{ $eq: ['$status', 'read'] }, 1, 0] } },
-                        replied: { $sum: { $cond: [{ $eq: ['$status', 'replied'] }, 1, 0] } },
-                        failed: { $sum: { $cond: [{ $in: ['$status', ['failed', 'bounced', 'expired']] }, 1, 0] } }
-                      }
-                    }
-                  ]);
-                  
-                  const stats = aggregatedStats[0] || { total: 0, pending: 0, sent: 0, delivered: 0, read: 0, replied: 0, failed: 0 };
-                  
-                  await Campaign.findByIdAndUpdate(campaignId, {
-                    'stats.total': stats.total,
-                    'stats.pending': stats.pending,
-                    'stats.sent': stats.sent,
-                    'stats.delivered': stats.delivered,
-                    'stats.read': stats.read,
-                    'stats.replied': stats.replied,
-                    'stats.failed': stats.failed,
-                    'stats.bounced': 0
-                  });
-                  
-                  console.log(`[StatsConsumer] ✅ Synced campaign ${campaignId}: total=${stats.total}, delivered=${stats.delivered}, failed=${stats.failed}`);
-                } catch (err) {
-                  console.error(`[StatsConsumer] Failed to sync campaign ${campaignId}:`, err.message);
-                }
-              })
-            );
-          }
-        }
-
-
-
-
-
-        // 🔥 FIX: ACK only if everything succeeded
-        if (allSuccess && messages.length > 0) {
+        // ACK batch
+        if (messages.length > 0) {
           await resolveOffset(messages[messages.length - 1].offset);
         }
-
-
-
         await heartbeat();
       }
     });
