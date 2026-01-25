@@ -147,9 +147,9 @@ campaignSchema.methods.syncStats = async function () {
         _id: null,
         total: { $sum: 1 },
         pending: { $sum: { $cond: [{ $in: ['$status', ['pending', 'draft', 'queued']] }, 1, 0] } },
-        sent: { $sum: { $cond: [{ $eq: ['$status', 'sent'] }, 1, 0] } },
-        delivered: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] } },
-        read: { $sum: { $cond: [{ $eq: ['$status', 'read'] }, 1, 0] } },
+        sent: { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read', 'replied',"failed"]] }, 1, 0] } },
+        delivered: { $sum: { $cond: [{ $in: ['$status', ['delivered', 'read', 'replied']] }, 1, 0] } },
+        read: { $sum: { $cond: [{ $in: ['$status', ['read', 'replied']] }, 1, 0] } },
         replied: { $sum: { $cond: [{ $eq: ['$status', 'replied'] }, 1, 0] } },
         expired: { $sum: { $cond: [{ $eq: ['$status', 'expired'] }, 1, 0] } },
         failed: { $sum: { $cond: [{ $in: ['$status', ['failed', 'bounced']] }, 1, 0] } }

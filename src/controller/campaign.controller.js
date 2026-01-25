@@ -1220,7 +1220,7 @@ export const getCampaignMessages = async (req, res) => {
 
     // Get paginated messages
     const messages = await ContactCampaignMessage.find(matchStage)
-      .select('recipientPhoneNumber status sentAt deliveredAt readAt failedAt errorCode errorMessage')
+      .select('recipientPhoneNumber status sentAt deliveredAt readAt failedAt errorCode errorMessage clickedAction userText suggestionResponse userClickCount userReplyCount')
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
@@ -1235,7 +1235,12 @@ export const getCampaignMessages = async (req, res) => {
       deliveredAt: msg.deliveredAt,
       readAt: msg.readAt,
       failedAt: msg.failedAt,
-      errorCode: msg.errorCode
+      errorCode: msg.errorCode,
+      clickedAction: msg.clickedAction,
+      userText: msg.userText,
+      suggestionResponse: msg.suggestionResponse,
+      interactions: msg.userClickCount || 0,
+      replies: msg.userReplyCount || 0
     }));
 
     res.json({
