@@ -179,29 +179,27 @@ export const getUserRecentCampaigns = async (req, res) => {
       .limit(limit)
       .lean();
 
-    // Get real-time stats for each campaign from ContactCampaignMessage
+    // Get real-time stats for each campaign from ContactCampaignMessage (FLAT MODEL)
     const campaignIds = campaigns.map(c => c._id);
     const campaignStats = await ContactCampaignMessage.aggregate([
-      { $match: { userId: new mongoose.Types.ObjectId(userId) } },
-      { $unwind: '$campaigns' },
-      { $match: { 'campaigns.campaignId': { $in: campaignIds } } },
+      { $match: { campaignId: { $in: campaignIds } } },
       {
         $group: {
-          _id: '$campaigns.campaignId',
+          _id: '$campaignId',
           total: { $sum: 1 },
           sent: {
             $sum: {
-              $cond: [{ $in: ['$campaigns.status', ['sent', 'delivered', 'read', 'replied']] }, 1, 0]
+              $cond: [{ $in: ['$status', ['sent', 'delivered', 'read', 'replied']] }, 1, 0]
             }
           },
           delivered: {
             $sum: {
-              $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0]
+              $cond: [{ $in: ['$status', ['delivered', 'read', 'replied']] }, 1, 0]
             }
           },
           failed: {
             $sum: {
-              $cond: [{ $in: ['$campaigns.status', ['failed', 'bounced']] }, 1, 0]
+              $cond: [{ $in: ['$status', ['failed', 'bounced']] }, 1, 0]
             }
           }
         }
