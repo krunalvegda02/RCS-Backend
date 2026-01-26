@@ -487,11 +487,13 @@ userSchema.methods.blockBalanceForCampaign = async function (amount, campaignId)
     }
 
     // Update wallet atomically
+    // Deduct from balance AND add to blocked (money moves from available to blocked)
     const result = await this.constructor.findByIdAndUpdate(
       this._id,
       {
         $inc: {
-          'wallet.blockedBalance': amount
+          'wallet.balance': -amount,  // Deduct from balance
+          'wallet.blockedBalance': amount  // Add to blocked
         },
         $set: {
           'wallet.lastUpdated': new Date()
@@ -504,10 +506,11 @@ userSchema.methods.blockBalanceForCampaign = async function (amount, campaignId)
     session.endSession();
 
     // Update current instance
+    this.wallet.balance = result.wallet.balance;
     this.wallet.blockedBalance = result.wallet.blockedBalance;
     this.wallet.lastUpdated = result.wallet.lastUpdated;
 
-    console.log(`✅ Blocked ₹${amount} for campaign. New blocked balance: ₹${this.wallet.blockedBalance}`);
+    console.log(`✅ Blocked ₹${amount} for campaign. Balance: ₹${this.wallet.balance}, Blocked: ₹${this.wallet.blockedBalance}`);
 
     return this.wallet.blockedBalance;
   } catch (error) {
@@ -526,12 +529,13 @@ userSchema.methods.unblockBalanceForCampaign = async function (blockedAmount, ac
     const refundAmount = Math.max(0, blockedAmount - actualCost);
 
     // Update wallet atomically
+    // Add refund back to balance, release from blocked
     const result = await this.constructor.findByIdAndUpdate(
       this._id,
       {
         $inc: {
-          'wallet.balance': refundAmount - blockedAmount, // Deduct actual cost, refund the rest
-          'wallet.blockedBalance': -blockedAmount // Remove from blocked
+          'wallet.balance': refundAmount, // Add refund back
+          'wallet.blockedBalance': -blockedAmount // Release all blocked
         },
         $set: {
           'wallet.lastUpdated': new Date()
@@ -548,7 +552,7 @@ userSchema.methods.unblockBalanceForCampaign = async function (blockedAmount, ac
     this.wallet.blockedBalance = result.wallet.blockedBalance;
     this.wallet.lastUpdated = result.wallet.lastUpdated;
 
-    console.log(`✅ Unblocked ₹${blockedAmount}, charged ₹${actualCost}, refunded ₹${refundAmount}`);
+    console.log(`✅ Settlement: Charged ₹${actualCost}, Refunded ₹${refundAmount}. Final balance: ₹${this.wallet.balance}`);
 
     return {
       newBalance: this.wallet.balance,

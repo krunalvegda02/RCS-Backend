@@ -284,10 +284,11 @@ campaignSchema.methods.completeCampaign = async function () {
 
       console.log(`[SettleCampaign] Before: balance=₹${user.wallet.balance}, blocked=₹${user.wallet.blockedBalance}`);
 
-      // Release blocked amount and deduct actual cost
+      // Release blocked amount back to balance, then deduct actual cost
+      // Net effect: balance increases by (blockedAmount - actualCost) = refundAmount
       await User.findByIdAndUpdate(this.userId, {
         $inc: {
-          'wallet.balance': -actualCost, // Deduct actual cost from available balance
+          'wallet.balance': refundAmount, // Add refund (blocked - actual)
           'wallet.blockedBalance': -blockedAmount // Release all blocked amount
         },
         $set: { 'wallet.lastUpdated': new Date() }
@@ -295,7 +296,9 @@ campaignSchema.methods.completeCampaign = async function () {
 
       const updatedUser = await User.findById(this.userId);
       console.log(`[SettleCampaign] After: balance=₹${updatedUser.wallet.balance}, blocked=₹${updatedUser.wallet.blockedBalance}`);
-      console.log(`[SettleCampaign] ✅ Wallet updated: Released ₹${blockedAmount} blocked, Charged ₹${actualCost}, Refunded ₹${refundAmount}`);
+      console.log(`[SettleCampaign] ✅ Wallet settled: Charged ₹${actualCost} for ${deliveryStats.deliveredTotal} delivered messages`);
+      console.log(`[SettleCampaign] ✅ Refunded ₹${refundAmount} for ${deliveryStats.failed + deliveryStats.expired} undelivered messages`);
+      console.log(`[SettleCampaign] ✅ Net balance change: +₹${refundAmount} (released ₹${blockedAmount} - charged ₹${actualCost})`);
     } else {
       console.log(`[SettleCampaign] No blocked amount to settle`);
     }
