@@ -9,7 +9,7 @@ async function expirePendingMessages() {
     const ContactCampaignMessage = (await import('../src/models/contactMessage.model.js')).default;
     const Campaign = (await import('../src/models/campaign.model.js')).default;
 
-const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
+const sixHoursAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
 
 
     // 1. Identify affected campaigns FIRST
@@ -38,18 +38,20 @@ const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
 
     console.log(`✅ Expired ${result.modifiedCount} messages older than 5 minutes`);
 
-    // 3. Settle wallets and update campaign status
-    if (result.modifiedCount > 0 && affectedCampaignIds.length > 0) {
-      console.log('🔄 Settling campaigns and refunding wallets...');
+    // 3. Get ALL completed campaigns that need settlement
+    const allCampaignsToSettle = await Campaign.find({
+      status: 'completed',
+      createdAt: { $lt: sixHoursAgo }
+    }).select('_id name status');
 
-      for (const campaignId of affectedCampaignIds) {
+    console.log(`Found ${allCampaignsToSettle.length} campaigns to check for settlement`);
+
+    // 4. Settle wallets and update campaign status
+    if (allCampaignsToSettle.length > 0) {
+      console.log('🔄 Settling campaigns and processing wallets...');
+
+      for (const campaign of allCampaignsToSettle) {
         try {
-          const campaign = await Campaign.findById(campaignId);
-          if (!campaign) {
-            console.log(`Campaign ${campaignId} not found, skipping`);
-            continue;
-          }
-          
           if (campaign.status === 'settled') {
             console.log(`Campaign ${campaign._id} already settled, skipping`);
             continue;
@@ -77,7 +79,7 @@ const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
             console.log(`Campaign ${campaign._id} still has ${pendingCount} pending messages`);
           }
         } catch (err) {
-          console.error(`❌ Error processing campaign ${campaignId}:`, err.message);
+          console.error(`❌ Error processing campaign ${campaign._id}:`, err.message);
         }
       }
     }
