@@ -929,10 +929,13 @@ export const getUserCampaignReports = async (req, res) => {
         totalDelivered: stats.delivered,
         totalRead: stats.read,
         totalReplied: stats.replied,
-        userClickCount: stats.replied, // Interactions count
+        userClickCount: stats.replied,
         status: campaign.status,
         createdAt: campaign.createdAt,
-        isMaster: campaign.isMaster || false
+        isMaster: campaign.isMaster || false,
+        actualCost: campaign.actualCost || 0,
+        estimatedCost: campaign.estimatedCost || 0,
+        refundedAmount: campaign.refundedAmount || 0
       };
     });
 

@@ -108,6 +108,18 @@ async function startStatsConsumer() {
 
           const isUserInteraction = logEventType === 'user_interaction' || entityType === 'USER_MESSAGE';
 
+          // Status priority: replied > read > delivered > sent > pending
+          const statusPriority = {
+            'pending': 1,
+            'queued': 1,
+            'sent': 2,
+            'delivered': 3,
+            'read': 4,
+            'replied': 5,
+            'failed': 6,
+            'expired': 6
+          };
+
           if (isUserInteraction) {
             newStatus = 'replied';
             updateFields.lastInteractionAt = timestamp;
@@ -149,23 +161,33 @@ async function startStatsConsumer() {
           }
 
           if (newStatus) {
-            bulkOps.push({
-              updateOne: {
-                filter: { messageId },
-                update: {
-                  $set: {
-                    status: newStatus,
-                    lastWebhookAt: timestamp,
-                    ...updateFields
+            // Get current message status to check priority
+            const currentMsg = await ContactCampaignMessage.findOne({ messageId }).select('status').lean();
+            const currentPriority = currentMsg ? (statusPriority[currentMsg.status] || 0) : 0;
+            const newPriority = statusPriority[newStatus] || 0;
+
+            // Only update if new status has higher priority
+            if (newPriority >= currentPriority) {
+              bulkOps.push({
+                updateOne: {
+                  filter: { messageId },
+                  update: {
+                    $set: {
+                      status: newStatus,
+                      lastWebhookAt: timestamp,
+                      ...updateFields
+                    },
+                    $inc: {
+                      ...(webhookData.suggestionResponse && { userClickCount: 1 }),
+                      ...(webhookData.rawPayload?.entity?.text && { userReplyCount: 1 })
+                    }
                   },
-                  $inc: {
-                    ...(webhookData.suggestionResponse && { userClickCount: 1 }),
-                    ...(webhookData.rawPayload?.entity?.text && { userReplyCount: 1 })
-                  }
-                },
-                upsert: false
-              }
-            });
+                  upsert: false
+                }
+              });
+            } else {
+              console.log(`[StatsConsumer] Skipping ${messageId}: ${newStatus} (priority ${newPriority}) < current ${currentMsg?.status} (priority ${currentPriority})`);
+            }
           }
         }
 
