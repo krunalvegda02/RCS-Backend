@@ -880,7 +880,7 @@ export const getUserCampaignReports = async (req, res) => {
       .sort({ createdAt: sortOrder })
       .limit(limit)
       .skip((page - 1) * limit)
-      .select('name description status stats estimatedCost actualCost createdAt completedAt isMaster masterCampaignId');
+      .select('name description status stats estimatedCost actualCost createdAt completedAt isMaster masterCampaignId rcsCapableCount');
 
     // Sync master campaign stats BEFORE converting to lean
     await Promise.all(campaigns.map(async (c) => {
@@ -914,11 +914,15 @@ export const getUserCampaignReports = async (req, res) => {
         expired: 0
       };
 
+      const rcsCount = campaign.rcsCapableCount || campaign.stats?.rcsCapable || 0;
+      console.log(`[Campaign] ${campaign.name}: rcsCapableCount=${campaign.rcsCapableCount}, stats.rcsCapable=${campaign.stats?.rcsCapable}, final=${rcsCount}`);
+
       return {
         _id: campaign._id,
         CampaignName: campaign.name,
         type: campaign.templateId?.templateType || 'RCS',
         cost: campaign.stats?.total || 0,
+        rcsCapableCount: rcsCount,
         successCount: stats.sent,
         failedCount: stats.failed,
         expiredCount: stats.expired,
