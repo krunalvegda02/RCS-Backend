@@ -1221,16 +1221,37 @@ export const getCampaignMessages = async (req, res) => {
     // Count total
     const total = await ContactCampaignMessage.countDocuments(matchStage);
 
-    // Get paginated messages
+    // Get paginated messages with status-based sorting
+    // Priority: delivered/read/replied first, then failed/expired, then pending last
+    const statusPriority = {
+      'delivered': 1,
+      'read': 1,
+      'replied': 1,
+      'sent': 2,
+      'failed': 3,
+      'expired': 3,
+      'pending': 4,
+      'draft': 4,
+      'queued': 4
+    };
+
     const messages = await ContactCampaignMessage.find(matchStage)
       .select('recipientPhoneNumber status sentAt deliveredAt readAt failedAt errorCode errorMessage clickedAction userText suggestionResponse userClickCount userReplyCount')
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(limit)
       .lean();
 
+    // Sort by status priority, then by createdAt
+    const sortedMessages = messages.sort((a, b) => {
+      const priorityA = statusPriority[a.status] || 5;
+      const priorityB = statusPriority[b.status] || 5;
+      if (priorityA !== priorityB) return priorityA - priorityB;
+      return new Date(b.createdAt) - new Date(a.createdAt);
+    });
+
+    // Apply pagination after sorting
+    const paginatedMessages = sortedMessages.slice((page - 1) * limit, page * limit);
+
     // Map to expected format
-    const formattedMessages = messages.map(msg => ({
+    const formattedMessages = paginatedMessages.map(msg => ({
       _id: msg._id,
       phoneNumber: msg.recipientPhoneNumber,
       status: msg.status,
