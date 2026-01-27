@@ -611,8 +611,8 @@ userSchema.methods.unblockBalance = async function (amount) {
 // Get available balance (total - blocked)
 userSchema.methods.getAvailableBalance = function () {
   const totalBalance = this.wallet.balance || 0;
-  const blockedBalance = this.wallet.blockedBalance || 0;
-  return Math.max(0, totalBalance - blockedBalance);
+  // const blockedBalance = this.wallet.blockedBalance || 0;
+  return totalBalance;
 };
 
 // Cleanup stuck blocked balance for completed/failed campaigns
