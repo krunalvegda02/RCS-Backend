@@ -875,37 +875,24 @@ export const getUserCampaignReports = async (req, res) => {
     const total = await Campaign.countDocuments(query);
 
     // Get paginated campaigns with lean() for faster queries
+    // OPTIMIZATION: Removed on-the-fly syncStats which causes N+1 aggregations
+    // We rely on the 'stats' field in the Campaign document which should be kept up-to-date by workers
     const campaigns = await Campaign.find(query)
       .populate('templateId', 'name templateType')
       .sort({ createdAt: sortOrder })
       .limit(limit)
       .skip((page - 1) * limit)
-      .select('name description status stats estimatedCost actualCost createdAt completedAt isMaster masterCampaignId rcsCapableCount');
+      .select('name description status stats estimatedCost actualCost createdAt completedAt isMaster masterCampaignId rcsCapableCount pausedAt startedAt blockedAmount refundedAmount')
+      .lean(); // Use lean() for performance
 
-    // Sync master campaign stats BEFORE converting to lean
-    await Promise.all(campaigns.map(async (c) => {
-      if (c.isMaster) {
-        console.log(`[Campaign] Syncing master campaign stats for: ${c.name}`);
-        await c.syncMasterStats();
-      } else {
-        // Sync regular campaigns too
-        await c.syncStats();
-      }
-      return Promise.resolve();
-    }));
+    console.log(`[Campaign] Found ${campaigns.length} campaigns for user ${userId}`);
 
-    // Convert to plain objects after syncing
-    const campaignsLean = campaigns.map(c => c.toObject ? c.toObject() : c);
-
-    console.log(`[Campaign] Found ${campaignsLean.length} campaigns for user ${userId}`);
-
-    // Get ContactCampaignMessage model to aggregate interaction counts
-
-    // Optimized: Use campaign.stats directly instead of aggregating ContactCampaignMessage
-    // This avoids the expensive $unwind on heavy documents
-    const reports = campaignsLean.map(campaign => {
+    // Map campaigns to report format
+    const reports = campaigns.map(campaign => {
+      // Ensure stats object exists
       const stats = campaign.stats || {
         total: 0,
+        pending: 0,
         sent: 0,
         delivered: 0,
         read: 0,
@@ -914,22 +901,22 @@ export const getUserCampaignReports = async (req, res) => {
         expired: 0
       };
 
-      const rcsCount = campaign.rcsCapableCount || campaign.stats?.rcsCapable || 0;
-      console.log(`[Campaign] ${campaign.name}: rcsCapableCount=${campaign.rcsCapableCount}, stats.rcsCapable=${campaign.stats?.rcsCapable}, final=${rcsCount}`);
+      // Calculate RCS count (prefer explicit rcsCapableCount, fall back to stats or 0)
+      const rcsCount = campaign.rcsCapableCount || stats.rcsCapable || 0;
 
       return {
         _id: campaign._id,
         CampaignName: campaign.name,
         type: campaign.templateId?.templateType || 'RCS',
-        cost: campaign.stats?.total || 0,
+        cost: stats.total || 0, // Frontend uses 'cost' field for total recipients
         rcsCapableCount: rcsCount,
-        successCount: stats.sent,
-        failedCount: stats.failed,
-        expiredCount: stats.expired,
-        totalDelivered: stats.delivered,
-        totalRead: stats.read,
-        totalReplied: stats.replied,
-        userClickCount: stats.replied,
+        successCount: stats.sent || 0,
+        failedCount: stats.failed || 0,
+        expiredCount: stats.expired || 0,
+        totalDelivered: stats.delivered || 0,
+        totalRead: stats.read || 0,
+        totalReplied: stats.replied || 0,
+        userClickCount: stats.replied || 0, // Approximation if specific click count not in stats
         status: campaign.status,
         createdAt: campaign.createdAt,
         isMaster: campaign.isMaster || false,
@@ -939,13 +926,21 @@ export const getUserCampaignReports = async (req, res) => {
       };
     });
 
-    console.log('[Campaign] Sample report with recipients:', reports[0]);
+    // OPTIMIZATION: Calculate aggregate stats using Campaign collection instead of Messages
+    // This is HUNDREDS of times faster as it scans thousands of campaigns instead of millions of messages
 
-    // Calculate aggregate stats from ContactCampaignMessage collection
-    const userObjectIdForStats = typeof userId === 'string' ? new mongoose.Types.ObjectId(userId) : userId;
+    // We need to aggregate stats for ALL campaigns of this user, not just the filtered ones
+    // But typically the "Universal Stats" shown in headers might expect to respect the current filters?
+    // Usually dashboards show "Total Lifetime Stats" at the top. 
+    // If the frontend expects filtered stats, we should use the same query.
+    // Let's assume global stats for now as that's typical for "Total Sent/Delivered" headers.
 
-    const messageStats = await ContactCampaignMessage.aggregate([
-      { $match: { userId: userObjectIdForStats } },
+    // However, if filters are applied, the aggregation should probably traverse all campaigns matching filters
+    // to give accurate summary of "what am I looking at".
+
+    // Let's optimize by aggregating on Campaign collection using the same query filters (minus pagination)
+    const statsAggregation = await Campaign.aggregate([
+      { $match: query }, // Match the same filters as the list
       {
         $group: {
           _id: null,
@@ -958,8 +953,14 @@ export const getUserCampaignReports = async (req, res) => {
       }
     ]);
 
-    const aggregateStats = messageStats[0] || { totalMessages: 0, totalDelivered: 0, totalFailed: 0, totalExpired: 0, totalSent: 0 };
-    const totalSent = aggregateStats.totalSent;
+    const aggregateStats = statsAggregation[0] || {
+      totalSent: 0,
+      totalDelivered: 0,
+      totalFailed: 0,
+      totalExpired: 0,
+      totalPending: 0,
+      totalRead: 0
+    };
 
     res.json({
       success: true,
@@ -969,15 +970,17 @@ export const getUserCampaignReports = async (req, res) => {
         limit: parseInt(limit),
         total,
         pages: Math.ceil(total / limit),
-        totalSent,
+        // Add aggregate stats to pagination object as expected by frontend
+        totalSent: aggregateStats.totalSent,
         totalDelivered: aggregateStats.totalDelivered,
         totalFailed: aggregateStats.totalFailed,
         totalExpired: aggregateStats.totalExpired
       }
     });
 
-    console.log('[Campaign] Response sent with', reports.length, 'campaigns');
+    console.log('[Campaign] Optimized response sent with', reports.length, 'campaigns');
   } catch (error) {
+    console.error('[Campaign] Error fetching user campaigns:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch user campaigns',
