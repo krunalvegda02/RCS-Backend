@@ -611,6 +611,7 @@ userSchema.methods.unblockBalance = async function (amount) {
 // Get available balance (total - blocked)
 userSchema.methods.getAvailableBalance = function () {
   const totalBalance = this.wallet.balance || 0;
+  console.log("[getAvailableBalance] Total Balance:", totalBalance);
   // const blockedBalance = this.wallet.blockedBalance || 0;
   return totalBalance;
 };
