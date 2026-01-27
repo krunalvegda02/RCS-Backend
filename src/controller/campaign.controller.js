@@ -926,32 +926,30 @@ export const getUserCampaignReports = async (req, res) => {
       };
     });
 
-    // OPTIMIZATION: Calculate aggregate stats using Campaign collection instead of Messages
-    // This is HUNDREDS of times faster as it scans thousands of campaigns instead of millions of messages
-
-    // We need to aggregate stats for ALL campaigns of this user, not just the filtered ones
-    // But typically the "Universal Stats" shown in headers might expect to respect the current filters?
-    // Usually dashboards show "Total Lifetime Stats" at the top. 
-    // If the frontend expects filtered stats, we should use the same query.
-    // Let's assume global stats for now as that's typical for "Total Sent/Delivered" headers.
-
-    // However, if filters are applied, the aggregation should probably traverse all campaigns matching filters
-    // to give accurate summary of "what am I looking at".
-
-    // Let's optimize by aggregating on Campaign collection using the same query filters (minus pagination)
+    // OPTIMIZATION: Calculate aggregate stats using Campaign collection stats field
+    // This aggregates the stats.delivered, stats.failed, etc. from all matching campaigns
+    console.log('[Campaign] Aggregating stats for query:', JSON.stringify(query));
+    
+    // Convert userId to ObjectId for aggregation
+    const aggregationQuery = { ...query };
+    if (aggregationQuery.userId) {
+      aggregationQuery.userId = new mongoose.Types.ObjectId(aggregationQuery.userId);
+    }
+    
     const statsAggregation = await Campaign.aggregate([
-      { $match: query }, // Match the same filters as the list
+      { $match: aggregationQuery }, // Match with ObjectId userId
       {
         $group: {
           _id: null,
-          totalMessages: { $sum: 1 },
-          totalDelivered: { $sum: { $cond: [{ $in: ['$status', ['delivered', 'read', 'replied']] }, 1, 0] } },
-          totalFailed: { $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] } },
-          totalExpired: { $sum: { $cond: [{ $eq: ['$status', 'expired'] }, 1, 0] } },
-          totalSent: { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read', 'replied', 'failed', 'expired']] }, 1, 0] } }
+          totalSent: { $sum: { $add: [{ $ifNull: ['$stats.delivered', 0] }, { $ifNull: ['$stats.failed', 0] }] } },
+          totalDelivered: { $sum: { $ifNull: ['$stats.delivered', 0] } },
+          totalFailed: { $sum: { $ifNull: ['$stats.failed', 0] } },
+          totalExpired: { $sum: { $ifNull: ['$stats.expired', 0] } }
         }
       }
     ]);
+
+    console.log('[Campaign] Stats aggregation result:', JSON.stringify(statsAggregation));
 
     const aggregateStats = statsAggregation[0] || {
       totalSent: 0,
