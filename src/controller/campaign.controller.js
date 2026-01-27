@@ -1201,89 +1201,79 @@ export const getAllForAdmin = async (req, res) => {
   }
 };
 
-// Get campaign messages - OPTIMIZED for flat model
+// Get campaign messages - OPTIMIZED FOR SPEED
 export const getCampaignMessages = async (req, res) => {
   try {
     const { id } = req.params;
-    const { search, status } = req.query;
-    const page = parseInt(req.query.page) || 1;
-    const limit = Math.min(parseInt(req.query.limit) || 10, 50);
+    let { search, status, page = 1, limit = 10 } = req.query;
+    page = parseInt(page) || 1;
+    limit = Math.min(parseInt(limit) || 10, 50);
 
-    const campaign = await Campaign.findById(id).select('_id userId').lean();
-    if (!campaign) {
-      return res.status(404).json({ success: false, message: 'Campaign not found' });
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: 'Invalid campaign ID' });
     }
 
-    // Build match query for flat model
-    const matchStage = {
-      campaignId: campaign._id,
-      userId: campaign.userId
-    };
+    const cid = new mongoose.Types.ObjectId(id);
+    
+    // Sanitize search
+    if (Array.isArray(search)) search = search[search.length - 1];
+    const cleanSearch = search ? String(search).trim() : '';
+    const isStatusFiltered = status && status !== 'all';
 
-    if (status && status !== 'all') {
-      matchStage.status = status;
+    // Build optimized query
+    const query = { campaignId: cid };
+    
+    if (isStatusFiltered) {
+      query.status = status;
+    }
+    
+    if (cleanSearch) {
+      query.recipientPhoneNumber = /^[0-9]{8,15}$/.test(cleanSearch) 
+        ? cleanSearch 
+        : { $regex: cleanSearch, $options: 'i' };
     }
 
-    if (search) {
-      matchStage.recipientPhoneNumber = { $regex: search, $options: 'i' };
-    }
+    // Parallel execution for count and data
+    const [total, results] = await Promise.all([
+      ContactCampaignMessage.countDocuments(query),
+      ContactCampaignMessage.find(query)
+        .select('recipientPhoneNumber status sentAt deliveredAt readAt failedAt errorCode errorMessage clickedAction userText suggestionResponse userClickCount userReplyCount')
+        .sort({ status: 1, createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean()
+    ]);
 
-    // Count total
-    const total = await ContactCampaignMessage.countDocuments(matchStage);
-
-    // Get paginated messages with status-based sorting
-    // Priority: delivered/read/replied first, then failed/expired, then pending last
-    const statusPriority = {
-      'delivered': 1,
-      'read': 1,
-      'replied': 1,
-      'sent': 2,
-      'failed': 3,
-      'expired': 3,
-      'pending': 4,
-      'draft': 4,
-      'queued': 4
-    };
-
-    const messages = await ContactCampaignMessage.find(matchStage)
-      .select('recipientPhoneNumber status sentAt deliveredAt readAt failedAt errorCode errorMessage clickedAction userText suggestionResponse userClickCount userReplyCount')
-      .lean();
-
-    // Sort by status priority, then by createdAt
-    const sortedMessages = messages.sort((a, b) => {
-      const priorityA = statusPriority[a.status] || 5;
-      const priorityB = statusPriority[b.status] || 5;
-      if (priorityA !== priorityB) return priorityA - priorityB;
-      return new Date(b.createdAt) - new Date(a.createdAt);
-    });
-
-    // Apply pagination after sorting
-    const paginatedMessages = sortedMessages.slice((page - 1) * limit, page * limit);
-
-    // Map to expected format
-    const formattedMessages = paginatedMessages.map(msg => ({
+    // Transform results
+    const data = results.map(msg => ({
       _id: msg._id,
       phoneNumber: msg.recipientPhoneNumber,
-      status: msg.status,
-      sentAt: msg.sentAt,
-      deliveredAt: msg.deliveredAt,
-      readAt: msg.readAt,
-      failedAt: msg.failedAt,
-      errorCode: msg.errorCode,
-      clickedAction: msg.clickedAction,
-      userText: msg.userText,
-      suggestionResponse: msg.suggestionResponse,
+      status: msg.status || 'unknown',
+      sentAt: msg.sentAt || null,
+      deliveredAt: msg.deliveredAt || null,
+      readAt: msg.readAt || null,
+      failedAt: msg.failedAt || null,
+      errorCode: msg.errorCode || null,
+      errorMessage: msg.errorMessage || null,
+      clickedAction: msg.clickedAction || null,
+      userText: msg.userText || null,
+      suggestionResponse: msg.suggestionResponse || null,
       interactions: msg.userClickCount || 0,
       replies: msg.userReplyCount || 0
     }));
 
     res.json({
       success: true,
-      data: formattedMessages,
-      pagination: { page, limit, total, pages: Math.ceil(total / limit) }
+      data,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
     });
   } catch (error) {
-    console.error('[Campaign] Get messages error:', error.message);
+    console.error('[Campaign] Get messages error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };

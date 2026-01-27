@@ -101,12 +101,13 @@ contactCampaignMessageSchema.index({ jioMessageId: 1 }, { sparse: true });
 contactCampaignMessageSchema.index({ rcsMessageId: 1 }, { sparse: true });
 
 // Indexes for campaign queries
-contactCampaignMessageSchema.index({ campaignId: 1, status: 1 });
-contactCampaignMessageSchema.index({ userId: 1, campaignId: 1 });
-contactCampaignMessageSchema.index({ status: 1, createdAt: 1 });
+contactCampaignMessageSchema.index({ userId: 1, createdAt: -1 });
+contactCampaignMessageSchema.index({ campaignId: 1, createdAt: -1 }); // Optimized for FLAT model
+contactCampaignMessageSchema.index({ "campaigns.campaignId": 1, createdAt: -1 }); // Optimized for NESTED model
+contactCampaignMessageSchema.index({ campaignId: 1, status: 1, createdAt: -1 });
+contactCampaignMessageSchema.index({ "campaigns.campaignId": 1, "campaigns.status": 1, createdAt: -1 });
 
 export default mongoose.model(
   "ContactCampaignMessage",
   contactCampaignMessageSchema
 );
-
