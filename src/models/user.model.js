@@ -480,7 +480,7 @@ userSchema.methods.blockBalanceForCampaign = async function (amount, campaignId)
 
   try {
     // Check available balance
-    const availableBalance = this.wallet.balance - (this.wallet.blockedBalance || 0);
+    const availableBalance = this.wallet.balance;
 
     if (availableBalance < amount) {
       throw new Error(`Insufficient balance. Available: ₹${availableBalance}, Required: ₹${amount}`);

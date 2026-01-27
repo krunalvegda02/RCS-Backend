@@ -61,6 +61,7 @@ export const createMasterCampaign = async (req, res) => {
     console.log(`[Campaign] 👤 User wallet before: Balance=₹${user.wallet.balance}, Blocked=₹${user.wallet.blockedBalance || 0}`);
     
     const availableBalance = user.wallet.balance;
+    
     if (availableBalance < estimatedCost) {
       return res.status(402).json({
         success: false,
