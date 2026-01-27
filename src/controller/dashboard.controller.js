@@ -10,19 +10,19 @@ import ContactCampaignMessage from '../models/contactMessage.model.js';
 export const getAdminDashboard = async (req, res) => {
   try {
     // Get all stats in parallel for better performance
-    const [users, walletRequests, recentTransactions, messageStats] = await Promise.all([
+    const [users, walletRequests, recentTransactions, globalStats] = await Promise.all([
       User.find({ role: 'USER' })
         .select('name email phone wallet isActive createdAt companyname')
         .sort({ createdAt: -1 })
         .lean(),
-      
+
       WalletRequest.find()
         .populate('userId', 'name email')
         .sort({ createdAt: -1 })
         .limit(10)
         .lean()
         .catch(() => []), // Handle case where WalletRequest collection doesn't exist
-      
+
       // Get recent transactions from all users
       User.aggregate([
         { $match: { 'wallet.transactions': { $exists: true, $ne: [] } } },
@@ -41,25 +41,25 @@ export const getAdminDashboard = async (req, res) => {
         { $sort: { createdAt: -1 } },
         { $limit: 10 }
       ]).catch(() => []),
-      
-      // Get message statistics
-      Message.aggregate([
+
+      // Get global campaign statistics
+      Campaign.aggregate([
         {
           $group: {
             _id: null,
-            totalMessages: { $sum: 1 },
-            totalCost: { $sum: '$cost' }
+            totalMessages: { $sum: '$stats.total' },
+            totalCost: { $sum: '$actualCost' }
           }
         }
-      ]).catch(() => [{ totalMessages: 0, totalCost: 0 }])
+      ])
     ]);
 
     // Calculate stats
     const stats = {
       totalUsers: users.length,
       activeUsers: users.filter(u => u.isActive).length,
-      totalMessages: messageStats[0]?.totalMessages || 0,
-      totalCost: messageStats[0]?.totalCost || 0,
+      totalMessages: globalStats[0]?.totalMessages || 0,
+      totalCost: globalStats[0]?.totalCost || 0,
       pendingRequests: walletRequests.filter(r => r.status === 'pending').length,
       totalTransactions: recentTransactions.length,
       totalWalletBalance: users.reduce((sum, u) => sum + (u.wallet?.balance || 0), 0)
@@ -69,7 +69,7 @@ export const getAdminDashboard = async (req, res) => {
     const recentUsers = users.slice(0, 10).map(user => {
       // Extract date from MongoDB ObjectId if createdAt is missing
       const createdDate = user.createdAt || new Date(parseInt(user._id.toString().substring(0, 8), 16) * 1000);
-      
+
       return {
         _id: user._id,
         name: user.name,
@@ -107,41 +107,31 @@ export const getUserDashboardStats = async (req, res) => {
   try {
     const { userId } = req.params;
 
-    const [campaigns, templates, messageStats] = await Promise.all([
+    const [campaignsCount, templatesCount, campaignAggStats] = await Promise.all([
       Campaign.countDocuments({ userId }),
       Template.countDocuments({ userId, isActive: true }),
-      ContactCampaignMessage.aggregate([
+      // OPTIMIZATION: Use Campaign aggregation instead of scanning millions of messages
+      Campaign.aggregate([
         { $match: { userId: new mongoose.Types.ObjectId(userId) } },
-        { $unwind: '$campaigns' },
         {
           $group: {
             _id: null,
-            totalMessages: { $sum: 1 },
-            totalSent: {
-              $sum: {
-                $cond: [{ $in: ['$campaigns.status', ['sent', 'delivered', 'read', 'replied']] }, 1, 0]
-              }
-            },
-            totalDelivered: {
-              $sum: {
-                $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0]
-              }
-            },
-            totalFailed: {
-              $sum: {
-                $cond: [{ $in: ['$campaigns.status', ['failed', 'bounced']] }, 1, 0]
-              }
-            },
-            totalCost: { $sum: { $ifNull: ['$campaigns.cost', 0] } }
+            totalMessages: { $sum: '$stats.total' },
+            totalSent: { $sum: '$stats.sent' },
+            totalDelivered: { $sum: '$stats.delivered' },
+            totalRead: { $sum: '$stats.read' },
+            totalFailed: { $sum: '$stats.failed' },
+            totalCost: { $sum: '$actualCost' }
           }
         }
       ])
     ]);
 
-    const stats = messageStats[0] || {
+    const stats = campaignAggStats[0] || {
       totalMessages: 0,
       totalSent: 0,
       totalDelivered: 0,
+      totalRead: 0,
       totalFailed: 0,
       totalCost: 0
     };
@@ -149,8 +139,8 @@ export const getUserDashboardStats = async (req, res) => {
     res.json({
       success: true,
       data: {
-        totalCampaigns: campaigns,
-        sendtoteltemplet: templates,
+        totalCampaigns: campaignsCount,
+        sendtoteltemplet: templatesCount,
         totalMessages: stats.totalMessages,
         totalSuccessCount: stats.totalSent,
         totalDelivered: stats.totalDelivered,
@@ -159,6 +149,7 @@ export const getUserDashboardStats = async (req, res) => {
       }
     });
   } catch (error) {
+    console.error('[Dashboard] Error fetching user stats:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch dashboard stats',
@@ -173,48 +164,17 @@ export const getUserRecentCampaigns = async (req, res) => {
     const { userId } = req.params;
     const limit = parseInt(req.query.limit) || 10;
 
+    // OPTIMIZATION: Use cached stats field in Campaign model directly
+    // This eliminates the need to aggregate millions of ContactCampaignMessage documents on every page load
     const campaigns = await Campaign.find({ userId })
       .populate('templateId', 'name templateType')
       .sort({ createdAt: -1 })
       .limit(limit)
       .lean();
 
-    // Get real-time stats for each campaign from ContactCampaignMessage (FLAT MODEL)
-    const campaignIds = campaigns.map(c => c._id);
-    const campaignStats = await ContactCampaignMessage.aggregate([
-      { $match: { campaignId: { $in: campaignIds } } },
-      {
-        $group: {
-          _id: '$campaignId',
-          total: { $sum: 1 },
-          sent: {
-            $sum: {
-              $cond: [{ $in: ['$status', ['sent', 'delivered', 'read', 'replied']] }, 1, 0]
-            }
-          },
-          delivered: {
-            $sum: {
-              $cond: [{ $in: ['$status', ['delivered', 'read', 'replied']] }, 1, 0]
-            }
-          },
-          failed: {
-            $sum: {
-              $cond: [{ $in: ['$status', ['failed', 'bounced']] }, 1, 0]
-            }
-          }
-        }
-      }
-    ]);
-
-    // Create a map for quick lookup
-    const statsMap = {};
-    campaignStats.forEach(stat => {
-      statsMap[stat._id.toString()] = stat;
-    });
-
-    // Transform campaigns with real-time stats
+    // Transform campaigns with cached stats
     const transformedCampaigns = campaigns.map(campaign => {
-      const stats = statsMap[campaign._id.toString()] || { total: 0, sent: 0, delivered: 0, failed: 0 };
+      const stats = campaign.stats || { total: 0, sent: 0, delivered: 0, failed: 0 };
       return {
         _id: campaign._id,
         CampaignName: campaign.name,
@@ -233,6 +193,7 @@ export const getUserRecentCampaigns = async (req, res) => {
       data: transformedCampaigns
     });
   } catch (error) {
+    console.error('[Dashboard] Error fetching recent campaigns:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch recent campaigns',
@@ -245,21 +206,22 @@ export const getUserRecentCampaigns = async (req, res) => {
 export const getAdminSummary = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
-    
+
     // Default to last 30 days if no dates provided
     const end = endDate ? new Date(endDate) : new Date();
     const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    
-    const [users, messages, campaigns, transactions] = await Promise.all([
+
+    // OPTIMIZATION: Use Campaign aggregate instead of Message (which doesn't exist)
+    const [users, campaignAgg, campaigns, transactions] = await Promise.all([
       User.find({ role: 'USER', createdAt: { $gte: start, $lte: end } }).lean(),
-      Message.aggregate([
+      Campaign.aggregate([
         { $match: { createdAt: { $gte: start, $lte: end } } },
         {
           $group: {
             _id: null,
-            totalMessages: { $sum: 1 },
-            totalCost: { $sum: '$cost' },
-            successCount: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] } }
+            totalMessages: { $sum: '$stats.total' },
+            totalCost: { $sum: '$actualCost' },
+            deliveredCount: { $sum: '$stats.delivered' }
           }
         }
       ]),
@@ -278,19 +240,19 @@ export const getAdminSummary = async (req, res) => {
       ])
     ]);
 
-    const messageStats = messages[0] || { totalMessages: 0, totalCost: 0, successCount: 0 };
+    const globalStats = campaignAgg[0] || { totalMessages: 0, totalCost: 0, deliveredCount: 0 };
     const transactionStats = transactions[0] || { totalAmount: 0, totalTransactions: 0 };
-    
+
     const summary = {
       totalAmount: transactionStats.totalAmount,
-      totalGrowth: '12.5%', // Calculate based on previous period
-      totalMessageCost: messageStats.totalMessages,
+      totalGrowth: '12.5%', // Calculate based on previous period placeholder
+      totalMessageCost: globalStats.totalMessages,
       messageGrowthCount: '8.3%',
       messageGrowthDirection: 'this month',
       activeUsers: users.filter(u => u.isActive).length,
       activeUserGrowth: '5.2%',
-      successRate: messageStats.totalMessages > 0 
-        ? `${((messageStats.successCount / messageStats.totalMessages) * 100).toFixed(1)}%`
+      successRate: globalStats.totalMessages > 0
+        ? `${((globalStats.deliveredCount / globalStats.totalMessages) * 100).toFixed(1)}%`
         : '0%'
     };
 
@@ -299,6 +261,7 @@ export const getAdminSummary = async (req, res) => {
       data: summary
     });
   } catch (error) {
+    console.error('Admin summary error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch admin summary',
@@ -312,13 +275,13 @@ export const getMonthlyAnalytics = async (req, res) => {
   try {
     const { userId } = req.params;
     const { months = 6 } = req.query;
-    
+
     const endDate = new Date();
     const startDate = new Date();
     startDate.setMonth(startDate.getMonth() - months);
 
-    // Get monthly message data
-    const messageData = await Message.aggregate([
+    // Get monthly message data from Campaigns
+    const campaignData = await Campaign.aggregate([
       { $match: { createdAt: { $gte: startDate, $lte: endDate } } },
       {
         $group: {
@@ -326,8 +289,8 @@ export const getMonthlyAnalytics = async (req, res) => {
             year: { $year: '$createdAt' },
             month: { $month: '$createdAt' }
           },
-          revenue: { $sum: '$cost' },
-          count: { $sum: 1 }
+          revenue: { $sum: '$actualCost' },
+          count: { $sum: '$stats.total' }
         }
       },
       { $sort: { '_id.year': 1, '_id.month': 1 } }
@@ -359,8 +322,8 @@ export const getMonthlyAnalytics = async (req, res) => {
 
     // Format data for charts
     const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    
-    const formattedMessageData = messageData.map(item => ({
+
+    const formattedMessageData = campaignData.map(item => ({
       month: monthNames[item._id.month - 1],
       revenue: item.revenue,
       count: item.count
@@ -392,12 +355,12 @@ export const getMonthlyAnalytics = async (req, res) => {
 export const getWeeklyAnalytics = async (req, res) => {
   try {
     const { userId } = req.params;
-    
+
     const endDate = new Date();
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - 7);
 
-    const weeklyData = await Message.aggregate([
+    const weeklyData = await Campaign.aggregate([
       { $match: { createdAt: { $gte: startDate, $lte: endDate } } },
       {
         $group: {
@@ -406,8 +369,8 @@ export const getWeeklyAnalytics = async (req, res) => {
             month: { $month: '$createdAt' },
             day: { $dayOfMonth: '$createdAt' }
           },
-          count: { $sum: 1 },
-          cost: { $sum: '$cost' }
+          count: { $sum: '$stats.total' },
+          cost: { $sum: '$actualCost' }
         }
       },
       { $sort: { '_id.year': 1, '_id.month': 1, '_id.day': 1 } }
