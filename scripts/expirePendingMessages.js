@@ -5,89 +5,113 @@ async function expirePendingMessages() {
   try {
     await connectDB();
     console.log('🔄 Starting pending message expiration job...');
+    console.log(`⏰ Current time: ${new Date().toISOString()}`);
 
     const ContactCampaignMessage = (await import('../src/models/contactMessage.model.js')).default;
     const Campaign = (await import('../src/models/campaign.model.js')).default;
 
-const sixHoursAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    console.log(`📅 Expiring messages older than: ${twoDaysAgo.toISOString()} (2 days ago)`);
 
-
-    // 1. Identify affected campaigns FIRST
-    const affectedCampaignIds = await ContactCampaignMessage.distinct('campaignId', {
-      status: { $in: ['pending', 'sent', 'draft'] },
-      createdAt: { $lt: sixHoursAgo }
-    });
-
-    console.log(`Found ${affectedCampaignIds.length} campaigns with stale messages`);
-
-    // 2. Expire the messages (flat model)
-    const result = await ContactCampaignMessage.updateMany(
+    // 1. Expire stale pending/sent messages
+    const expireResult = await ContactCampaignMessage.updateMany(
       {
-        status: { $in: ['pending', 'sent', 'draft'] },
-        createdAt: { $lt: sixHoursAgo }
+        status: { $in: ['pending', 'sent', 'draft', 'queued'] },
+        createdAt: { $lt: twoDaysAgo }
       },
       {
         $set: {
           status: 'expired',
           failedAt: new Date(),
           errorCode: 'TIMEOUT',
-          errorMessage: 'No webhook received within 5 minutes'
+          errorMessage: 'No webhook received within 2 days'
         }
       }
     );
 
-    console.log(`✅ Expired ${result.modifiedCount} messages older than 5 minutes`);
+    console.log(`✅ Expired ${expireResult.modifiedCount} messages older than 2 days`);
 
-    // 3. Get ALL completed campaigns that need settlement
-    const allCampaignsToSettle = await Campaign.find({
-      status: 'completed',
-      createdAt: { $lt: sixHoursAgo }
-    }).select('_id name status');
+    // 2. Find campaigns that need settlement
+    // NOTE: Campaigns with messages that were just expired in Step 1 will now have pending=0
+    // and will be settled in this run (no need to wait for next run)
+    const campaignsToSettle = await Campaign.find({
+      $or: [
+        { status: 'completed', createdAt: { $lt: twoDaysAgo } },
+        { status: { $in: ['pending', 'processing', 'running'] }, createdAt: { $lt: twoDaysAgo } }
+      ]
+    }).select('_id name status createdAt blockedAmount');
 
-    console.log(`Found ${allCampaignsToSettle.length} campaigns to check for settlement`);
+    console.log(`\n📊 Found ${campaignsToSettle.length} campaigns to check for settlement`);
 
-    // 4. Settle wallets and update campaign status
-    if (allCampaignsToSettle.length > 0) {
-      console.log('🔄 Settling campaigns and processing wallets...');
+    let settledCount = 0;
+    let skippedCount = 0;
+    let errorCount = 0;
 
-      for (const campaign of allCampaignsToSettle) {
-        try {
-          if (campaign.status === 'settled') {
-            console.log(`Campaign ${campaign._id} already settled, skipping`);
-            continue;
-          }
+    for (const campaign of campaignsToSettle) {
+      try {
+        console.log(`\n[Campaign ${campaign._id}] ${campaign.name}`);
+        console.log(`  Status: ${campaign.status}`);
+        console.log(`  Created: ${campaign.createdAt.toISOString()}`);
+        console.log(`  Blocked: ₹${campaign.blockedAmount || 0}`);
 
-          // Check if any pending messages remain
-          const pendingCount = await ContactCampaignMessage.countDocuments({
-            campaignId: campaign._id,
-            status: { $in: ['draft', 'queued', 'pending', 'sent'] }
-          });
-
-          const totalCount = await ContactCampaignMessage.countDocuments({
-            campaignId: campaign._id
-          });
-
-          console.log(`Campaign ${campaign._id}: ${pendingCount} pending out of ${totalCount} total`);
-
-          if (pendingCount === 0 && totalCount > 0) {
-            console.log(`✅ Settling campaign ${campaign._id}...`);
-            await campaign.completeCampaign();
-            console.log(`✅ Campaign ${campaign._id} settled successfully`);
-          } else if (totalCount === 0) {
-            console.log(`⚠️ Campaign ${campaign._id} has no messages, skipping`);
-          } else {
-            console.log(`Campaign ${campaign._id} still has ${pendingCount} pending messages`);
-          }
-        } catch (err) {
-          console.error(`❌ Error processing campaign ${campaign._id}:`, err.message);
+        // Skip if already settled
+        if (campaign.status === 'settled') {
+          console.log(`  ⏭️  Already settled, skipping`);
+          skippedCount++;
+          continue;
         }
+
+        // Check message status
+        const messageStats = await ContactCampaignMessage.aggregate([
+          { $match: { campaignId: campaign._id } },
+          {
+            $group: {
+              _id: null,
+              total: { $sum: 1 },
+              pending: { $sum: { $cond: [{ $in: ['$status', ['draft', 'queued', 'pending', 'sent']] }, 1, 0] } },
+              delivered: { $sum: { $cond: [{ $in: ['$status', ['delivered', 'read', 'replied']] }, 1, 0] } },
+              expired: { $sum: { $cond: [{ $eq: ['$status', 'expired'] }, 1, 0] } },
+              failed: { $sum: { $cond: [{ $in: ['$status', ['failed', 'bounced']] }, 1, 0] } }
+            }
+          }
+        ]);
+
+        const stats = messageStats[0] || { total: 0, pending: 0, delivered: 0, expired: 0, failed: 0 };
+        console.log(`  Messages: ${stats.total} total, ${stats.pending} pending, ${stats.delivered} delivered, ${stats.expired} expired, ${stats.failed} failed`);
+
+        // Settle if no pending messages OR campaign is old enough
+        if (stats.total === 0) {
+          console.log(`  ⚠️  No messages found, skipping`);
+          skippedCount++;
+          continue;
+        }
+
+        if (stats.pending === 0) {
+          console.log(`  ✅ No pending messages, settling campaign...`);
+          await campaign.completeCampaign();
+          console.log(`  ✅ Campaign settled successfully`);
+          settledCount++;
+        } else {
+          console.log(`  ⏳ Still has ${stats.pending} pending messages, will retry next run`);
+          skippedCount++;
+        }
+      } catch (err) {
+        console.error(`  ❌ Error processing campaign ${campaign._id}:`, err.message);
+        errorCount++;
       }
     }
+
+    console.log(`\n📈 Summary:`);
+    console.log(`  ✅ Settled: ${settledCount}`);
+    console.log(`  ⏭️  Skipped: ${skippedCount}`);
+    console.log(`  ❌ Errors: ${errorCount}`);
+    console.log(`\n✅ Job completed successfully`);
 
     await mongoose.connection.close();
     process.exit(0);
   } catch (error) {
-    console.error('❌ Error expiring pending messages:', error);
+    console.error('❌ Fatal error:', error);
+    await mongoose.connection.close();
     process.exit(1);
   }
 }
