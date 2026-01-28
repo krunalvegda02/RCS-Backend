@@ -39,7 +39,7 @@ async function expirePendingMessages() {
         { status: 'completed', createdAt: { $lt: twoDaysAgo } },
         { status: { $in: ['pending', 'processing', 'running'] }, createdAt: { $lt: twoDaysAgo } }
       ]
-    }).select('_id name status createdAt blockedAmount');
+    }).select('_id name status createdAt blockedAmount userId');
 
     console.log(`\n📊 Found ${campaignsToSettle.length} campaigns to check for settlement`);
 
