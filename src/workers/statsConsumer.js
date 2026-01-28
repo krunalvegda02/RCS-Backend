@@ -161,33 +161,39 @@ async function startStatsConsumer() {
           }
 
           if (newStatus) {
-            // Get current message status to check priority
-            const currentMsg = await ContactCampaignMessage.findOne({ messageId }).select('status').lean();
-            const currentPriority = currentMsg ? (statusPriority[currentMsg.status] || 0) : 0;
-            const newPriority = statusPriority[newStatus] || 0;
-
-            // Only update if new status has higher priority
-            if (newPriority >= currentPriority) {
-              bulkOps.push({
-                updateOne: {
-                  filter: { messageId },
-                  update: {
-                    $set: {
-                      status: newStatus,
-                      lastWebhookAt: timestamp,
-                      ...updateFields
-                    },
-                    $inc: {
-                      ...(webhookData.suggestionResponse && { userClickCount: 1 }),
-                      ...(webhookData.rawPayload?.entity?.text && { userReplyCount: 1 })
-                    }
-                  },
-                  upsert: false
-                }
-              });
-            } else {
-              console.log(`[StatsConsumer] Skipping ${messageId}: ${newStatus} (priority ${newPriority}) < current ${currentMsg?.status} (priority ${currentPriority})`);
+            const currentPriority = statusPriority[newStatus] || 0;
+            
+            // Build list of statuses that can be upgraded from
+            const upgradableStatuses = [];
+            for (const [status, priority] of Object.entries(statusPriority)) {
+              if (priority < currentPriority) {
+                upgradableStatuses.push(status);
+              }
             }
+            
+            bulkOps.push({
+              updateOne: {
+                filter: { 
+                  messageId,
+                  $or: [
+                    { status: { $exists: false } },
+                    { status: { $in: upgradableStatuses } }
+                  ]
+                },
+                update: {
+                  $set: {
+                    status: newStatus,
+                    lastWebhookAt: timestamp,
+                    ...updateFields
+                  },
+                  $inc: {
+                    ...(webhookData.suggestionResponse && { userClickCount: 1 }),
+                    ...(webhookData.rawPayload?.entity?.text && { userReplyCount: 1 })
+                  }
+                },
+                upsert: false
+              }
+            });
           }
         }
 
