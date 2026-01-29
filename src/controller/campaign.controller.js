@@ -886,9 +886,10 @@ export const getUserCampaignReports = async (req, res) => {
       .lean(); // Use lean() for performance
 
     console.log(`[Campaign] Found ${campaigns.length} campaigns for user ${userId}`);
+    // console.log(`[Campaign] Query:`, JSON.stringify(query));
 
     // Map campaigns to report format
-    const reports = campaigns.map(campaign => {
+    const transformedCampaigns = campaigns.map(campaign => {
       // Ensure stats object exists
       const stats = campaign.stats || {
         total: 0,
@@ -904,6 +905,18 @@ export const getUserCampaignReports = async (req, res) => {
       // Calculate RCS count (prefer explicit rcsCapableCount, fall back to stats or 0)
       const rcsCount = campaign.rcsCapableCount || stats.rcsCapable || 0;
 
+      // For non-settled campaigns: stats.read is cumulative (includes replied)
+      // For settled campaigns: stats.read is exact count, so we add replied
+      const isSettled = campaign.status === 'settled';
+      const totalDelivered = isSettled 
+        ? (stats.delivered || 0) + (stats.read || 0) + (stats.replied || 0)
+        : (stats.delivered || 0);
+      const totalRead = isSettled
+        ? (stats.read || 0) + (stats.replied || 0)
+        : (stats.read || 0);
+      
+      // console.log(`[Campaign] ${campaign.name} - status:${campaign.status}, read:${stats.read}, replied:${stats.replied}, totalRead:${totalRead}`);
+
       return {
         _id: campaign._id,
         CampaignName: campaign.name,
@@ -913,8 +926,8 @@ export const getUserCampaignReports = async (req, res) => {
         successCount: stats.sent || 0,
         failedCount: stats.failed || 0,
         expiredCount: stats.expired || 0,
-        totalDelivered: stats.delivered || 0,
-        totalRead: stats.read || 0,
+        totalDelivered,
+        totalRead,
         totalReplied: stats.replied || 0,
         userClickCount: stats.replied || 0, // Approximation if specific click count not in stats
         status: campaign.status,
@@ -962,7 +975,7 @@ export const getUserCampaignReports = async (req, res) => {
 
     res.json({
       success: true,
-      data: reports,
+      data: transformedCampaigns,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -976,7 +989,7 @@ export const getUserCampaignReports = async (req, res) => {
       }
     });
 
-    console.log('[Campaign] Optimized response sent with', reports.length, 'campaigns');
+    // console.log('[Campaign] Optimized response sent with', reports.length, 'campaigns');
   } catch (error) {
     console.error('[Campaign] Error fetching user campaigns:', error);
     res.status(500).json({
