@@ -905,15 +905,11 @@ export const getUserCampaignReports = async (req, res) => {
       // Calculate RCS count (prefer explicit rcsCapableCount, fall back to stats or 0)
       const rcsCount = campaign.rcsCapableCount || stats.rcsCapable || 0;
 
-      // For non-settled campaigns: stats.read is cumulative (includes replied)
-      // For settled campaigns: stats.read is exact count, so we add replied
-      const isSettled = campaign.status === 'settled';
-      const totalDelivered = isSettled 
-        ? (stats.delivered || 0) + (stats.read || 0) + (stats.replied || 0)
-        : (stats.delivered || 0);
-      const totalRead = isSettled
-        ? (stats.read || 0) + (stats.replied || 0)
-        : (stats.read || 0);
+      // stats.delivered already includes ['delivered', 'read', 'replied']
+      // stats.read already includes ['read', 'replied']
+      // stats.replied is just ['replied']
+      const totalDelivered = stats.delivered || 0; // Already includes all delivered statuses
+      const totalRead = stats.read || 0; // Already includes read and replied
       
       // console.log(`[Campaign] ${campaign.name} - status:${campaign.status}, read:${stats.read}, replied:${stats.replied}, totalRead:${totalRead}`);
 
@@ -954,10 +950,10 @@ export const getUserCampaignReports = async (req, res) => {
       {
         $group: {
           _id: null,
-          totalSent: { $sum: { $add: [{ $ifNull: ['$stats.delivered', 0] }, { $ifNull: ['$stats.failed', 0] }] } },
-          totalDelivered: { $sum: { $ifNull: ['$stats.delivered', 0] } },
-          totalFailed: { $sum: { $ifNull: ['$stats.failed', 0] } },
-          totalExpired: { $sum: { $ifNull: ['$stats.expired', 0] } }
+          totalSent: { $sum: '$stats.sent' },
+          totalDelivered: { $sum: '$stats.delivered' }, // Already includes delivered, read, replied
+          totalFailed: { $sum: '$stats.failed' },
+          totalExpired: { $sum: '$stats.expired' }
         }
       }
     ]);

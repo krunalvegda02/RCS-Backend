@@ -10,6 +10,7 @@ import dashboardRoutes from './dashboard.routes.js';
 import analyticsRoutes from './analytics.routes.js';
 import walletRequestRoutes from './walletRequest.routes.js';
 import contactCheckingRoutes from './contactChecking.routes.js';
+import demoRequestRoutes from './demoRequest.routes.js';
 import * as CampaignController from '../controller/campaign.controller.js';
 import { authenticateToken, requireUser, requireAdmin } from '../middlewares/auth.middleware.js';
 
@@ -41,6 +42,7 @@ router.use('/dashboard', dashboardRoutes);
 router.use('/analytics', analyticsRoutes);
 router.use('/wallet', walletRequestRoutes);
 router.use('/contact-checking', contactCheckingRoutes);
+router.use('/demo-requests', demoRequestRoutes);
 
 router.use('/webhooks', webhookRoutes);
 

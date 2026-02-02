@@ -120,6 +120,7 @@ export const getUserDashboardStats = async (req, res) => {
             totalSent: { $sum: '$stats.sent' },
             totalDelivered: { $sum: '$stats.delivered' },
             totalRead: { $sum: '$stats.read' },
+            totalReplied: { $sum: '$stats.replied' },
             totalFailed: { $sum: '$stats.failed' },
             totalCost: { $sum: '$actualCost' }
           }
@@ -132,9 +133,13 @@ export const getUserDashboardStats = async (req, res) => {
       totalSent: 0,
       totalDelivered: 0,
       totalRead: 0,
+      totalReplied: 0,
       totalFailed: 0,
       totalCost: 0
     };
+
+    // stats.totalDelivered already includes delivered, read, and replied
+    const actualDelivered = stats.totalDelivered || 0;
 
     res.json({
       success: true,
@@ -142,8 +147,8 @@ export const getUserDashboardStats = async (req, res) => {
         totalCampaigns: campaignsCount,
         sendtoteltemplet: templatesCount,
         totalMessages: stats.totalMessages,
-        totalSuccessCount: stats.totalSent,
-        totalDelivered: stats.totalDelivered,
+        totalSuccessCount: actualDelivered,
+        totalDelivered: actualDelivered,
         totalFailedCount: stats.totalFailed,
         totalCost: stats.totalCost
       }
@@ -174,7 +179,9 @@ export const getUserRecentCampaigns = async (req, res) => {
 
     // Transform campaigns with cached stats
     const transformedCampaigns = campaigns.map(campaign => {
-      const stats = campaign.stats || { total: 0, sent: 0, delivered: 0, failed: 0 };
+      const stats = campaign.stats || { total: 0, sent: 0, delivered: 0, read: 0, replied: 0, failed: 0 };
+      // stats.delivered already includes delivered, read, and replied
+      const actualDelivered = stats.delivered || 0;
       return {
         _id: campaign._id,
         CampaignName: campaign.name,
@@ -182,7 +189,7 @@ export const getUserRecentCampaigns = async (req, res) => {
         cost: stats.total,
         successCount: stats.sent,
         failedCount: stats.failed,
-        totalDelivered: stats.delivered,
+        totalDelivered: actualDelivered,
         status: campaign.status,
         createdAt: campaign.createdAt
       };

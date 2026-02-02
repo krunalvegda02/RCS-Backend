@@ -250,9 +250,9 @@ campaignSchema.methods.completeCampaign = async function () {
         $group: {
           _id: null,
           total: { $sum: 1 },
-          sent: { $sum: { $cond: [{ $eq: ['$status', 'sent'] }, 1, 0] } },
-          delivered: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] } },
-          read: { $sum: { $cond: [{ $eq: ['$status', 'read'] }, 1, 0] } },
+          sent: { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read', 'replied', 'failed']] }, 1, 0] } },
+          delivered: { $sum: { $cond: [{ $in: ['$status', ['delivered', 'read', 'replied']] }, 1, 0] } },
+          read: { $sum: { $cond: [{ $in: ['$status', ['read', 'replied']] }, 1, 0] } },
           replied: { $sum: { $cond: [{ $eq: ['$status', 'replied'] }, 1, 0] } },
           expired: { $sum: { $cond: [{ $eq: ['$status', 'expired'] }, 1, 0] } },
           failed: { $sum: { $cond: [{ $in: ['$status', ['failed', 'bounced']] }, 1, 0] } },
@@ -265,6 +265,16 @@ campaignSchema.methods.completeCampaign = async function () {
 
     const deliveryStats = stats[0] || { total: 0, sent: 0, delivered: 0, read: 0, replied: 0, expired: 0, failed: 0, deliveredTotal: 0 };
     console.log(`[SettleCampaign] Campaign: ${this.name}`);
+    console.log(`[SettleCampaign] Raw stats from DB:`, deliveryStats);
+    console.log(`[SettleCampaign] Stats breakdown:`);
+    console.log(`  - Total messages: ${deliveryStats.total}`);
+    console.log(`  - Sent: ${deliveryStats.sent}`);
+    console.log(`  - Delivered (status=delivered): ${deliveryStats.delivered}`);
+    console.log(`  - Read (status=read OR replied): ${deliveryStats.read}`);
+    console.log(`  - Replied (status=replied): ${deliveryStats.replied}`);
+    console.log(`  - Expired: ${deliveryStats.expired}`);
+    console.log(`  - Failed: ${deliveryStats.failed}`);
+    console.log(`  - Total Delivered (for billing): ${deliveryStats.deliveredTotal}`);
     console.log(`[SettleCampaign] Stats: total=${deliveryStats.total}, delivered=${deliveryStats.deliveredTotal}, expired=${deliveryStats.expired}, failed=${deliveryStats.failed}`);
 
     // 2. Calculate costs
