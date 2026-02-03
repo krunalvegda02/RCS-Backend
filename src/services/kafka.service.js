@@ -44,6 +44,10 @@ const dbProducer = kafka.producer({
 });
 
 
+
+
+
+
 // Consumer for processing webhook events
 const consumer = kafka.consumer({
   groupId: `webhook-processor-${process.env.NODE_ENV || 'dev'}`,
@@ -61,6 +65,10 @@ let connectingPromise = null;
 let statsConnectingPromise = null;
 let dbConnectingPromise = null;
 
+
+
+
+
 export async function connectProducer() {
   if (producerConnected) return;
   if (connectingPromise) return connectingPromise;
@@ -73,6 +81,10 @@ export async function connectProducer() {
 
   return connectingPromise;
 }
+
+
+
+
 
 export async function sendWebhookToKafka(webhookData) {
   await connectProducer();
@@ -88,6 +100,12 @@ export async function sendWebhookToKafka(webhookData) {
 
   return { success: true };
 }
+
+
+
+
+
+
 
 // 🔥 FIX: Batch message buffer for producer
 let messageBuffer = [];
@@ -135,6 +153,11 @@ export async function sendStatsToKafka(data, isBatch = false) {
     console.error('[Kafka] Stats producer error:', error.message);
   }
 }
+
+
+
+
+
 
 async function flushStatsBuffer() {
   if (bufferTimer) {

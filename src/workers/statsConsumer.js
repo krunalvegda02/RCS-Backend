@@ -45,6 +45,8 @@ async function startStatsConsumer() {
     await consumer.run({
       partitionsConsumedConcurrently: 1,
       eachBatchAutoResolve: false,
+
+      
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
         const startTime = Date.now();
         const messages = batch.messages;
@@ -238,14 +240,14 @@ async function startStatsConsumer() {
 
 
 
-        // Sync campaign stats
+        // Sync campaign stats (including settled campaigns to keep data accurate)
         if (affectedCampaigns.size > 0) {
           console.log(`[StatsConsumer] Syncing ${affectedCampaigns.size} campaigns`);
           await Promise.all(
             Array.from(affectedCampaigns).map(async (campaignId) => {
               try {
                 const campaign = await Campaign.findById(campaignId);
-                if (campaign && campaign.status !== 'settled') {
+                if (campaign) {
                   await campaign.syncStats();
                 }
               } catch (err) {
