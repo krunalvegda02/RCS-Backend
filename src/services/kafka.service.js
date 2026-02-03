@@ -1,5 +1,7 @@
 import { Kafka } from 'kafkajs';
 
+
+// Kafka Client Setup-----
 const kafka = new Kafka({
   clientId: 'rcs-webhook-service',
   brokers: [process.env.KAFKA_BROKER || 'localhost:9092'],
@@ -13,10 +15,16 @@ const kafka = new Kafka({
   }
 });
 
+
+
+
+
+
+
 const producer = kafka.producer({
   allowAutoTopicCreation: false,
   maxInFlightRequests: 5,
-  idempotent: false,
+  idempotent: false,          // to prevent processing on old data 
   transactionalId: undefined
 });
 
@@ -27,6 +35,7 @@ const statsProducer = kafka.producer({
   transactionalId: undefined
 });
 
+
 const dbProducer = kafka.producer({
   allowAutoTopicCreation: false,
   maxInFlightRequests: 10,
@@ -34,6 +43,8 @@ const dbProducer = kafka.producer({
   transactionalId: undefined
 });
 
+
+// Consumer for processing webhook events
 const consumer = kafka.consumer({
   groupId: `webhook-processor-${process.env.NODE_ENV || 'dev'}`,
   sessionTimeout: 120000, // 2 minutes - increased for slow MongoDB
@@ -148,19 +159,28 @@ async function flushStatsBuffer() {
   }
 }
 
+
+//. Helper funciton to connect  consumer with detailed error handling
 export async function connectConsumer() {
   try {
     console.log('[Consumer] Attempting to connect to Kafka...');
+   
     await consumer.connect();
     console.log('[Consumer] Connected successfully');
 
     console.log('[Consumer] Subscribing to webhook-events topic...');
+   
     await consumer.subscribe({
       topic: 'webhook-events',
-      fromBeginning: false
+      fromBeginning: false // Start from latest messages
     });
+   
     console.log('✅ Kafka Consumer connected and subscribed');
+   
+   
     return consumer;
+
+
   } catch (error) {
     console.error('❌ Consumer connection failed:');
     console.error('Error type:', error.constructor.name);
