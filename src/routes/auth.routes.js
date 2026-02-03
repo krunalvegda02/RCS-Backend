@@ -1,6 +1,7 @@
 import express from 'express';
 import * as AuthController from '../controller/auth.controller.js';
 import * as UserReportController from '../controller/userReport.controller.js';
+import * as PendingUsersController from '../controller/pendingUsers.controller.js';
 import { authenticateToken, requireAdmin } from '../middlewares/auth.middleware.js';
 
 const router = express.Router();
@@ -30,5 +31,8 @@ router.post('/admin/cleanup-blocked/:userId', authenticateToken, requireAdmin, A
 router.post('/admin/cleanup-all-blocked', authenticateToken, requireAdmin, AuthController.cleanupAllBlockedBalances);
 router.put('/admin/toggle-status/:userId', authenticateToken, requireAdmin, AuthController.toggleUserStatus);
 router.post('/admin/unlock-account/:userId', authenticateToken, requireAdmin, AuthController.unlockUserAccount);
+router.get('/admin/pending-users', authenticateToken, requireAdmin, PendingUsersController.getPendingUsers);
+router.post('/admin/approve-user/:userId', authenticateToken, requireAdmin, PendingUsersController.approveUser);
+router.delete('/admin/reject-user/:userId', authenticateToken, requireAdmin, PendingUsersController.rejectUser);
 
 export default router;

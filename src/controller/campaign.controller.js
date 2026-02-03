@@ -1003,11 +1003,9 @@ export const getAllForAdmin = async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
 
-    if (Array.isArray(search)) {
-      search = search[0];
-    }
+    if (Array.isArray(search)) search = search[0];
 
-    // Only show master campaigns or standalone campaigns (hide sub-campaigns)
+    // Build query - only show master campaigns or standalone campaigns
     let query = {
       $or: [
         { isMaster: true },
@@ -1015,196 +1013,112 @@ export const getAllForAdmin = async (req, res) => {
         { masterCampaignId: { $exists: false } }
       ]
     };
-    if (status) query.status = status;
 
-    // Date range filter
-    if (startDate && endDate) {
-      query.createdAt = {
-        $gte: new Date(startDate),
-        $lte: new Date(endDate)
-      };
+    if (status && status !== 'all') {
+      query.status = status === 'processing' ? { $in: ['processing', 'running'] } : status;
     }
 
-    let templateIds = [];
-    if (type) {
-      const Template = (await import('../models/template.model.js')).default;
+    if (startDate && endDate) {
+      query.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate) };
+    }
+
+    // Type filter
+    if (type && type !== 'all') {
       const matchingTemplates = await Template.find({ templateType: type }).select('_id');
-      templateIds = matchingTemplates.map(t => t._id);
+      const templateIds = matchingTemplates.map(t => t._id);
       if (templateIds.length > 0) {
         query.templateId = { $in: templateIds };
       } else {
         return res.json({
           success: true,
           data: [],
-          pagination: {
-            page,
-            limit,
-            total: 0,
-            pages: 0,
-            totalCampaigns: 0,
-            totalDelivered: 0,
-            totalFailed: 0
-          },
+          pagination: { page, limit, total: 0, pages: 0, totalSent: 0, totalDelivered: 0, totalFailed: 0, totalExpired: 0 }
         });
       }
+    }
+
+    // Search filter in MongoDB
+    if (search && search.trim()) {
+      query.$or = [{ name: { $regex: search.trim(), $options: 'i' } }];
     }
 
     const sortOrder = sort === 'oldest' ? 1 : -1;
+    const total = await Campaign.countDocuments(query);
 
-    // Get all campaigns matching basic filters
-    let allCampaigns = await Campaign.find(query)
+    // Get paginated campaigns with lean() for performance
+    const campaigns = await Campaign.find(query)
       .populate('templateId', 'name templateType')
       .populate('userId', 'name email')
-      .sort({ createdAt: sortOrder });
+      .sort({ createdAt: sortOrder })
+      .limit(limit)
+      .skip((page - 1) * limit)
+      .select('name status stats estimatedCost actualCost createdAt rcsCapableCount')
+      .lean();
 
-    // Apply search filter
-    if (search) {
-      const searchLower = String(search).toLowerCase();
-      allCampaigns = allCampaigns.filter(c => {
-        const matchName = c.name?.toLowerCase().includes(searchLower);
-        const matchUserName = c.userId?.name?.toLowerCase().includes(searchLower);
-        const matchUserEmail = c.userId?.email?.toLowerCase().includes(searchLower);
-        const matchId = c._id.toString().toLowerCase().includes(searchLower);
-        return matchName || matchUserName || matchUserEmail || matchId;
-      });
-    }
-
-    // Apply user filter
+    // Apply user filter if provided
+    let filteredCampaigns = campaigns;
     if (user) {
-      allCampaigns = allCampaigns.filter(c => c.userId?.name === user);
+      filteredCampaigns = campaigns.filter(c => c.userId?.name === user);
     }
 
-    // Apply pagination
-    const total = allCampaigns.length;
-    const startIndex = (page - 1) * limit;
-    const paginatedCampaigns = allCampaigns.slice(startIndex, startIndex + limit);
-
-    // Sync master campaign stats before returning
-    await Promise.all(
-      paginatedCampaigns.map(async (c) => {
-        if (c.isMaster) {
-          console.log(`[Campaign] Admin syncing stats for master campaign: ${c.name}`);
-          await c.syncMasterStats();
-        }
-        return Promise.resolve();
-      })
-    );
-
-    // Get available campaign IDs (Master + Standalone)
-    const campaignIds = paginatedCampaigns.map(c => c._id);
-
-    // For Master Campaigns, we need to find their Sub-Campaigns to aggregate stats correctly
-    const masterCampaignIds = paginatedCampaigns.filter(c => c.isMaster).map(c => c._id);
-    const subCampaignMap = {}; // MasterID -> [SubID1, SubID2...]
-    let allCampaignIdsForAgg = [...campaignIds];
-
-    if (masterCampaignIds.length > 0) {
-      // Import Campaign model if not available (though it should be locally available as 'Campaign' usually or via mongoose)
-      // Assuming 'Campaign' variable from line 936 is available or we use mongoose.model
-      const SubCampaignModel = mongoose.model('Campaign');
-      const subCampaigns = await SubCampaignModel.find({ masterCampaignId: { $in: masterCampaignIds } }).select('_id masterCampaignId');
-
-      subCampaigns.forEach(sub => {
-        const masterIdStr = sub.masterCampaignId.toString();
-        if (!subCampaignMap[masterIdStr]) subCampaignMap[masterIdStr] = [];
-        subCampaignMap[masterIdStr].push(sub._id.toString());
-        allCampaignIdsForAgg.push(sub._id);
-      });
-    }
-
-    // Aggregate stats for ALL relevant campaigns (Masters, Standalone, AND Sub-Campaigns)
-    const campaignStatsAgg = await ContactCampaignMessage.aggregate([
-      { $match: { 'campaigns.campaignId': { $in: allCampaignIdsForAgg } } },
-      { $unwind: '$campaigns' },
-      { $match: { 'campaigns.campaignId': { $in: allCampaignIdsForAgg } } },
-      {
-        $group: {
-          _id: '$campaigns.campaignId',
-          totalDelivered: { $sum: { $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0] } },
-          totalFailed: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'failed'] }, 1, 0] } },
-          totalExpired: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'expired'] }, 1, 0] } }
-        }
-      }
-    ]);
-
-    // Create stats map
-    const statsMap = {};
-    campaignStatsAgg.forEach(stat => {
-      statsMap[stat._id.toString()] = {
-        totalDelivered: stat.totalDelivered || 0,
-        totalFailed: stat.totalFailed || 0,
-        totalExpired: stat.totalExpired || 0
+    // Transform campaigns
+    const transformedCampaigns = filteredCampaigns.map(campaign => {
+      const stats = campaign.stats || { total: 0, sent: 0, delivered: 0, read: 0, replied: 0, failed: 0, expired: 0 };
+      return {
+        _id: campaign._id,
+        CampaignName: campaign.name,
+        type: campaign.templateId?.templateType || 'RCS',
+        cost: stats.total || 0,
+        rcsCapableCount: campaign.rcsCapableCount || stats.rcsCapable || 0,
+        successCount: stats.sent || 0,
+        failedCount: stats.failed || 0,
+        expiredCount: stats.expired || 0,
+        totalDelivered: stats.delivered || 0,
+        totalRead: stats.read || 0,
+        totalReplied: stats.replied || 0,
+        userClickCount: stats.replied || 0,
+        status: campaign.status,
+        createdAt: campaign.createdAt,
+        userId: campaign.userId,
+        actualCost: campaign.actualCost || 0,
+        estimatedCost: campaign.estimatedCost || 0
       };
     });
 
-    // Get universal stats by aggregating from ContactCampaignMessage
-    const universalStatsResult = await ContactCampaignMessage.aggregate([
-      { $unwind: '$campaigns' },
+    // Aggregate stats using Campaign collection stats field
+    const aggregationQuery = { ...query };
+    const statsAggregation = await Campaign.aggregate([
+      { $match: aggregationQuery },
       {
         $group: {
           _id: null,
-          totalSent: { $sum: { $cond: [{ $in: ['$campaigns.status', ['sent', 'delivered', 'read', 'replied', 'failed']] }, 1, 0] } },
-          totalDelivered: { $sum: { $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0] } },
-          totalFailed: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'failed'] }, 1, 0] } },
-          totalExpired: { $sum: { $cond: [{ $eq: ['$campaigns.status', 'expired'] }, 1, 0] } }
+          totalSent: { $sum: '$stats.sent' },
+          totalDelivered: { $sum: '$stats.delivered' },
+          totalFailed: { $sum: '$stats.failed' },
+          totalExpired: { $sum: '$stats.expired' }
         }
       }
     ]);
 
-    const universalStats = universalStatsResult[0] || { totalSent: 0, totalDelivered: 0, totalFailed: 0, totalExpired: 0 };
-    universalStats.totalCampaigns = total;
-
-    const transformedCampaigns = paginatedCampaigns.map(campaign => {
-      const campaignObj = campaign.toObject ? campaign.toObject() : campaign;
-      const campaignIdStr = campaignObj._id.toString();
-
-      let stats = { totalDelivered: 0, totalFailed: 0, totalExpired: 0 };
-
-      // If Master Campaign, sum up Sub-Campaign stats
-      if (campaignObj.isMaster && subCampaignMap[campaignIdStr]) {
-        subCampaignMap[campaignIdStr].forEach(subId => {
-          const subStats = statsMap[subId] || { totalDelivered: 0, totalFailed: 0, totalExpired: 0 };
-          stats.totalDelivered += subStats.totalDelivered;
-          stats.totalFailed += subStats.totalFailed;
-          stats.totalExpired += subStats.totalExpired;
-        });
-      } else {
-        // Standalone or direct match
-        stats = statsMap[campaignIdStr] || stats;
-      }
-
-      return {
-        _id: campaignObj._id,
-        CampaignName: campaignObj.name,
-        type: campaignObj.templateId?.templateType,
-        cost: campaignObj.stats?.total || 0,
-        successCount: campaignObj.stats?.sent || 0,
-        failedCount: stats.totalFailed,
-        expiredCount: stats.totalExpired,
-        totalDelivered: stats.totalDelivered,
-        status: campaignObj.status,
-        createdAt: campaignObj.createdAt,
-        userId: campaignObj.userId
-      };
-    });
+    const aggregateStats = statsAggregation[0] || { totalSent: 0, totalDelivered: 0, totalFailed: 0, totalExpired: 0 };
 
     res.json({
       success: true,
       data: transformedCampaigns,
       pagination: {
-        page,
-        limit,
+        page: parseInt(page),
+        limit: parseInt(limit),
         total,
         pages: Math.ceil(total / limit),
-        ...universalStats
-      },
+        totalSent: aggregateStats.totalSent,
+        totalDelivered: aggregateStats.totalDelivered,
+        totalFailed: aggregateStats.totalFailed,
+        totalExpired: aggregateStats.totalExpired
+      }
     });
   } catch (error) {
     console.error('[Campaign] Admin get all error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -1351,11 +1265,9 @@ export const getAllCampaignsForExport = async (req, res) => {
     const isAdmin = req.user.role === 'admin' || req.user.role === 'ADMIN';
     const { userId } = req.params;
 
-    if (Array.isArray(search)) {
-      search = search[0];
-    }
+    if (Array.isArray(search)) search = search[0];
 
-    // Only show master campaigns or standalone campaigns (hide sub-campaigns)
+    // Build query - only show master campaigns or standalone campaigns
     let query = {
       $or: [
         { isMaster: true },
@@ -1364,36 +1276,26 @@ export const getAllCampaignsForExport = async (req, res) => {
       ]
     };
 
-    // If not admin or userId is provided, filter by userId
+    // Filter by userId
     if (!isAdmin) {
       query.userId = requestUserId;
     } else if (userId && userId !== 'all') {
       query.userId = userId;
     }
-    // If admin and no userId or userId is 'all', don't filter by userId (get all campaigns)
 
-    if (status) query.status = status;
-
-    // Date range filter
+    if (status && status !== 'all') query.status = status;
     if (startDate && endDate) {
-      query.createdAt = {
-        $gte: new Date(startDate),
-        $lte: new Date(endDate)
-      };
+      query.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate) };
     }
 
-    if (type) {
-      const Template = (await import('../models/template.model.js')).default;
+    // Type filter
+    if (type && type !== 'all') {
       const matchingTemplates = await Template.find({ templateType: type }).select('_id');
       const templateIds = matchingTemplates.map(t => t._id);
       if (templateIds.length > 0) {
         query.templateId = { $in: templateIds };
       } else {
-        return res.json({
-          success: true,
-          data: [],
-          total: 0
-        });
+        return res.json({ success: true, data: [], total: 0 });
       }
     }
 
@@ -1403,14 +1305,15 @@ export const getAllCampaignsForExport = async (req, res) => {
       .populate('templateId', 'name templateType')
       .populate('userId', 'name email')
       .sort({ createdAt: sortOrder })
+      .select('name status stats createdAt')
       .lean();
 
-    // Filter by user name if provided (admin only)
+    // Apply user filter if admin
     if (isAdmin && user) {
       campaigns = campaigns.filter(c => c.userId?.name === user);
     }
 
-    // Filter by search
+    // Apply search filter
     if (search) {
       const searchLower = String(search).toLowerCase();
       campaigns = campaigns.filter(c =>
@@ -1424,7 +1327,7 @@ export const getAllCampaignsForExport = async (req, res) => {
     const transformedCampaigns = campaigns.map(campaign => ({
       _id: campaign._id,
       CampaignName: campaign.name,
-      type: campaign.templateId?.templateType,
+      type: campaign.templateId?.templateType || 'RCS',
       cost: campaign.stats?.total || 0,
       successCount: campaign.stats?.sent || 0,
       failedCount: campaign.stats?.failed || 0,
@@ -1441,10 +1344,7 @@ export const getAllCampaignsForExport = async (req, res) => {
     });
   } catch (error) {
     console.error('[Campaign] Export all campaigns error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 

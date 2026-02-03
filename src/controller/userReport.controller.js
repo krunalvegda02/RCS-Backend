@@ -1,13 +1,59 @@
 import User from '../models/user.model.js';
 import Campaign from '../models/campaign.model.js';
 import ContactCampaignMessage from '../models/contactMessage.model.js';
+import mongoose from 'mongoose';
 
 export const getUserReport = async (req, res) => {
   try {
     const { userId } = req.params;
     const { campaignPage = 1, transactionPage = 1, campaignLimit = 5, transactionLimit = 5 } = req.query;
 
-    const user = await User.findById(userId).select('+jioConfig.clientSecret');
+    // Parallel execution for better performance
+    const [
+      user,
+      totalCampaigns,
+      campaigns,
+      campaignStatsAgg
+    ] = await Promise.all([
+      // Get user with minimal fields (exclude heavy transactions array)
+      User.findById(userId)
+        .select('name email phone companyname role isActive isVerified createdAt lastLogin wallet.balance wallet.blockedBalance wallet.currency jioConfig stats')
+        .lean(),
+      
+      // Count total campaigns
+      Campaign.countDocuments({ userId }),
+      
+      // Get paginated campaigns with minimal fields
+      Campaign.find({ userId })
+        .select('name status stats actualCost createdAt templateId rcsCapableCount')
+        .populate('templateId', 'templateType')
+        .sort({ createdAt: -1 })
+        .limit(parseInt(campaignLimit))
+        .skip((parseInt(campaignPage) - 1) * parseInt(campaignLimit))
+        .lean(),
+      
+      // Get campaign statistics using aggregation (faster than fetching all campaigns)
+      Campaign.aggregate([
+        { $match: { userId: new mongoose.Types.ObjectId(userId) } },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: 1 },
+            completed: { $sum: { $cond: [{ $in: ['$status', ['completed', 'settled']] }, 1, 0] } },
+            running: { $sum: { $cond: [{ $in: ['$status', ['running', 'processing', 'pending']] }, 1, 0] } },
+            failed: { $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] } },
+            totalRecipients: { $sum: '$stats.total' },
+            totalCost: { $sum: '$actualCost' },
+            totalSent: { $sum: '$stats.sent' },
+            totalDelivered: { $sum: '$stats.delivered' },
+            totalFailed: { $sum: '$stats.failed' },
+            totalRead: { $sum: '$stats.read' },
+            totalReplied: { $sum: '$stats.replied' }
+          }
+        }
+      ])
+    ]);
+
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -15,120 +61,62 @@ export const getUserReport = async (req, res) => {
       });
     }
 
-    // Get campaigns with pagination
-    const campaignsQuery = Campaign.find({ userId })
-      .populate('templateId', 'name templateType')
-      .sort({ createdAt: -1 });
-    
-    const totalCampaigns = await Campaign.countDocuments({ userId });
-    const campaigns = await campaignsQuery
-      .limit(parseInt(campaignLimit))
-      .skip((parseInt(campaignPage) - 1) * parseInt(campaignLimit))
-      .lean();
-
-    // Get campaign IDs for message statistics
-    const campaignIds = campaigns.map(c => c._id);
-
-    // Get message statistics using ContactCampaignMessage
-    const campaignMessageStats = await ContactCampaignMessage.aggregate([
-      { $match: { userId: user._id, 'campaigns.campaignId': { $in: campaignIds } } },
-      { $unwind: '$campaigns' },
-      { $match: { 'campaigns.campaignId': { $in: campaignIds } } },
-      {
-        $group: {
-          _id: '$campaigns.campaignId',
-          read: { $sum: { $cond: [{ $ne: ['$campaigns.readAt', null] }, 1, 0] } },
-          replied: { $sum: { $cond: [{ $or: [{ $eq: ['$campaigns.status', 'replied'] }, { $gt: ['$campaigns.userReplyCount', 0] }] }, 1, 0] } },
-        }
-      }
-    ]);
-
-    const statsMap = {};
-    campaignMessageStats.forEach(stat => {
-      statsMap[stat._id.toString()] = { read: stat.read, replied: stat.replied };
-    });
-
-    // Get overall message statistics using ContactCampaignMessage
-    const messageStats = await ContactCampaignMessage.aggregate([
-      { $match: { userId: user._id } },
-      { $unwind: '$campaigns' },
-      {
-        $group: {
-          _id: null,
-          totalSent: { $sum: 1 },
-          delivered: { $sum: { $cond: [{ $in: ['$campaigns.status', ['delivered', 'read', 'replied']] }, 1, 0] } },
-          failed: { $sum: { $cond: [{ $in: ['$campaigns.status', ['failed', 'bounced']] }, 1, 0] } },
-          read: { $sum: { $cond: [{ $ne: ['$campaigns.readAt', null] }, 1, 0] } },
-          replied: { $sum: { $cond: [{ $or: [{ $eq: ['$campaigns.status', 'replied'] }, { $gt: ['$campaigns.userReplyCount', 0] }] }, 1, 0] } },
-          totalInteractions: { $sum: '$campaigns.userClickCount' },
-          totalReplies: { $sum: '$campaigns.userReplyCount' }
-        }
-      }
-    ]);
-
-    const stats = messageStats[0] || {
-      totalSent: 0,
-      delivered: 0,
+    const campaignStats = campaignStatsAgg[0] || {
+      total: 0,
+      completed: 0,
+      running: 0,
       failed: 0,
-      read: 0,
-      replied: 0,
+      totalRecipients: 0,
+      totalCost: 0,
+      totalSent: 0,
+      totalDelivered: 0,
+      totalFailed: 0,
+      totalRead: 0,
+      totalReplied: 0
+    };
+
+    // Use aggregated stats from campaigns instead of querying ContactCampaignMessage
+    const messageStats = {
+      totalSent: campaignStats.totalSent,
+      delivered: campaignStats.totalDelivered,
+      failed: campaignStats.totalFailed,
+      read: campaignStats.totalRead,
+      replied: campaignStats.totalReplied,
       totalInteractions: 0,
       totalReplies: 0
     };
 
-    // Campaign statistics
-    const allCampaigns = await Campaign.find({ userId }).lean();
-    const campaignStats = {
-      total: allCampaigns.length,
-      completed: allCampaigns.filter(c => c.status === 'completed').length,
-      running: allCampaigns.filter(c => c.status === 'running').length,
-      failed: allCampaigns.filter(c => c.status === 'failed').length,
-      totalRecipients: allCampaigns.reduce((sum, c) => sum + (c.stats?.total || 0), 0),
-      totalCost: allCampaigns.reduce((sum, c) => sum + (c.actualCost || 0), 0)
-    };
+    // Format campaigns
+    const formattedCampaigns = campaigns.map(c => ({
+      _id: c._id,
+      name: c.name,
+      type: c.templateId?.templateType || 'RCS',
+      status: c.status,
+      recipients: c.stats?.total || 0,
+      rcsCapable: c.rcsCapableCount || 0,
+      sent: c.stats?.sent || 0,
+      delivered: c.stats?.delivered || 0,
+      failed: c.stats?.failed || 0,
+      read: c.stats?.read || 0,
+      replied: c.stats?.replied || 0,
+      createdAt: c.createdAt
+    }));
 
-    // Format campaigns with stats
-    const formattedCampaigns = campaigns.map(c => {
-      const campaignStats = statsMap[c._id.toString()] || { read: 0, replied: 0 };
-      const delivered = (c.stats?.delivered || 0) + campaignStats.read;
-      return {
-        _id: c._id,
-        name: c.name,
-        type: c.templateId?.templateType,
-        status: c.status,
-        recipients: c.stats?.total || 0,
-        sent: c.stats?.sent || 0,
-        delivered: delivered,
-        failed: c.stats?.failed || 0,
-        read: campaignStats.read,
-        replied: campaignStats.replied,
-        createdAt: c.createdAt
-      };
-    });
+    // Get transactions separately and paginated from User collection
+    const userWithTransactions = await User.findById(userId)
+      .select('wallet.transactions')
+      .lean();
 
-    // Wallet transactions with pagination
-    const totalTransactions = user.wallet.transactions?.length || 0;
+    const allTransactions = userWithTransactions?.wallet?.transactions || [];
+    const totalTransactions = allTransactions.length;
     const startIdx = (parseInt(transactionPage) - 1) * parseInt(transactionLimit);
     const endIdx = startIdx + parseInt(transactionLimit);
-    const paginatedTransactions = (user.wallet.transactions || [])
+    const paginatedTransactions = allTransactions
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
       .slice(startIdx, endIdx);
 
-    // Wallet info
-    const walletInfo = {
-      balance: user.wallet.balance,
-      blockedBalance: user.wallet.blockedBalance || 0,
-      availableBalance: user.getAvailableBalance(),
-      currency: user.wallet.currency,
-      totalTransactions,
-      transactions: paginatedTransactions,
-      transactionPagination: {
-        page: parseInt(transactionPage),
-        limit: parseInt(transactionLimit),
-        total: totalTransactions,
-        pages: Math.ceil(totalTransactions / parseInt(transactionLimit))
-      }
-    };
+    // Calculate available balance
+    const availableBalance = (user.wallet?.balance || 0);
 
     res.json({
       success: true,
@@ -150,8 +138,21 @@ export const getUserReport = async (req, res) => {
             assistantId: user.jioConfig?.assistantId || ''
           }
         },
-        wallet: walletInfo,
-        messageStats: stats,
+        wallet: {
+          balance: user.wallet?.balance || 0,
+          blockedBalance: user.wallet?.blockedBalance || 0,
+          availableBalance,
+          currency: user.wallet?.currency || 'INR',
+          totalTransactions,
+          transactions: paginatedTransactions,
+          transactionPagination: {
+            page: parseInt(transactionPage),
+            limit: parseInt(transactionLimit),
+            total: totalTransactions,
+            pages: Math.ceil(totalTransactions / parseInt(transactionLimit))
+          }
+        },
+        messageStats,
         campaignStats,
         campaigns: formattedCampaigns,
         campaignPagination: {
@@ -160,7 +161,7 @@ export const getUserReport = async (req, res) => {
           total: totalCampaigns,
           pages: Math.ceil(totalCampaigns / parseInt(campaignLimit))
         },
-        userStats: user.stats
+        userStats: user.stats || {}
       }
     });
   } catch (error) {

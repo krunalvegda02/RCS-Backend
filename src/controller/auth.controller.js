@@ -542,12 +542,13 @@ export const getAllUsers = async (req, res) => {
       ];
     }
 
-    // Select only essential fields, exclude heavy data like transactions
+    // Use lean() to bypass toJSON and get raw data including clientSecret
     const users = await User.find(query)
-      .select('name email phone companyname role isActive isVerified wallet.balance wallet.currency createdAt lastLogin')
+      .select('name email phone companyname role isActive isVerified wallet.balance wallet.currency jioConfig createdAt lastLogin')
       .sort({ createdAt: -1 })
       .limit(limit * 1)
-      .skip((page - 1) * limit);
+      .skip((page - 1) * limit)
+      .lean();
 
     const total = await User.countDocuments(query);
 
