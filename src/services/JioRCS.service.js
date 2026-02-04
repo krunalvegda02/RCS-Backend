@@ -2,7 +2,6 @@ import axios from 'axios';
 import http from 'http';
 import https from 'https';
 
-import MessageLog from '../models/messageLog.model.js';
 import User from '../models/user.model.js';
 
 const JIOAPI_BASE_URL =
@@ -41,6 +40,58 @@ class JioRCSService {
     } catch (error) {
       console.error('[RCS] Failed to get access token:', error.message);
       throw new Error('Failed to authenticate with Jio API');
+    }
+  }
+
+  // ===================== SEND MESSAGE =====================
+  async sendMessage(phoneNumber, templateId, userId) {
+    try {
+      const Template = (await import('../models/template.model.js')).default;
+      
+      const user = await User.findById(userId).select('+jioConfig.clientSecret');
+      if (!user || !user.jioConfig?.isConfigured) {
+        throw new Error('Jio RCS not configured');
+      }
+
+      const template = await Template.findById(templateId);
+      if (!template || !template.isActive) {
+        throw new Error('Template not found or inactive');
+      }
+
+      const token = await this.getAccessToken(userId);
+      const formattedPhone = this.formatPhone(phoneNumber);
+      const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const assistantId = user.jioConfig.assistantId;
+
+      const payload = template.generatePayload();
+      const url = `${JIOAPI_BASE_URL}/v1/messaging/users/${formattedPhone}/assistantMessages/async?messageId=${messageId}&assistantId=${assistantId}`;
+
+      const response = await axios.post(
+        url,
+        {
+          messageTrafficType: "PROMOTION",
+          content: payload.content
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 15000
+        }
+      );
+
+      await template.incrementUsage();
+
+      return {
+        success: true,
+        messageId,
+        phoneNumber: formattedPhone,
+        templateType: template.templateType
+      };
+    } catch (error) {
+      console.error('[RCS] Send message failed:', error.message);
+      throw new Error(error.response?.data?.message || 'Failed to send message');
     }
   }
 

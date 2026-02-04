@@ -35,6 +35,7 @@ export const approveUser = async (req, res) => {
       { 
         isVerified: true,
         isActive: true,
+        onboardingStatus: 'VERIFIED',
         'wallet.balance': walletBalance
       },
       { new: true }

@@ -1,4 +1,4 @@
-import { uploadOnCloudinary, handleCloudinaryError } from '../utils/cloudinary.js';
+import { uploadOnCloudinary, handleCloudinaryError, UPLOAD_CONFIG } from '../utils/cloudinary.js';
 
 export const uploadFile = async (req, res) => {
   try {
@@ -9,10 +9,10 @@ export const uploadFile = async (req, res) => {
     console.log('[Upload] req.files:', req.files);
     console.log('[Upload] req.body:', req.body);
     console.log('[Upload] ========== REQUEST END ==========');
-    
+
     // Handle both single file and files array
     const file = req.file || (req.files && req.files[0]);
-    
+
     if (!file) {
       console.error('[Upload] No file found in request');
       return res.status(400).json({
@@ -24,11 +24,18 @@ export const uploadFile = async (req, res) => {
     console.log('[Upload] File found:', file.originalname);
     console.log('[Upload] File path:', file.path);
     console.log('[Upload] Uploading to Cloudinary...');
-    
+
+    // Determine folder based on type
+    const uploadType = req.body.type || req.query.type || 'templates';
+    const folder = UPLOAD_CONFIG.CLOUDINARY_FOLDERS[uploadType] || UPLOAD_CONFIG.CLOUDINARY_FOLDERS.templates;
+
+    console.log(`[Upload] Uploading to folder: ${folder} (type: ${uploadType})`);
+
     const result = await uploadOnCloudinary(file.path, {
-      folder: 'rcs-templates',
+      folder: folder,
       quality: 'auto:eco',
-      flags: 'progressive'
+      flags: 'progressive',
+      access_mode: 'public'
     });
 
     console.log('[Upload] Success:', result.secure_url);
@@ -36,7 +43,8 @@ export const uploadFile = async (req, res) => {
       success: true,
       data: {
         url: result.secure_url,
-        publicId: result.public_id
+        publicId: result.public_id,
+        folder: folder
       }
     });
   } catch (error) {

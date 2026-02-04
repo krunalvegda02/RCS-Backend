@@ -1,12 +1,14 @@
 import express from 'express';
 import * as TemplateController from '../controller/template.controller.js';
 import { authenticateToken, requireUser } from '../middlewares/auth.middleware.js';
+import { requireOnboarded } from '../middlewares/onboarding.middleware.js';
 import { cacheMiddleware } from '../middlewares/cache.middleware.js';
 
 const router = express.Router();
 
 router.use(authenticateToken);
 router.use(requireUser);
+router.use(requireOnboarded);
 
 router.post('/', TemplateController.create);
 router.get('/', cacheMiddleware, TemplateController.getAll);

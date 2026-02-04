@@ -5,6 +5,14 @@ import crypto from 'crypto';
 const ENCRYPTION_KEY = process.env.PASSWORD_ENCRYPTION_KEY || 'Z9a8xM2kP7Lq1dFhR3CwdwdwdWnA5Se'; // Must be 32 characters
 const IV_LENGTH = 16;
 
+// Onboarding Status Enum
+const ONBOARDING_STATUS = {
+  PENDING_ONBOARDING: 'PENDING_ONBOARDING',
+  ONBOARDING_SUBMITTED: 'ONBOARDING_SUBMITTED',
+  VERIFIED: 'VERIFIED',
+  REJECTED: 'REJECTED'
+};
+
 function encryptPassword(password) {
   const iv = crypto.randomBytes(IV_LENGTH);
   const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY.padEnd(32, '0').slice(0, 32)), iv);
@@ -81,6 +89,44 @@ const userSchema = new mongoose.Schema(
     isVerified: {
       type: Boolean,
       default: false,
+    },
+
+    // Onboarding Status Tracking
+    onboardingStatus: {
+      type: String,
+      enum: Object.values(ONBOARDING_STATUS),
+      default: 'PENDING_ONBOARDING',
+      index: true,
+    },
+
+    // Onboarding Details (submitted by user)
+    onboardingData: {
+      companyName: { type: String, trim: true },
+      brandName: { type: String, trim: true },
+      businessEmail: { type: String, trim: true, lowercase: true },
+      businessPhone: { type: String, trim: true },
+      industry: { type: String, trim: true },
+      companyAddress: { type: String, trim: true },
+      website: { type: String, trim: true },
+
+
+      gstNumber: { type: String, trim: true, uppercase: true },
+      registrationCertificateUrl: { type: String, trim: true },
+      brandLogoUrl: { type: String, trim: true },
+      companyBannerUrl: { type: String, trim: true },
+      
+      submittedAt: { type: Date },
+    },
+
+    // Admin Review Details
+    reviewDetails: {
+      reviewedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      },
+      reviewedAt: { type: Date },
+      rejectionReason: { type: String, trim: true },
+      adminNotes: { type: String, trim: true },
     },
 
     // Jio RCS Configuration
@@ -682,7 +728,14 @@ userSchema.statics.findByEmailOrPhone = function (identifier) {
   }).select('+password');
 };
 
-userSchema.statics.createUser = async function (userData) {
+userSchema.statics.createUser = async function (userData, createdByAdmin = false) {
+  // If created by admin, set status to VERIFIED but keep inactive
+  if (createdByAdmin) {
+    userData.onboardingStatus = 'VERIFIED';
+    userData.isVerified = true;
+    userData.isActive = true;
+  }
+
   const user = new this(userData);
   await user.save();
 
@@ -708,4 +761,6 @@ userSchema.methods.toJSON = function () {
   return userObject;
 };
 
-export default mongoose.model('User', userSchema);
+const User = mongoose.model('User', userSchema);
+export { ONBOARDING_STATUS };
+export default User;

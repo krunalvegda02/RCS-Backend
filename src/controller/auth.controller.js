@@ -5,19 +5,19 @@ import jwt from 'jsonwebtoken';
 const generateTokens = (userId) => {
   try {
     console.log('Generating tokens for user ID:', userId);
-    
+
     const accessToken = jwt.sign({ userId }, process.env.JWT_SECRET, {
       expiresIn: process.env.JWT_EXPIRES_IN || '15m',
     });
-    
+
     const refreshToken = jwt.sign({ userId }, process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET, {
       expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
     });
-    
+
     // Verify the token contains correct user ID
     const decoded = jwt.verify(accessToken, process.env.JWT_SECRET);
     console.log('Token contains user ID:', decoded.userId);
-    
+
     return { accessToken, refreshToken };
   } catch (error) {
     console.error('Token generation error:', error);
@@ -53,7 +53,7 @@ export const login = async (req, res) => {
       const hours = Math.floor(lockTimeRemaining / 60);
       const minutes = lockTimeRemaining % 60;
       const timeMessage = hours > 0 ? `${hours} hour${hours > 1 ? 's' : ''} ${minutes} minute${minutes !== 1 ? 's' : ''}` : `${minutes} minute${minutes !== 1 ? 's' : ''}`;
-      
+
       return res.status(423).json({
         success: false,
         message: `Account is locked due to too many failed login attempts. Please try again after ${timeMessage}.`,
@@ -74,7 +74,7 @@ export const login = async (req, res) => {
     console.log('[Login] Comparing password for user:', user.email);
     console.log('[Login] Password from request:', password ? '***' : 'EMPTY');
     console.log('[Login] Encrypted password from DB:', user.password ? 'EXISTS' : 'MISSING');
-    
+
     const isPasswordValid = await user.comparePassword(password);
     console.log('[Login] Password comparison result:', isPasswordValid);
 
@@ -102,6 +102,7 @@ export const login = async (req, res) => {
       success: true,
       message: 'Login successful',
       user: userResponse,
+      onboardingStatus: refreshedUser.onboardingStatus,
       access_token: accessToken,
       token: accessToken, // Add this for frontend compatibility
       refresh_token: refreshToken,
@@ -162,13 +163,14 @@ export const register = async (req, res) => {
       success: true,
       message: 'User registered successfully',
       user,
+      onboardingStatus: 'PENDING_ONBOARDING',
       access_token: accessToken,
       token: accessToken, // Add this for frontend compatibility
       refresh_token: refreshToken,
     });
   } catch (error) {
     console.error('Registration error:', error);
-    
+
     if (error.code === 11000) {
       const field = Object.keys(error.keyPattern)[0];
       return res.status(409).json({
@@ -196,7 +198,7 @@ export const register = async (req, res) => {
 export const getProfile = async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
-    
+
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -252,7 +254,7 @@ export const updateProfile = async (req, res) => {
     });
   } catch (error) {
     console.error('Update profile error:', error);
-    
+
     if (error.code === 11000) {
       const field = Object.keys(error.keyPattern)[0];
       return res.status(409).json({
@@ -307,11 +309,11 @@ export const updatePassword = async (req, res) => {
     }
 
     console.log('User found, comparing passwords...');
-    
+
     // Verify current password
     const isPasswordValid = await user.comparePassword(currentPassword);
     console.log('Password comparison result:', isPasswordValid);
-    
+
     if (!isPasswordValid) {
       return res.status(401).json({
         success: false,
@@ -396,7 +398,7 @@ export const createUser = async (req, res) => {
       };
     }
 
-    const user = await User.createUser(userData);
+    const user = await User.createUser(userData, true);
 
     res.status(201).json({
       success: true,
@@ -405,7 +407,7 @@ export const createUser = async (req, res) => {
     });
   } catch (error) {
     console.error('Create user error:', error);
-    
+
     if (error.code === 11000) {
       const field = Object.keys(error.keyPattern)[0];
       return res.status(409).json({
@@ -500,7 +502,7 @@ export const updateUser = async (req, res) => {
     });
   } catch (error) {
     console.error('Update user error:', error);
-    
+
     if (error.code === 11000) {
       const field = Object.keys(error.keyPattern)[0];
       return res.status(409).json({
@@ -532,7 +534,7 @@ export const getAllUsers = async (req, res) => {
     const query = { role: { $ne: 'ADMIN' } }; // Exclude admin users
     if (role) query.role = role;
     if (isActive !== undefined) query.isActive = isActive === 'true';
-    
+
     if (search) {
       query.$or = [
         { name: { $regex: search, $options: 'i' } },
@@ -656,7 +658,7 @@ export const getUserTransactionHistory = async (req, res) => {
     const transactions = user.wallet.transactions || [];
     // Sort by most recent first
     const sortedTransactions = transactions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    
+
     const total = sortedTransactions.length;
     const startIndex = (page - 1) * limit;
     const endIndex = startIndex + parseInt(limit);
@@ -709,7 +711,7 @@ export const refreshToken = async (req, res) => {
 
     // Verify refresh token
     const decoded = jwt.verify(refresh_token, process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET);
-    
+
     // Find user
     const user = await User.findById(decoded.userId);
     if (!user || !user.isActive) {
@@ -792,7 +794,7 @@ export const updateJioConfig = async (req, res) => {
 export const getJioConfig = async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
-    
+
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -871,7 +873,7 @@ export const updateWallet = async (req, res) => {
 export const cleanupUserBlockedBalance = async (req, res) => {
   try {
     const { userId } = req.params;
-    
+
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({
@@ -919,7 +921,7 @@ export const cleanupAllBlockedBalances = async (req, res) => {
 export const toggleUserStatus = async (req, res) => {
   try {
     const { userId } = req.params;
-    
+
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({
@@ -950,7 +952,7 @@ export const toggleUserStatus = async (req, res) => {
 export const unlockUserAccount = async (req, res) => {
   try {
     const { userId } = req.params;
-    
+
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({

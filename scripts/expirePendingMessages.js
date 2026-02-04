@@ -10,14 +10,14 @@ async function expirePendingMessages() {
     const ContactCampaignMessage = (await import('../src/models/contactMessage.model.js')).default;
     const Campaign = (await import('../src/models/campaign.model.js')).default;
 
-    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
-    console.log(`📅 Expiring messages older than: ${twoDaysAgo.toISOString()} (2 days ago)`);
+    const oneDaysAgo = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
+    console.log(`📅 Expiring messages older than: ${oneDaysAgo.toISOString()} (2 days ago)`);
 
     // 1. Expire stale pending/sent messages
     const expireResult = await ContactCampaignMessage.updateMany(
       {
         status: { $in: ['pending', 'sent', 'draft', 'queued'] },
-        createdAt: { $lt: twoDaysAgo }
+        createdAt: { $lt: oneDaysAgo }
       },
       {
         $set: {
@@ -36,8 +36,8 @@ async function expirePendingMessages() {
     // and will be settled in this run (no need to wait for next run)
     const campaignsToSettle = await Campaign.find({
       $or: [
-        { status: 'completed', createdAt: { $lt: twoDaysAgo } },
-        { status: { $in: ['pending', 'processing', 'running'] }, createdAt: { $lt: twoDaysAgo } }
+        { status: 'completed', createdAt: { $lt: oneDaysAgo } },
+        { status: { $in: ['pending', 'processing', 'running'] }, createdAt: { $lt: oneDaysAgo } }
       ]
     }).select('_id name status createdAt blockedAmount userId');
 

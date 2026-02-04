@@ -2,6 +2,7 @@ import express from 'express';
 import * as CampaignController from '../controller/campaign.controller.js';
 import * as SubCampaignController from '../controller/subCampaign.controller.js';
 import { authenticateToken, requireUser, requireAdmin, checkWalletBalance } from '../middlewares/auth.middleware.js';
+import { requireOnboarded } from '../middlewares/onboarding.middleware.js';
 import { cacheMiddleware } from '../middlewares/cache.middleware.js';
 
 const router = express.Router();
@@ -15,6 +16,7 @@ router.get('/admin/campaigns', authenticateToken, requireAdmin, cacheMiddleware,
 // All other campaign routes require authentication and user role
 router.use(authenticateToken);
 router.use(requireUser);
+router.use(requireOnboarded);
 
 // Check RCS capability for batch of numbers
 router.post('/check-capability', CampaignController.checkCapability);

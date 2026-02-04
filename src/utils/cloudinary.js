@@ -123,6 +123,10 @@ export const uploadOnCloudinary = async (
         // Folder organization
         folder: options.folder || UPLOAD_CONFIG.CLOUDINARY_FOLDERS.templates,
 
+        // Public access
+        access_mode: 'public',
+        type: 'upload',
+
         // Versioning for cache busting
         version: true,
 

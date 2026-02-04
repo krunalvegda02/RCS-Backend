@@ -64,6 +64,7 @@ import { authenticateToken } from "./middlewares/auth.middleware.js";
 import { sendWebhookToKafka } from "./services/kafka.service.js";
 
 app.use("/api/v1", router);
+app.use("/api", router);
 app.use("/api/realtime", authenticateToken, realtimeRoutes);
 
 // Webhook counter
