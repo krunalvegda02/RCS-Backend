@@ -301,6 +301,16 @@ campaignSchema.methods.completeCampaign = async function () {
           'wallet.balance': refundAmount, // Add refund (blocked - actual)
           'wallet.blockedBalance': -blockedAmount // Release all blocked amount
         },
+        $push: {
+          'wallet.transactions': {
+            type: 'debit',
+            amount: actualCost,
+            balanceAfter: user.wallet.balance + refundAmount,
+            description: `Campaign "${this.name}" settled - ${deliveryStats.deliveredTotal} messages delivered`,
+            processedBy: null,
+            createdAt: new Date()
+          }
+        },
         $set: { 'wallet.lastUpdated': new Date() }
       });
 
@@ -309,6 +319,7 @@ campaignSchema.methods.completeCampaign = async function () {
       console.log(`[SettleCampaign] ✅ Wallet settled: Charged ₹${actualCost} for ${deliveryStats.deliveredTotal} delivered messages`);
       console.log(`[SettleCampaign] ✅ Refunded ₹${refundAmount} for ${deliveryStats.failed + deliveryStats.expired} undelivered messages`);
       console.log(`[SettleCampaign] ✅ Net balance change: +₹${refundAmount} (released ₹${blockedAmount} - charged ₹${actualCost})`);
+      console.log(`[SettleCampaign] ✅ Transaction record added to wallet history`);
     } else {
       console.log(`[SettleCampaign] No blocked amount to settle`);
     }
