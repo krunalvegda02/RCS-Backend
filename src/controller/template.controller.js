@@ -1,5 +1,6 @@
 import Template from '../models/template.model.js';
 import { validateTemplateContent } from '../utils/validators.js';
+import { deleteFromCloudinary } from '../utils/cloudinary.js';
 
 // Create new template
 export const create = async (req, res) => {
@@ -152,16 +153,34 @@ export const deleteTemplate = async (req, res) => {
     const { id } = req.params;
     const userId = req.user._id;
 
-    const template = await Template.findOneAndDelete({
-      _id: id,
-      userId,
-    });
+    const template = await Template.findOne({ _id: id, userId });
 
     if (!template) {
       return res.status(404).json({
         success: false,
         message: 'Template not found',
       });
+    }
+
+    // Extract media URLs from template content
+    const mediaUrls = [];
+    
+    if (template.templateType === 'richCard' && template.content?.media?.url) {
+      mediaUrls.push(template.content.media.url);
+    } else if (template.templateType === 'carousel' && template.content?.cards) {
+      template.content.cards.forEach(card => {
+        if (card.media?.url) mediaUrls.push(card.media.url);
+      });
+    }
+
+    // Delete template from database
+    await Template.findByIdAndDelete(id);
+
+    // Delete media files from Cloudinary
+    if (mediaUrls.length > 0) {
+      for (const url of mediaUrls) {
+        await deleteFromCloudinary(url);
+      }
     }
 
     res.json({

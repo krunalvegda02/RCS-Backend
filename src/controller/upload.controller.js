@@ -1,4 +1,4 @@
-import { uploadOnCloudinary, handleCloudinaryError, UPLOAD_CONFIG } from '../utils/cloudinary.js';
+import { uploadOnCloudinary, deleteFromCloudinary, handleCloudinaryError, UPLOAD_CONFIG } from '../utils/cloudinary.js';
 
 export const uploadFile = async (req, res) => {
   try {
@@ -51,5 +51,31 @@ export const uploadFile = async (req, res) => {
     console.error('[Upload] Error:', error);
     const errorResponse = handleCloudinaryError(error);
     res.status(errorResponse.statusCode || 500).json(errorResponse);
+  }
+};
+
+export const deleteFile = async (req, res) => {
+  try {
+    const { url } = req.body;
+
+    if (!url) {
+      return res.status(400).json({
+        success: false,
+        message: 'URL is required'
+      });
+    }
+
+    await deleteFromCloudinary(url);
+
+    res.json({
+      success: true,
+      message: 'File deleted successfully'
+    });
+  } catch (error) {
+    console.error('[Delete] Error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to delete file'
+    });
   }
 };
