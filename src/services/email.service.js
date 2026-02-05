@@ -848,6 +848,24 @@ const templates = {
         </p>
       `
     })
+  }),
+
+  adminNewApplication: (userName, userEmail, companyName) => ({
+    subject: `New Application: ${userName}`,
+    html: baseTemplate({
+      title: 'New User Application',
+      subtitle: 'Action required',
+      body: `
+        <p>A new user has submitted their onboarding application:</p>
+        <div style="margin:24px 0;padding:24px;background:#f8fafc;border-radius:12px;border:2px solid ${BRAND.colors.border}">
+          <p><strong>Name:</strong> ${userName}</p>
+          <p><strong>Email:</strong> ${userEmail}</p>
+          <p><strong>Company:</strong> ${companyName || 'Not specified'}</p>
+          <p><strong>Submitted:</strong> ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}</p>
+        </div>
+        <p>Please review their application in the admin panel.</p>
+      `
+    })
   })
 };
 
@@ -897,9 +915,13 @@ export const sendAccountRejectedEmail = (email, name, reason) =>
 export const sendDemoScheduledEmail = (email, name, date, time, company) =>
   sendEmail(email, 'demoScheduled', { name, date, time, company });
 
+export const sendAdminNewApplicationEmail = (userName, userEmail, companyName) =>
+  sendEmail(ADMIN_EMAIL, 'adminNewApplication', { userName, userEmail, companyName });
+
 export default {
   sendEmail,
   sendOnboardingSubmittedEmail,
+  sendAdminNewApplicationEmail,
   sendAccountApprovedEmail,
   sendAccountRejectedEmail,
   sendDemoScheduledEmail
