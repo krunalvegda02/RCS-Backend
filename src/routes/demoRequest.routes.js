@@ -7,5 +7,6 @@ const router = express.Router();
 router.post('/', DemoRequestController.createDemoRequest);
 router.get('/', authenticateToken, requireAdmin, DemoRequestController.getAllDemoRequests);
 router.patch('/:id/status', authenticateToken, requireAdmin, DemoRequestController.updateDemoRequestStatus);
+router.patch('/:id', authenticateToken, requireAdmin, DemoRequestController.updateDemoRequest);
 
 export default router;

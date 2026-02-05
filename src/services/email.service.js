@@ -821,7 +821,7 @@ const templates = {
     })
   }),
 
-  demoScheduled: (name, date, time, company) => ({
+  demoScheduled: (name, date, time, company, meetingLink) => ({
     subject: 'Your RCSsender Demo is Confirmed',
     html: baseTemplate({
       title: 'Demo Confirmed',
@@ -839,9 +839,21 @@ const templates = {
           <p><strong>Company:</strong> ${company || '—'}</p>
         </div>
 
-        <p>
-          The meeting link will be shared 15 minutes before the session.
+        ${meetingLink ? `
+        <center>
+          <a href="${meetingLink}"
+             style="display:inline-block;background:${BRAND.colors.gradient};color:white;padding:16px 44px;border-radius:10px;font-weight:700;text-decoration:none;margin:20px 0">
+            Join Meeting →
+          </a>
+        </center>
+        <p style="text-align:center;font-size:12px;color:${BRAND.colors.textTertiary}">
+          Meeting Link: <a href="${meetingLink}" style="color:${BRAND.colors.primary}">${meetingLink}</a>
         </p>
+        ` : `
+        <p style="text-align:center;color:${BRAND.colors.textSecondary}">
+          The meeting link will be shared soon.
+        </p>
+        `}
 
         <p style="margin-top:24px">
           — Team RCSsender
@@ -912,8 +924,8 @@ export const sendAccountApprovedEmail = (email, name) =>
 export const sendAccountRejectedEmail = (email, name, reason) =>
   sendEmail(email, 'accountRejected', { name, reason });
 
-export const sendDemoScheduledEmail = (email, name, date, time, company) =>
-  sendEmail(email, 'demoScheduled', { name, date, time, company });
+export const sendDemoScheduledEmail = (email, name, date, time, company, meetingLink) =>
+  sendEmail(email, 'demoScheduled', { name, date, time, company, meetingLink });
 
 export const sendAdminNewApplicationEmail = (userName, userEmail, companyName) =>
   sendEmail(ADMIN_EMAIL, 'adminNewApplication', { userName, userEmail, companyName });

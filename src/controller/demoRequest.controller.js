@@ -13,7 +13,8 @@ export const createDemoRequest = async (req, res) => {
       name: req.body.name,
       date: req.body.date,
       time: req.body.time,
-      company: req.body.company
+      company: req.body.company,
+      meetingLink: req.body.meetingLink
     });
 
     // Send notification to admin
@@ -51,5 +52,33 @@ export const updateDemoRequestStatus = async (req, res) => {
     res.status(200).json({ message: 'Status updated', data: demoRequest });
   } catch (error) {
     res.status(500).json({ message: 'Failed to update status', error: error.message });
+  }
+};
+
+export const updateDemoRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { meetingLink, date, time, timezone } = req.body;
+    
+    const demoRequest = await DemoRequest.findByIdAndUpdate(
+      id,
+      { meetingLink, date, time, timezone },
+      { new: true }
+    );
+
+    // Send updated schedule email to user
+    if (meetingLink || date || time) {
+      await sendEmail(demoRequest.email, 'demoScheduled', {
+        name: demoRequest.name,
+        date: date || demoRequest.date,
+        time: time || demoRequest.time,
+        company: demoRequest.company,
+        meetingLink: meetingLink || demoRequest.meetingLink
+      });
+    }
+
+    res.status(200).json({ message: 'Schedule updated successfully', data: demoRequest });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to update schedule', error: error.message });
   }
 };

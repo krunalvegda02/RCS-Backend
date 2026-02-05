@@ -17,6 +17,7 @@ router.put('/profile', authenticateToken, AuthController.updateProfile);
 router.put('/update-password', authenticateToken, AuthController.updatePassword);
 router.put('/jio-config', authenticateToken, AuthController.updateJioConfig);
 router.get('/jio-config', authenticateToken, AuthController.getJioConfig);
+router.get('/user/my-report', authenticateToken, UserReportController.getMyReport);
 
 // Admin routes
 router.post('/admin/create-user', authenticateToken, requireAdmin, AuthController.createUser);
