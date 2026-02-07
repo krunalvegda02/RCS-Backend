@@ -39,7 +39,11 @@ module.exports = {
         JIO_SECRET_ID: '6927fac2a34077bfc4bd45a2',
         JIO_ASSISTANT_ID: '6927fac2a34077bfc4bd45a2',
         NODE_OPTIONS: '--max-old-space-size=2048',
-        KAFKAJS_NO_PARTITIONER_WARNING: '1'
+        KAFKAJS_NO_PARTITIONER_WARNING: '1',
+        RAZORPAY_KEY_ID:'rzp_live_SCrX8CCm5kMyCV',
+        RAZORPAY_KEY_SECRET:'KLtTl913r4STVP2gPAKzWXGu',
+        RAZORPAY_WEBHOOK_SECRET:'largemedia@rcssender123@123@stzk'
+
       },
       wait_ready: true,
       listen_timeout: 10000,

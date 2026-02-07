@@ -2,7 +2,6 @@ import mongoose from 'mongoose';
 import User from '../models/user.model.js';
 import Campaign from '../models/campaign.model.js';
 import Template from '../models/template.model.js';
-import WalletRequest from '../models/walletRequest.model.js';
 import ContactCampaignMessage from '../models/contactMessage.model.js';
 
 
@@ -10,18 +9,11 @@ import ContactCampaignMessage from '../models/contactMessage.model.js';
 export const getAdminDashboard = async (req, res) => {
   try {
     // Get all stats in parallel for better performance
-    const [users, walletRequests, recentTransactions, globalStats] = await Promise.all([
+    const [users, recentTransactions, globalStats] = await Promise.all([
       User.find({ role: 'USER' })
         .select('name email phone wallet isActive createdAt companyname')
         .sort({ createdAt: -1 })
         .lean(),
-
-      WalletRequest.find()
-        .populate('userId', 'name email')
-        .sort({ createdAt: -1 })
-        .limit(10)
-        .lean()
-        .catch(() => []), // Handle case where WalletRequest collection doesn't exist
 
       // Get recent transactions from all users
       User.aggregate([
@@ -47,7 +39,7 @@ export const getAdminDashboard = async (req, res) => {
         {
           $group: {
             _id: null,
-            totalMessages: { $sum: '$stats.total' },
+            totalMessages: { $sum: '$stats.delivered' },
             totalCost: { $sum: '$actualCost' }
           }
         }
@@ -60,7 +52,7 @@ export const getAdminDashboard = async (req, res) => {
       activeUsers: users.filter(u => u.isActive).length,
       totalMessages: globalStats[0]?.totalMessages || 0,
       totalCost: globalStats[0]?.totalCost || 0,
-      pendingRequests: walletRequests.filter(r => r.status === 'pending').length,
+      pendingRequests: 0,
       totalTransactions: recentTransactions.length,
       totalWalletBalance: users.reduce((sum, u) => sum + (u.wallet?.balance || 0), 0)
     };
@@ -88,7 +80,7 @@ export const getAdminDashboard = async (req, res) => {
       dashboard: {
         stats,
         recentUsers,
-        recentWalletRequests: walletRequests,
+        recentWalletRequests: [],
         recentTransactions
       }
     });
@@ -407,41 +399,10 @@ export const getWeeklyAnalytics = async (req, res) => {
   }
 };
 
-// Add wallet money request
+// Add wallet money request (deprecated - use Razorpay payment instead)
 export const addWalletRequest = async (req, res) => {
-  try {
-    const { amount, userId } = req.body;
-
-    if (!amount || amount <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid amount'
-      });
-    }
-
-    // Create wallet request (if WalletRequest model exists)
-    try {
-      const walletRequest = new WalletRequest({
-        userId,
-        amount,
-        status: 'pending',
-        requestedAt: new Date()
-      });
-      await walletRequest.save();
-    } catch (error) {
-      // If WalletRequest model doesn't exist, just return success
-      console.log('WalletRequest model not found, skipping database save');
-    }
-
-    res.json({
-      success: true,
-      message: 'Wallet recharge request submitted successfully'
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Failed to submit wallet request',
-      error: error.message
-    });
-  }
+  res.status(410).json({
+    success: false,
+    message: 'Wallet requests are no longer supported. Please use Razorpay payment gateway for wallet recharge.'
+  });
 };

@@ -8,11 +8,11 @@ import webhookRoutes from './webhook.routes.js';
 import uploadRoutes from './upload.routes.js';
 import dashboardRoutes from './dashboard.routes.js';
 import analyticsRoutes from './analytics.routes.js';
-import walletRequestRoutes from './walletRequest.routes.js';
 import contactCheckingRoutes from './contactChecking.routes.js';
 import demoRequestRoutes from './demoRequest.routes.js';
 import onboardingRoutes from './onboarding.routes.js';
 import landingMessageRoutes from './landingMessage.routes.js';
+import paymentRoutes from './payment.routes.js';
 import * as CampaignController from '../controller/campaign.controller.js';
 import { authenticateToken, requireUser, requireAdmin } from '../middlewares/auth.middleware.js';
 
@@ -42,11 +42,11 @@ router.use('/reports', reportRoutes);
 router.use('/uploads', uploadRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/analytics', analyticsRoutes);
-router.use('/wallet', walletRequestRoutes);
 router.use('/contact-checking', contactCheckingRoutes);
 router.use('/demo-requests', demoRequestRoutes);
 router.use('/onboarding', onboardingRoutes);
 router.use('/landing-message', landingMessageRoutes);
+router.use('/payment', paymentRoutes);
 
 router.use('/webhooks', webhookRoutes);
 

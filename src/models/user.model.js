@@ -114,7 +114,7 @@ const userSchema = new mongoose.Schema(
       registrationCertificateUrl: { type: String, trim: true },
       brandLogoUrl: { type: String, trim: true },
       companyBannerUrl: { type: String, trim: true },
-      
+
       submittedAt: { type: Date },
     },
 
@@ -148,6 +148,12 @@ const userSchema = new mongoose.Schema(
         type: Boolean,
         default: false,
       },
+    },
+
+
+    perMessageCharge: {
+      type: Number,
+      default: null
     },
 
     // Wallet & Billing

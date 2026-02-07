@@ -9,7 +9,8 @@
     "kafka-consumer": "node -r dotenv/config src/workers/kafkaConsumer.js",
     "batch-consumer": "node -r dotenv/config src/workers/batchEntriesConsumer.js",
     "stats-consumer": "node -r dotenv/config src/workers/statsConsumer.js",
-    "expire-messages": "node -r dotenv/config scripts/expirePendingMessages.js"
+    "expire-messages": "node -r dotenv/config scripts/expirePendingMessages.js",
+    "expire-payments": "node -r dotenv/config scripts/expireAbandonedPayments.js"
   },
   "keywords": [],
   "author": "",
@@ -38,6 +39,8 @@
     "multer": "^1.4.5-lts.1",
     "node-cron": "^4.2.1",
     "nodemailer": "^7.0.13",
-    "p-limit": "^7.2.0"
+    "p-limit": "^7.2.0",
+    "pdfkit": "^0.17.2",
+    "razorpay": "^2.9.6"
   }
 }

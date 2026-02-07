@@ -26,6 +26,13 @@ if (cluster.isPrimary) {
   console.log(`🧠 Primary ${process.pid} running`);
   console.log(`⚙️ Forking ${numCPUs} workers...\n`);
 
+  // Connect DB in primary process for cron jobs
+  await connectDB();
+
+  // Start cron jobs only in primary process
+  const { startPaymentExpirationCron } = await import('./services/paymentExpiration.service.js');
+  startPaymentExpirationCron();
+
   for (let i = 0; i < numCPUs; i++) {
     cluster.fork();
   }

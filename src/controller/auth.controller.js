@@ -351,7 +351,7 @@ export const updatePassword = async (req, res) => {
 // Admin: Create user
 export const createUser = async (req, res) => {
   try {
-    const { name, email, phone, password, role, companyname, clientId, clientSecret, assistantId, walletBalance } = req.body;
+    const { name, email, phone, password, role, companyname, clientId, clientSecret, assistantId, walletBalance, perMessageCharge } = req.body;
 
     // Validation
     if (!name || !email || !phone || !password) {
@@ -386,6 +386,7 @@ export const createUser = async (req, res) => {
         balance: walletBalance || 0,
         currency: 'INR',
       },
+      perMessageCharge: perMessageCharge || 0,
     };
 
     // Add Jio configuration if provided
@@ -435,7 +436,7 @@ export const createUser = async (req, res) => {
 export const updateUser = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { name, email, phone, companyname, isActive, jioConfig } = req.body;
+    const { name, email, phone, companyname, isActive, jioConfig, perMessageCharge } = req.body;
 
     // Validation
     if (!name || !email || !phone) {
@@ -474,6 +475,7 @@ export const updateUser = async (req, res) => {
       phone: phone.trim(),
       companyname: companyname?.trim() || '',
       updatedBy: req.user._id,
+      perMessageCharge: perMessageCharge || 0,
     };
 
     // Only update isActive if provided
@@ -529,11 +531,23 @@ export const updateUser = async (req, res) => {
 // Admin: Get all users (exclude admin role) - lightweight version
 export const getAllUsers = async (req, res) => {
   try {
-    const { page = 1, limit = 10, role, isActive, search } = req.query;
+    const { page = 1, limit = 10, role, isActive, search, status, verified } = req.query;
 
     const query = { role: { $ne: 'ADMIN' } }; // Exclude admin users
+
+    // Filter by verified status
+    if (verified !== undefined) {
+      query.isVerified = verified === 'true';
+    }
+
+    // Filter by active status
+    // if (status === 'active') {
+    //   query.isActive = true;
+    // } else if (isActive !== undefined) {
+    //   query.isActive = isActive === 'true';
+    // }
+
     if (role) query.role = role;
-    if (isActive !== undefined) query.isActive = isActive === 'true';
 
     if (search) {
       query.$or = [
@@ -546,7 +560,7 @@ export const getAllUsers = async (req, res) => {
 
     // Use lean() to bypass toJSON and get raw data including clientSecret
     const users = await User.find(query)
-      .select('name email phone companyname role isActive isVerified wallet.balance wallet.currency jioConfig createdAt lastLogin')
+      .select('name email phone companyname role isActive isVerified wallet.balance wallet.currency jioConfig perMessageCharge createdAt lastLogin')
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit)
