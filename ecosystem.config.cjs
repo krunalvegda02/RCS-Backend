@@ -40,9 +40,9 @@ module.exports = {
         JIO_ASSISTANT_ID: '6927fac2a34077bfc4bd45a2',
         NODE_OPTIONS: '--max-old-space-size=2048',
         KAFKAJS_NO_PARTITIONER_WARNING: '1',
-        RAZORPAY_KEY_ID:'rzp_live_SCrX8CCm5kMyCV',
-        RAZORPAY_KEY_SECRET:'KLtTl913r4STVP2gPAKzWXGu',
-        RAZORPAY_WEBHOOK_SECRET:'largemedia@rcssender123@123@stzk'
+        RAZORPAY_KEY_ID: 'rzp_live_SCrX8CCm5kMyCV',
+        RAZORPAY_KEY_SECRET: 'KLtTl913r4STVP2gPAKzWXGu',
+        RAZORPAY_WEBHOOK_SECRET: 'largemedia@rcssender123@123@stzk'
 
       },
       wait_ready: true,
@@ -61,7 +61,10 @@ module.exports = {
         WORKER_MODE: 'true',
         MONGODB_URI: 'mongodb+srv://sikarwarvishal75_db_user:Gama%40123@cluster0.whqwih.mongodb.net/rcs?retryWrites=true&w=majority',
         KAFKA_BROKER: 'localhost:9092',
-        KAFKAJS_NO_PARTITIONER_WARNING: '1'
+        KAFKAJS_NO_PARTITIONER_WARNING: '1',
+        RAZORPAY_KEY_ID: 'rzp_live_SCrX8CCm5kMyCV',
+        RAZORPAY_KEY_SECRET: 'KLtTl913r4STVP2gPAKzWXGu',
+        RAZORPAY_WEBHOOK_SECRET: 'largemedia@rcssender123@123@stzk'
       },
       restart_delay: 10000,
       max_memory_restart: '400M',
@@ -79,7 +82,10 @@ module.exports = {
         WORKER_MODE: 'true',
         MONGODB_URI: 'mongodb+srv://sikarwarvishal75_db_user:Gama%40123@cluster0.whqwih.mongodb.net/rcs?retryWrites=true&w=majority',
         KAFKA_BROKER: 'localhost:9092',
-        KAFKAJS_NO_PARTITIONER_WARNING: '1'
+        KAFKAJS_NO_PARTITIONER_WARNING: '1',
+        RAZORPAY_KEY_ID: 'rzp_live_SCrX8CCm5kMyCV',
+        RAZORPAY_KEY_SECRET: 'KLtTl913r4STVP2gPAKzWXGu',
+        RAZORPAY_WEBHOOK_SECRET: 'largemedia@rcssender123@123@stzk'
       },
       restart_delay: 10000,
       max_memory_restart: '300M',
@@ -97,7 +103,10 @@ module.exports = {
         WORKER_MODE: 'true',
         MONGODB_URI: 'mongodb+srv://sikarwarvishal75_db_user:Gama%40123@cluster0.whqwih.mongodb.net/rcs?retryWrites=true&w=majority',
         KAFKA_BROKER: 'localhost:9092',
-        KAFKAJS_NO_PARTITIONER_WARNING: '1'
+        KAFKAJS_NO_PARTITIONER_WARNING: '1',
+        RAZORPAY_KEY_ID: 'rzp_live_SCrX8CCm5kMyCV',
+        RAZORPAY_KEY_SECRET: 'KLtTl913r4STVP2gPAKzWXGu',
+        RAZORPAY_WEBHOOK_SECRET: 'largemedia@rcssender123@123@stzk'
       },
       restart_delay: 10000,
       max_memory_restart: '400M',
