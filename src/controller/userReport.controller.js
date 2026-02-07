@@ -19,10 +19,10 @@ export const getUserReport = async (req, res) => {
       User.findById(userId)
         .select('name email phone companyname role isActive isVerified createdAt lastLogin wallet.balance wallet.blockedBalance wallet.currency jioConfig stats')
         .lean(),
-      
+
       // Count total campaigns
       Campaign.countDocuments({ userId }),
-      
+
       // Get paginated campaigns with minimal fields
       Campaign.find({ userId })
         .select('name status stats actualCost createdAt templateId rcsCapableCount')
@@ -31,7 +31,7 @@ export const getUserReport = async (req, res) => {
         .limit(parseInt(campaignLimit))
         .skip((parseInt(campaignPage) - 1) * parseInt(campaignLimit))
         .lean(),
-      
+
       // Get campaign statistics using aggregation (faster than fetching all campaigns)
       Campaign.aggregate([
         { $match: { userId: new mongoose.Types.ObjectId(userId) } },
@@ -188,9 +188,9 @@ export const getMyReport = async (req, res) => {
       User.findById(userId)
         .select('name email phone companyname role isActive isVerified createdAt lastLogin wallet.balance wallet.blockedBalance wallet.currency jioConfig stats')
         .lean(),
-      
+
       Campaign.countDocuments({ userId }),
-      
+
       Campaign.find({ userId })
         .select('name status stats actualCost createdAt templateId rcsCapableCount')
         .populate('templateId', 'templateType')
@@ -198,7 +198,7 @@ export const getMyReport = async (req, res) => {
         .limit(parseInt(campaignLimit))
         .skip((parseInt(campaignPage) - 1) * parseInt(campaignLimit))
         .lean(),
-      
+
       Campaign.aggregate([
         { $match: { userId: new mongoose.Types.ObjectId(userId) } },
         {
@@ -258,7 +258,7 @@ export const getMyReport = async (req, res) => {
         wallet: {
           balance: user.wallet?.balance || 0,
           blockedBalance: user.wallet?.blockedBalance || 0,
-          availableBalance: (user.wallet?.balance || 0) - (user.wallet?.blockedBalance || 0),
+          availableBalance: (user.wallet?.balance || 0),
           currency: user.wallet?.currency || 'INR',
           totalTransactions: transactions.length,
           transactions: paginatedTransactions,
