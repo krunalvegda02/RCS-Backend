@@ -62,6 +62,9 @@ module.exports = {
         MONGODB_URI: 'mongodb+srv://sikarwarvishal75_db_user:Gama%40123@cluster0.whqwih.mongodb.net/rcs?retryWrites=true&w=majority',
         KAFKA_BROKER: 'localhost:9092',
         KAFKAJS_NO_PARTITIONER_WARNING: '1',
+        CLOUDINARY_CLOUD_NAME: 'doce6f5xn',
+        CLOUDINARY_API_KEY: '646961174768865',
+        CLOUDINARY_API_SECRET: 'obQQcEz0sHCyg4AbxzTn-DW1Trc',
         RAZORPAY_KEY_ID: 'rzp_live_SCrX8CCm5kMyCV',
         RAZORPAY_KEY_SECRET: 'KLtTl913r4STVP2gPAKzWXGu',
         RAZORPAY_WEBHOOK_SECRET: 'largemedia@rcssender123@123@stzk'
@@ -83,6 +86,9 @@ module.exports = {
         MONGODB_URI: 'mongodb+srv://sikarwarvishal75_db_user:Gama%40123@cluster0.whqwih.mongodb.net/rcs?retryWrites=true&w=majority',
         KAFKA_BROKER: 'localhost:9092',
         KAFKAJS_NO_PARTITIONER_WARNING: '1',
+        CLOUDINARY_CLOUD_NAME: 'doce6f5xn',
+        CLOUDINARY_API_KEY: '646961174768865',
+        CLOUDINARY_API_SECRET: 'obQQcEz0sHCyg4AbxzTn-DW1Trc',
         RAZORPAY_KEY_ID: 'rzp_live_SCrX8CCm5kMyCV',
         RAZORPAY_KEY_SECRET: 'KLtTl913r4STVP2gPAKzWXGu',
         RAZORPAY_WEBHOOK_SECRET: 'largemedia@rcssender123@123@stzk'
@@ -104,6 +110,9 @@ module.exports = {
         MONGODB_URI: 'mongodb+srv://sikarwarvishal75_db_user:Gama%40123@cluster0.whqwih.mongodb.net/rcs?retryWrites=true&w=majority',
         KAFKA_BROKER: 'localhost:9092',
         KAFKAJS_NO_PARTITIONER_WARNING: '1',
+        CLOUDINARY_CLOUD_NAME: 'doce6f5xn',
+        CLOUDINARY_API_KEY: '646961174768865',
+        CLOUDINARY_API_SECRET: 'obQQcEz0sHCyg4AbxzTn-DW1Trc',
         RAZORPAY_KEY_ID: 'rzp_live_SCrX8CCm5kMyCV',
         RAZORPAY_KEY_SECRET: 'KLtTl913r4STVP2gPAKzWXGu',
         RAZORPAY_WEBHOOK_SECRET: 'largemedia@rcssender123@123@stzk'
@@ -123,7 +132,14 @@ module.exports = {
       autorestart: false,
       env: {
         NODE_ENV: 'production',
-        MONGODB_URI: 'mongodb+srv://sikarwarvishal75_db_user:Gama%40123@cluster0.whqwih.mongodb.net/rcs?retryWrites=true&w=majority'
+        MONGODB_URI: 'mongodb+srv://sikarwarvishal75_db_user:Gama%40123@cluster0.whqwih.mongodb.net/rcs?retryWrites=true&w=majority',
+        KAFKAJS_NO_PARTITIONER_WARNING: '1',
+        CLOUDINARY_CLOUD_NAME: 'doce6f5xn',
+        CLOUDINARY_API_KEY: '646961174768865',
+        CLOUDINARY_API_SECRET: 'obQQcEz0sHCyg4AbxzTn-DW1Trc',
+        RAZORPAY_KEY_ID: 'rzp_live_SCrX8CCm5kMyCV',
+        RAZORPAY_KEY_SECRET: 'KLtTl913r4STVP2gPAKzWXGu',
+        RAZORPAY_WEBHOOK_SECRET: 'largemedia@rcssender123@123@stzk'
       }
     }
   ]
