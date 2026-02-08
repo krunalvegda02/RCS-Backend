@@ -80,7 +80,7 @@ const campaignSchema = new mongoose.Schema(
         type: Number,
         default: 0,
       },
-      expired:{
+      expired: {
         type: Number,
         default: 0,
       }
@@ -107,7 +107,7 @@ const campaignSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
-    
+
     // Chunk tracking for stateless worker
     completedChunks: [Number],
     totalChunks: Number,
@@ -147,7 +147,7 @@ campaignSchema.methods.syncStats = async function () {
         _id: null,
         total: { $sum: 1 },
         pending: { $sum: { $cond: [{ $in: ['$status', ['pending', 'draft', 'queued']] }, 1, 0] } },
-        sent: { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read', 'replied',"failed"]] }, 1, 0] } },
+        sent: { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read', 'replied', "failed"]] }, 1, 0] } },
         delivered: { $sum: { $cond: [{ $in: ['$status', ['delivered', 'read', 'replied']] }, 1, 0] } },
         read: { $sum: { $cond: [{ $in: ['$status', ['read', 'replied']] }, 1, 0] } },
         replied: { $sum: { $cond: [{ $eq: ['$status', 'replied'] }, 1, 0] } },
@@ -158,7 +158,7 @@ campaignSchema.methods.syncStats = async function () {
   ]);
 
   const newStats = stats[0] || { total: 0, pending: 0, sent: 0, delivered: 0, read: 0, replied: 0, expired: 0, failed: 0 };
-  
+
   this.stats = {
     total: newStats.total,
     pending: newStats.pending,
@@ -170,7 +170,7 @@ campaignSchema.methods.syncStats = async function () {
     failed: newStats.failed,
     bounced: 0
   };
-  
+
   await this.save();
   return this.stats;
 };
@@ -191,7 +191,7 @@ campaignSchema.statics.findAvailableBot = async function () {
   const botLoads = [];
 
   // 1. Check load for all bots
-  for (let i = 1; i <= TOTAL_BOTS; i++) {
+  for (let i = TOTAL_BOTS; i >= 1; i--) {
     const botId = `bot${i}`;
     const activeCampaignsCount = await this.countDocuments({
       botId,
