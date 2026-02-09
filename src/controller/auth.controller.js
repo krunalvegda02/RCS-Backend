@@ -1,5 +1,7 @@
 import User from '../models/user.model.js';
 import jwt from 'jsonwebtoken';
+import { generateSecret, generateURI, verifySync } from 'otplib';
+import QRCode from 'qrcode';
 
 // Generate JWT Tokens
 const generateTokens = (userId) => {
@@ -95,6 +97,19 @@ export const login = async (req, res) => {
 
     // Generate tokens
     const { accessToken, refreshToken } = generateTokens(refreshedUser._id);
+
+    // Check if 2FA is enabled
+    if (refreshedUser.twoFactorEnabled) {
+      // Return a partial response indicating 2FA is required
+      // We don't send the real tokens yet, or we send a limited token
+      // For now, we'll return a specific status and a temporary reference
+      return res.json({
+        success: true,
+        mfaRequired: true,
+        userId: refreshedUser._id,
+        message: '2FA token required'
+      });
+    }
 
     const userResponse = refreshedUser.toJSON();
 
@@ -226,26 +241,60 @@ export const getProfile = async (req, res) => {
 // Update user profile
 export const updateProfile = async (req, res) => {
   try {
-    const { name, companyname, phone } = req.body;
+    const { name, companyname, phone, email } = req.body;
     const userId = req.user._id;
+
+    const currentUser = await User.findById(userId);
+    if (!currentUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
 
     const updateData = {};
     if (name) updateData.name = name.trim();
-    if (companyname) updateData.companyname = companyname.trim();
-    if (phone) updateData.phone = phone.trim();
+    if (companyname !== undefined) updateData.companyname = companyname.trim();
+
+    // Only update email if it has changed and is unique
+    if (email && email.trim().toLowerCase() !== currentUser.email) {
+      const trimmedEmail = email.trim().toLowerCase();
+      const existingUser = await User.findOne({
+        email: trimmedEmail,
+        _id: { $ne: userId }
+      });
+
+      if (existingUser) {
+        return res.status(409).json({
+          success: false,
+          message: 'email already exists',
+        });
+      }
+      updateData.email = trimmedEmail;
+    }
+
+    // Only update phone if it has changed and is unique
+    if (phone && phone.trim() !== currentUser.phone) {
+      const trimmedPhone = phone.trim();
+      const existingUser = await User.findOne({
+        phone: trimmedPhone,
+        _id: { $ne: userId }
+      });
+
+      if (existingUser) {
+        return res.status(409).json({
+          success: false,
+          message: 'phone already exists',
+        });
+      }
+      updateData.phone = trimmedPhone;
+    }
 
     const user = await User.findByIdAndUpdate(
       userId,
       { ...updateData, updatedBy: userId },
       { new: true, runValidators: true }
     );
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found',
-      });
-    }
 
     res.json({
       success: true,
@@ -987,5 +1036,156 @@ export const unlockUserAccount = async (req, res) => {
       success: false,
       message: 'Internal server error',
     });
+  }
+};
+
+// 2FA: Setup
+export const setup2FA = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    if (user.twoFactorEnabled) {
+      return res.status(400).json({ success: false, message: '2FA is already enabled' });
+    }
+
+    const secret = generateSecret();
+    const otpauth = generateURI({ secret, label: user.email, issuer: 'RCS_MESSAGING' });
+    const qrCodeUrl = await QRCode.toDataURL(otpauth);
+
+    // Store secret temporarily (not enabled yet)
+    user.twoFactorSecret = secret;
+    await user.save();
+
+    res.json({
+      success: true,
+      secret,
+      qrCode: qrCodeUrl
+    });
+  } catch (error) {
+    console.error('Setup 2FA error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+};
+
+// 2FA: Verify and Enable
+export const verify2FA = async (req, res) => {
+  try {
+    const { token } = req.body;
+    const user = await User.findById(req.user._id).select('+twoFactorSecret');
+
+    if (!user || !user.twoFactorSecret) {
+      return res.status(400).json({ success: false, message: '2FA setup not initiated' });
+    }
+
+    const result = verifySync({ token, secret: user.twoFactorSecret });
+
+    if (!result || !result.valid) {
+      return res.status(400).json({ success: false, message: 'Invalid 2FA token' });
+    }
+
+    user.twoFactorEnabled = true;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: '2FA enabled successfully'
+    });
+  } catch (error) {
+    console.error('Verify 2FA error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+};
+
+// 2FA: Disable
+export const disable2FA = async (req, res) => {
+  try {
+    const { password } = req.body;
+    const user = await User.findById(req.user._id).select('+password');
+
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    // Verify password before disabling
+    const isPasswordValid = await user.comparePassword(password);
+    if (!isPasswordValid) {
+      return res.status(401).json({ success: false, message: 'Invalid password' });
+    }
+
+    user.twoFactorEnabled = false;
+    user.twoFactorSecret = undefined;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: '2FA disabled successfully'
+    });
+  } catch (error) {
+    console.error('Disable 2FA error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+};
+
+// 2FA: Verify Login
+export const verifyLogin2FA = async (req, res) => {
+  try {
+    const { userId, token } = req.body;
+
+    if (!userId || !token) {
+      return res.status(400).json({ success: false, message: 'User ID and token are required' });
+    }
+
+    const user = await User.findById(userId).select('+twoFactorSecret +password');
+    if (!user || !user.twoFactorEnabled) {
+      return res.status(400).json({ success: false, message: '2FA not enabled for this user' });
+    }
+
+    const result = verifySync({ token, secret: user.twoFactorSecret });
+    if (!result || !result.valid) {
+      return res.status(401).json({ success: false, message: 'Invalid 2FA token' });
+    }
+
+    // Generate final tokens
+    const { accessToken, refreshToken } = generateTokens(user._id);
+
+    res.json({
+      success: true,
+      message: '2FA verification successful',
+      user: user.toJSON(),
+      access_token: accessToken,
+      token: accessToken,
+      refresh_token: refreshToken
+    });
+  } catch (error) {
+    console.error('Verify Login 2FA error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+};
+
+// Admin: Impersonate User
+export const impersonateUser = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // The middleware 'requireAdmin' should already have checked req.user.role
+    const targetUser = await User.findById(userId);
+    if (!targetUser) {
+      return res.status(404).json({ success: false, message: 'Target user not found' });
+    }
+
+    // Generate tokens for the target user
+    const { accessToken, refreshToken } = generateTokens(targetUser._id);
+
+    res.json({
+      success: true,
+      message: `Successfully impersonated ${targetUser.name}`,
+      user: targetUser.toJSON(),
+      access_token: accessToken,
+      token: accessToken,
+      refresh_token: refreshToken,
+      isImpersonation: true
+    });
+  } catch (error) {
+    console.error('Impersonate user error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
   }
 };

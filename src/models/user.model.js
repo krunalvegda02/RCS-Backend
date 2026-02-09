@@ -258,6 +258,26 @@ const userSchema = new mongoose.Schema(
     //   },
     // },
 
+
+
+
+
+    // 2FA
+    twoFactorEnabled: {
+      type: Boolean,
+      default: false
+    },
+    twoFactorSecret: {
+      type: String, 
+      select: false
+    },
+    twoFactorBackupCodes: [{
+      type: String, 
+      select: false
+    }],
+
+
+
     // Security
     lastLogin: Date,
     loginAttempts: {
@@ -330,14 +350,14 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
   }
 
   // Try AES decryption first (new method)
-  console.log('[comparePassword] Attempting AES decryption');
-  console.log('[comparePassword] ENCRYPTION_KEY:', ENCRYPTION_KEY);
+  // console.log('[comparePassword] Attempting AES decryption');
+  // console.log('[comparePassword] ENCRYPTION_KEY:', ENCRYPTION_KEY);
   const decrypted = decryptPassword(this.password);
-  console.log('[comparePassword] Decrypted:', decrypted ? 'SUCCESS' : 'FAILED');
+  // console.log('[comparePassword] Decrypted:', decrypted ? 'SUCCESS' : 'FAILED');
 
   if (decrypted) {
     const match = decrypted === candidatePassword;
-    console.log('[comparePassword] Password match:', match, 'Expected:', candidatePassword, 'Got:', decrypted);
+    // console.log('[comparePassword] Password match:', match, 'Expected:', candidatePassword, 'Got:', decrypted);
     return match;
   }
 

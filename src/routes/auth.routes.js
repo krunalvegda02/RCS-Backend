@@ -8,6 +8,7 @@ const router = express.Router();
 
 // Public routes
 router.post('/login', AuthController.login);
+router.post('/login/2fa', AuthController.verifyLogin2FA);
 router.post('/register', AuthController.register);
 router.post('/refresh-token', AuthController.refreshToken);
 
@@ -18,6 +19,11 @@ router.put('/update-password', authenticateToken, AuthController.updatePassword)
 router.put('/jio-config', authenticateToken, AuthController.updateJioConfig);
 router.get('/jio-config', authenticateToken, AuthController.getJioConfig);
 router.get('/user/my-report', authenticateToken, UserReportController.getMyReport);
+
+// 2FA routes
+router.post('/2fa/setup', authenticateToken, AuthController.setup2FA);
+router.post('/2fa/verify', authenticateToken, AuthController.verify2FA);
+router.post('/2fa/disable', authenticateToken, AuthController.disable2FA);
 
 // Admin routes
 router.post('/admin/create-user', authenticateToken, requireAdmin, AuthController.createUser);
@@ -35,5 +41,6 @@ router.post('/admin/unlock-account/:userId', authenticateToken, requireAdmin, Au
 router.get('/admin/pending-users', authenticateToken, requireAdmin, PendingUsersController.getPendingUsers);
 router.post('/admin/approve-user/:userId', authenticateToken, requireAdmin, PendingUsersController.approveUser);
 router.delete('/admin/reject-user/:userId', authenticateToken, requireAdmin, PendingUsersController.rejectUser);
+router.post('/admin/impersonate/:userId', authenticateToken, requireAdmin, AuthController.impersonateUser);
 
 export default router;
