@@ -59,10 +59,10 @@ export const createOrder = async (req, res) => {
                 });
             }
 
-            if (customAmount < 100000) {
+            if (Math.floor(customAmount / user.perMessageCharge) < 100000) {
                 return res.status(400).json({
                     success: false,
-                    message: 'Minimum custom amount is ₹1,00,000',
+                    message: 'Minimum recharge is 1,00,000 credits',
                 });
             }
 
