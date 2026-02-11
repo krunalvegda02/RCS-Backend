@@ -22,7 +22,7 @@ module.exports = {
         EMAIL_USER: 'info@rcssender.com',
         EMAIL_PASS: 'Large@sender123',
         SMTP_HOST: 'smtp.hostinger.com',
-        SMTP_PORT: '465',
+        SMTP_PORT: '587',
         SMTP_USER: 'info@rcssender.com',
         SMTP_PASS: 'Large@sender123',
         SMTP_FROM: 'RCSsender <info@rcssender.com>',

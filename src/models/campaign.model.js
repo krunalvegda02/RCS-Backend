@@ -185,12 +185,24 @@ campaignSchema.methods.syncStats = async function () {
 
 
 
-// Find available bot (bot1-bot50) with Load Balancing
+// Find available bot (bot1-bot5) with Round-Robin + Load Balancing
 campaignSchema.statics.findAvailableBot = async function () {
   const TOTAL_BOTS = 5;
-  const botLoads = [];
 
-  // 1. Check load for all bots
+  // 1. Get last campaign's bot for round-robin
+  const lastCampaign = await this.findOne().sort({ createdAt: -1 }).select('botId').lean();
+  
+  if (lastCampaign && lastCampaign.botId) {
+    const lastBotNum = parseInt(lastCampaign.botId.replace('bot', ''));
+    const nextBotNum = lastBotNum === TOTAL_BOTS ? 1 : lastBotNum + 1;
+    const nextBotId = `bot${nextBotNum}`;
+    
+    console.log(`[BotAssignment] Round-robin: Last bot was ${lastCampaign.botId}, assigning ${nextBotId}`);
+    return nextBotId;
+  }
+
+  // 2. Fallback: Check load for all bots (first campaign or no history)
+  const botLoads = [];
   for (let i = TOTAL_BOTS; i >= 1; i--) {
     const botId = `bot${i}`;
     const activeCampaignsCount = await this.countDocuments({
@@ -198,7 +210,6 @@ campaignSchema.statics.findAvailableBot = async function () {
       status: { $in: ['pending', 'processing', 'running', 'draft'] }
     });
 
-    // If completely free, return immediately
     if (activeCampaignsCount === 0) {
       return botId;
     }
@@ -206,7 +217,7 @@ campaignSchema.statics.findAvailableBot = async function () {
     botLoads.push({ botId, count: activeCampaignsCount });
   }
 
-  // 2. If all busy, find the one with MINIMUM load
+  // 3. If all busy, find the one with MINIMUM load
   botLoads.sort((a, b) => a.count - b.count);
   const bestBot = botLoads[0];
 

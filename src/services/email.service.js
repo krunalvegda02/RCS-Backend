@@ -610,19 +610,39 @@ const BRAND = {
 /* =====================================================
    EMAIL TRANSPORTER
 ===================================================== */
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'smtp.hostinger.com',
-  port: parseInt(process.env.SMTP_PORT) || 465,
-  secure: true,
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
+const createTransporter = () => {
+  const emailUser = process.env.EMAIL_USER || process.env.SMTP_USER;
+  const emailPass = process.env.EMAIL_PASS || process.env.SMTP_PASS;
+  
+  if (!emailUser || !emailPass) {
+    console.warn('[Email] ⚠️  SMTP credentials not configured');
   }
-});
 
-const FROM_EMAIL = process.env.EMAIL_USER || 'noreply@rcssender.com';
-const ADMIN_EMAIL =
-  process.env.ADMIN_NOTIFICATION_EMAIL || process.env.EMAIL_USER;
+  const config = {
+    host: process.env.SMTP_HOST || 'smtp.hostinger.com',
+    port: parseInt(process.env.SMTP_PORT) || 587,
+    secure: false, // Use STARTTLS for port 587
+    auth: {
+      user: emailUser,
+      pass: emailPass
+    },
+    tls: {
+      rejectUnauthorized: process.env.NODE_ENV === 'production'
+    }
+  };
+
+  // Use SSL for port 465
+  if (config.port === 465) {
+    config.secure = true;
+  }
+
+  return nodemailer.createTransport(config);
+};
+
+const transporter = createTransporter();
+
+const FROM_EMAIL = process.env.EMAIL_USER || process.env.SMTP_USER || 'noreply@rcssender.com';
+const ADMIN_EMAIL = process.env.ADMIN_NOTIFICATION_EMAIL || process.env.EMAIL_USER || process.env.SMTP_USER;
 
 /* =====================================================
    BASE EMAIL LAYOUT (USED BY ALL TEMPLATES)
@@ -886,8 +906,12 @@ const templates = {
 ===================================================== */
 export const sendEmail = async (to, templateName, templateData = {}) => {
   try {
-    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-      console.log(`[Email] Skipped (${templateName}) → ${to}`);
+    const emailUser = process.env.EMAIL_USER || process.env.SMTP_USER;
+    const emailPass = process.env.EMAIL_PASS || process.env.SMTP_PASS;
+    
+    // Skip if email not configured
+    if (!emailUser || !emailPass) {
+      console.log(`[Email] ⚠️  Skipped (not configured): ${templateName} → ${to}`);
       return { success: true, skipped: true };
     }
 
@@ -905,9 +929,17 @@ export const sendEmail = async (to, templateName, templateData = {}) => {
       html
     });
 
+    console.log(`[Email] ✅ Sent: ${templateName} → ${to} (${info.messageId})`);
     return { success: true, messageId: info.messageId };
   } catch (error) {
-    console.error('[Email Error]', error);
+    console.error(`[Email] ❌ Failed: ${templateName} → ${to}`);
+    console.error('[Email Error]', error.message);
+    
+    // Don't throw error in production - log and continue
+    if (process.env.NODE_ENV === 'production') {
+      return { success: false, error: error.message, skipped: true };
+    }
+    
     return { success: false, error: error.message };
   }
 };

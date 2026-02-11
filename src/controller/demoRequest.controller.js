@@ -37,7 +37,9 @@ export const getAllDemoRequests = async (req, res) => {
   try {
     const { status } = req.query;
     const filter = status ? { status } : {};
-    const demoRequests = await DemoRequest.find(filter).sort({ createdAt: -1 });
+    const demoRequests = await DemoRequest.find(filter)
+      .sort({ createdAt: -1 })
+      .lean();
     res.status(200).json({ data: demoRequests });
   } catch (error) {
     res.status(500).json({ message: 'Failed to fetch demo requests', error: error.message });
@@ -58,27 +60,50 @@ export const updateDemoRequestStatus = async (req, res) => {
 export const updateDemoRequest = async (req, res) => {
   try {
     const { id } = req.params;
-    const { meetingLink, date, time, timezone } = req.body;
+    const updateData = req.body;
     
     const demoRequest = await DemoRequest.findByIdAndUpdate(
       id,
-      { meetingLink, date, time, timezone },
-      { new: true }
+      updateData,
+      { new: true, runValidators: true }
     );
 
-    // Send updated schedule email to user
-    if (meetingLink || date || time) {
-      await sendEmail(demoRequest.email, 'demoScheduled', {
-        name: demoRequest.name,
-        date: date || demoRequest.date,
-        time: time || demoRequest.time,
-        company: demoRequest.company,
-        meetingLink: meetingLink || demoRequest.meetingLink
-      });
+    if (!demoRequest) {
+      return res.status(404).json({ message: 'Demo request not found' });
     }
 
-    res.status(200).json({ message: 'Schedule updated successfully', data: demoRequest });
+    // Send updated schedule email to user if schedule fields updated
+    if (updateData.meetingLink || updateData.date || updateData.time) {
+      try {
+        await sendEmail(demoRequest.email, 'demoScheduled', {
+          name: demoRequest.name,
+          date: demoRequest.date,
+          time: demoRequest.time,
+          company: demoRequest.company,
+          meetingLink: demoRequest.meetingLink
+        });
+      } catch (emailError) {
+        console.error('Email send failed:', emailError);
+      }
+    }
+
+    res.status(200).json({ message: 'Demo request updated successfully', data: demoRequest });
   } catch (error) {
-    res.status(500).json({ message: 'Failed to update schedule', error: error.message });
+    res.status(500).json({ message: 'Failed to update demo request', error: error.message });
+  }
+};
+
+export const deleteDemoRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const demoRequest = await DemoRequest.findByIdAndDelete(id);
+    
+    if (!demoRequest) {
+      return res.status(404).json({ message: 'Demo request not found' });
+    }
+
+    res.status(200).json({ message: 'Demo request deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to delete demo request', error: error.message });
   }
 };
