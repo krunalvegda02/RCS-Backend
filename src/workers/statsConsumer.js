@@ -19,10 +19,10 @@ async function startStatsConsumer() {
 
     const consumer = kafka.consumer({
       groupId: `stats-processor-${process.env.NODE_ENV || 'dev'}`,
-      sessionTimeout: 60000, // 1 minute 
-      heartbeatInterval: 3000, // 3 seconds (more frequent)
-      rebalanceTimeout: 60000, // 1 minute
-      maxWaitTimeInMs: 10000, // Wait max 5s for new messages
+      sessionTimeout: 120000, // 2 minutes
+      heartbeatInterval: 5000, // 5 seconds
+      rebalanceTimeout: 120000, // 2 minutes
+      maxWaitTimeInMs: 5000,
       retry: {
         retries: 5,
         initialRetryTime: 300
@@ -33,23 +33,26 @@ async function startStatsConsumer() {
     await consumer.subscribe({ topic: 'message-stats', fromBeginning: false });
 
     console.log('✅ Stats Consumer subscribed to message-stats');
+    console.log(`[StatsConsumer] Consumer group: stats-processor-${process.env.NODE_ENV || 'dev'}`);
+    console.log(`[StatsConsumer] Kafka broker: ${process.env.KAFKA_BROKER || 'localhost:9092'}`);
 
     const MessageLog = (await import('../models/messageLog.model.js')).default;
     const ContactCampaignMessage = (await import('../models/contactMessage.model.js')).default;
     const Campaign = (await import('../models/campaign.model.js')).default;
 
-
     let totalProcessed = 0;
-
+    let batchCount = 0;
 
     await consumer.run({
       partitionsConsumedConcurrently: 1,
       eachBatchAutoResolve: false,
 
-      
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
+        batchCount++;
         const startTime = Date.now();
         const messages = batch.messages;
+        
+        console.log(`[StatsConsumer] Batch #${batchCount}: Received ${messages.length} messages from partition ${batch.partition}`);
         
         if (messages.length === 0) {
           await heartbeat();
@@ -68,12 +71,13 @@ async function startStatsConsumer() {
         }
 
         if (logIds.length === 0) {
+          console.log(`[StatsConsumer] Batch #${batchCount}: No valid log IDs found in messages`);
           await resolveOffset(messages[messages.length - 1].offset);
           await heartbeat();
           return;
         }
 
-        console.log(`[StatsConsumer] Processing ${logIds.length} log IDs`);
+        console.log(`[StatsConsumer] Batch #${batchCount}: Processing ${logIds.length} log IDs`);
 
         // Fetch unprocessed logs from DB
         const logs = await MessageLog.find({
@@ -82,20 +86,33 @@ async function startStatsConsumer() {
         }).lean();
 
         if (logs.length === 0) {
-          console.log('[StatsConsumer] No unprocessed logs found');
+          console.log(`[StatsConsumer] Batch #${batchCount}: No unprocessed logs found (all already processed)`);
           await resolveOffset(messages[messages.length - 1].offset);
           await heartbeat();
           return;
         }
 
-        console.log(`[StatsConsumer] Found ${logs.length} unprocessed logs`);
+        console.log(`[StatsConsumer] Batch #${batchCount}: Found ${logs.length} unprocessed logs`);
 
-        const bulkOps = [];
-        const affectedCampaigns = new Set();
+        // Process in chunks to avoid timeout
+        const CHUNK_SIZE = 500;
+        const chunks = [];
+        for (let i = 0; i < logs.length; i += CHUNK_SIZE) {
+          chunks.push(logs.slice(i, i + CHUNK_SIZE));
+        }
+
+        console.log(`[StatsConsumer] Batch #${batchCount}: Processing ${chunks.length} chunks of ${CHUNK_SIZE}`);
+
+        for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+          const chunk = chunks[chunkIndex];
+          const bulkOps = [];
+          const affectedCampaigns = new Set();
+          
+          await heartbeat(); // Heartbeat before each chunk
 
 
 
-        for (const log of logs) {
+          for (const log of chunk) {
           const { messageId, webhookData, eventType: logEventType } = log;
           const eventType = webhookData?.eventType;
           const entity = webhookData?.rawPayload?.entity;
@@ -197,54 +214,46 @@ async function startStatsConsumer() {
               }
             });
           }
-        }
-
-        // Bulk update ContactCampaignMessage
-        let updateSuccess = false;
-        if (bulkOps.length > 0) {
-          try {
-            const result = await ContactCampaignMessage.bulkWrite(bulkOps, { ordered: false });
-            totalProcessed += result.modifiedCount;
-            updateSuccess = true;
-            console.log(`[StatsConsumer] ✅ Updated ${result.modifiedCount} messages | Total: ${totalProcessed}`);
-
-            // Collect affected campaigns
-            const updatedMessages = await ContactCampaignMessage.find(
-              { messageId: { $in: logs.map(l => l.messageId) } },
-              { campaignId: 1 }
-            ).lean();
-            updatedMessages.forEach(msg => {
-              if (msg.campaignId) affectedCampaigns.add(msg.campaignId.toString());
-            });
-          } catch (error) {
-            console.error('[StatsConsumer] Bulk write error:', error.message);
           }
-        } else {
-          updateSuccess = true;
-        }
 
+          // Bulk update ContactCampaignMessage for this chunk
+          if (bulkOps.length > 0) {
+            try {
+              const result = await ContactCampaignMessage.bulkWrite(bulkOps, { ordered: false });
+              totalProcessed += result.modifiedCount;
+              console.log(`[StatsConsumer] Chunk ${chunkIndex + 1}/${chunks.length}: Updated ${result.modifiedCount} messages`);
 
+              // Collect affected campaigns
+              const updatedMessages = await ContactCampaignMessage.find(
+                { messageId: { $in: chunk.map(l => l.messageId) } },
+                { campaignId: 1 }
+              ).lean();
+              updatedMessages.forEach(msg => {
+                if (msg.campaignId) affectedCampaigns.add(msg.campaignId.toString());
+              });
+            } catch (error) {
+              console.error(`[StatsConsumer] Chunk ${chunkIndex + 1} bulk write error:`, error.message);
+            }
+          }
 
-        // Mark logs as processed
-        if (updateSuccess) {
+          await heartbeat(); // Heartbeat after bulk write
+
+          // Mark chunk logs as processed
           try {
             await MessageLog.updateMany(
-              { _id: { $in: logs.map(l => l._id) } },
+              { _id: { $in: chunk.map(l => l._id) } },
               { $set: { processed: true, processedAt: new Date() } }
             );
-            console.log(`[StatsConsumer] Marked ${logs.length} logs as processed`);
           } catch (error) {
-            console.error('[StatsConsumer] Mark processed error:', error.message);
+            console.error(`[StatsConsumer] Chunk ${chunkIndex + 1} mark processed error:`, error.message);
           }
-        }
 
+          await heartbeat(); // Heartbeat after marking processed
 
-
-        // Sync campaign stats (including settled campaigns to keep data accurate)
-        if (affectedCampaigns.size > 0) {
-          console.log(`[StatsConsumer] Syncing ${affectedCampaigns.size} campaigns`);
-          await Promise.all(
-            Array.from(affectedCampaigns).map(async (campaignId) => {
+          // Sync campaign stats for this chunk
+          if (affectedCampaigns.size > 0) {
+            const campaignIds = Array.from(affectedCampaigns);
+            for (const campaignId of campaignIds) {
               try {
                 const campaign = await Campaign.findById(campaignId);
                 if (campaign) {
@@ -253,16 +262,16 @@ async function startStatsConsumer() {
               } catch (err) {
                 console.error(`[StatsConsumer] Sync error for ${campaignId}:`, err.message);
               }
-            })
-          );
+            }
+          }
+
+          await heartbeat(); // Heartbeat after campaign sync
         }
 
 
 
         const duration = Date.now() - startTime;
-        console.log(`[StatsConsumer] Batch complete in ${duration}ms`);
-
-
+        console.log(`[StatsConsumer] Batch #${batchCount} complete in ${duration}ms | Total processed: ${totalProcessed}`);
 
         // ACK batch
         if (messages.length > 0) {
@@ -271,6 +280,11 @@ async function startStatsConsumer() {
         await heartbeat();
       }
     });
+
+    // Log consumer status every 30 seconds
+    setInterval(() => {
+      console.log(`[StatsConsumer] Status: ${batchCount} batches processed | ${totalProcessed} messages updated`);
+    }, 30000);
 
 
 
