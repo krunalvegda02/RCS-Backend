@@ -1,12 +1,17 @@
 import mongoose from 'mongoose';
 import { Kafka } from 'kafkajs';
-import connectDB from '../src/db/index.js';
+import dotenv from 'dotenv';
+
+// Load environment variables
+dotenv.config();
 
 async function pushUnprocessedLogs() {
   try {
     console.log('🚀 Starting unprocessed logs push to Kafka...');
     
-    await connectDB();
+    // Connect to MongoDB directly
+    await mongoose.connect(process.env.MONGODB_URI);
+    console.log('✅ MongoDB connected');
 
     const MessageLog = (await import('../src/models/messageLog.model.js')).default;
 
