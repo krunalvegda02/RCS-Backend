@@ -474,7 +474,7 @@ templateSchema.methods.generatePayload = function () {
             }
           : {}),
         cardMedia: {
-          mediaHeight: 'TALL',
+          mediaHeight: 'MEDIUM',
           contentInfo: {
             fileUrl: ensureHttps(content.imageUrl),
           },
@@ -517,7 +517,7 @@ templateSchema.methods.generatePayload = function () {
                 }
               : {}),
             cardMedia: {
-              mediaHeight: 'MEDIUM',
+              mediaHeight: 'SHORT',
               contentInfo: {
                 fileUrl: ensureHttps(card.imageUrl),
               },
@@ -543,7 +543,7 @@ templateSchema.methods.generatePayload = function () {
       jioContent = {
         richCardDetails: {
           carousel: {
-            cardWidth: 'MEDIUM_WIDTH', // ✅ Correct per Jio PDF
+            cardWidth: 'SMALL_WIDTH',
             contents: cards,
           },
         },

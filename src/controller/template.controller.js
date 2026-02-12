@@ -162,30 +162,34 @@ export const deleteTemplate = async (req, res) => {
       });
     }
 
-    // Extract media URLs from template content
-    const mediaUrls = [];
+    // Extract image URLs from template content
+    const imageUrls = [];
     
-    if (template.templateType === 'richCard' && template.content?.media?.url) {
-      mediaUrls.push(template.content.media.url);
+    if (template.templateType === 'richCard' && template.content?.imageUrl) {
+      imageUrls.push(template.content.imageUrl);
     } else if (template.templateType === 'carousel' && template.content?.cards) {
       template.content.cards.forEach(card => {
-        if (card.media?.url) mediaUrls.push(card.media.url);
+        if (card.imageUrl) imageUrls.push(card.imageUrl);
       });
     }
 
     // Delete template from database
     await Template.findByIdAndDelete(id);
 
-    // Delete media files from Cloudinary
-    if (mediaUrls.length > 0) {
-      for (const url of mediaUrls) {
-        await deleteFromCloudinary(url);
+    // Delete images from Cloudinary
+    if (imageUrls.length > 0) {
+      for (const url of imageUrls) {
+        try {
+          await deleteFromCloudinary(url);
+        } catch (err) {
+          console.error('Failed to delete image from Cloudinary:', url, err);
+        }
       }
     }
 
     res.json({
       success: true,
-      message: 'Template deleted successfully',
+      message: 'Template and associated images deleted successfully',
     });
   } catch (error) {
     res.status(500).json({
