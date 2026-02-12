@@ -517,7 +517,7 @@ templateSchema.methods.generatePayload = function () {
                 }
               : {}),
             cardMedia: {
-              mediaHeight: 'MEDIUM',
+              mediaHeight: 'SMALL',
               contentInfo: {
                 fileUrl: ensureHttps(card.imageUrl),
               },
