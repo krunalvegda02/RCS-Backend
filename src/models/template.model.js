@@ -467,10 +467,10 @@ templateSchema.methods.generatePayload = function () {
       }
 
       const cardContent = {
-        cardTitle: content.title.trim(),
+        cardTitle: content.title.trim().slice(0, 200),
         ...(content.description || content.subtitle
           ? {
-              cardDescription: (content.description || content.subtitle).trim(),
+              cardDescription: (content.description || content.subtitle).trim().slice(0, 2000),
             }
           : {}),
         cardMedia: {
@@ -510,10 +510,10 @@ templateSchema.methods.generatePayload = function () {
           if (!card.title || !card.imageUrl) return null;
 
           const c = {
-            cardTitle: card.title.trim(),
+            cardTitle: card.title.trim().slice(0, 200),
             ...(card.description || card.subtitle
               ? {
-                  cardDescription: (card.description || card.subtitle).trim(),
+                  cardDescription: (card.description || card.subtitle).trim().slice(0, 2000),
                 }
               : {}),
             cardMedia: {
@@ -543,7 +543,7 @@ templateSchema.methods.generatePayload = function () {
       jioContent = {
         richCardDetails: {
           carousel: {
-            cardWidth: 'SMALL_WIDTH',
+            cardWidth: 'MEDIUM_WIDTH',
             contents: cards,
           },
         },
