@@ -78,7 +78,7 @@ module.exports = {
     {
       name: 'stats-consumer',
       script: 'src/workers/statsConsumer.js',
-      instances: 6,
+      instances: 10,
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',

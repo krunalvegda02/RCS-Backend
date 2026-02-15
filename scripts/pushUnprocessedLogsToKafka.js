@@ -48,8 +48,9 @@ async function pushUnprocessedLogs() {
 
       if (logs.length === 0) break;
 
-      // Send to Kafka
+      // Send to Kafka with key for even distribution
       const messages = logs.map(log => ({
+        key: log._id.toString(),
         value: JSON.stringify({ logId: log._id.toString() })
       }));
 
