@@ -1,6 +1,8 @@
 import Campaign from '../models/campaign.model.js';
 import Template from '../models/template.model.js';
+import ContactCampaignMessage from '../models/contactMessage.model.js';
 import { sendBatchEntriesToKafka } from '../services/kafka.service.js';
+import crypto from 'crypto';
 
 export const updateCampaignStatus = async (req, res) => {
   try {
@@ -100,29 +102,70 @@ export const createMasterCampaign = async (req, res) => {
     const verifyUser = await User.findById(userId);
     console.log(`[Campaign] ✅ Verified in DB: Balance=₹${verifyUser.wallet.balance}, Blocked=₹${verifyUser.wallet.blockedBalance}`);
 
-    // Send to Kafka for fast bulk processing
-    const kafkaResult = await sendBatchEntriesToKafka({
-      campaignId: campaign._id,
-      templateId,
-      userId,
-      phoneNumbers
-    });
-    
-    if (!kafkaResult.success) {
-      console.error('[Campaign] Kafka send failed:', kafkaResult.error);
-      // Rollback: delete campaign and unblock balance
-      await Campaign.findByIdAndDelete(campaign._id);
-      await User.findByIdAndUpdate(userId, {
-        $inc: {
-          'wallet.balance': estimatedCost,
-          'wallet.blockedBalance': -estimatedCost
-        }
+    // Check if contacts < 100: manually add to MongoDB, else use Kafka
+    if (phoneNumbers.length < 100) {
+      console.log(`[Campaign] 📝 Small batch (${phoneNumbers.length} < 100), adding directly to MongoDB`);
+      
+      try {
+        const entries = phoneNumbers.map((phoneNumber, i) => ({
+          messageId: `${campaign._id}-${i}-${crypto.randomBytes(8).toString('hex')}`,
+          recipientPhoneNumber: phoneNumber.replace('+91', ''),
+          userId,
+          campaignId: campaign._id,
+          templateId,
+          status: 'pending',
+          queuedAt: new Date()
+        }));
+        
+        await ContactCampaignMessage.insertMany(entries, { ordered: false });
+        console.log(`[Campaign] ✅ Added ${phoneNumbers.length} contact entries to MongoDB`);
+        
+        campaign.status = 'pending';
+        await campaign.save();
+        
+      } catch (error) {
+        console.error('[Campaign] MongoDB insert failed:', error);
+        // Rollback: delete campaign and unblock balance
+        await Campaign.findByIdAndDelete(campaign._id);
+        await User.findByIdAndUpdate(userId, {
+          $inc: {
+            'wallet.balance': estimatedCost,
+            'wallet.blockedBalance': -estimatedCost
+          }
+        });
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to create campaign entries.',
+          error: error.message
+        });
+      }
+    } else {
+      console.log(`[Campaign] 📤 Large batch (${phoneNumbers.length} >= 100), sending to Kafka`);
+      
+      // Send to Kafka for fast bulk processing
+      const kafkaResult = await sendBatchEntriesToKafka({
+        campaignId: campaign._id,
+        templateId,
+        userId,
+        phoneNumbers
       });
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to queue campaign. Please try with fewer contacts or contact support.',
-        error: kafkaResult.error
-      });
+      
+      if (!kafkaResult.success) {
+        console.error('[Campaign] Kafka send failed:', kafkaResult.error);
+        // Rollback: delete campaign and unblock balance
+        await Campaign.findByIdAndDelete(campaign._id);
+        await User.findByIdAndUpdate(userId, {
+          $inc: {
+            'wallet.balance': estimatedCost,
+            'wallet.blockedBalance': -estimatedCost
+          }
+        });
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to queue campaign. Please try with fewer contacts or contact support.',
+          error: kafkaResult.error
+        });
+      }
     }
 
     console.log(`[Campaign] ✅ Created campaign with ${phoneNumbers.length} contacts on ${botId}`);
