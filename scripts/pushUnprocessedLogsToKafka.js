@@ -1,9 +1,14 @@
 import mongoose from 'mongoose';
 import { Kafka } from 'kafkajs';
 import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 
-// Load environment variables
-dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Load environment variables from parent directory
+dotenv.config({ path: join(__dirname, '..', '.env') });
 
 async function pushUnprocessedLogs() {
   try {
