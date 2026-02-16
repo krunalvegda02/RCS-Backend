@@ -400,7 +400,7 @@ export const updatePassword = async (req, res) => {
 // Admin: Create user
 export const createUser = async (req, res) => {
   try {
-    const { name, email, phone, password, role, companyname, clientId, clientSecret, assistantId, walletBalance, perMessageCharge } = req.body;
+    const { name, email, phone, password, role, companyname, clientId, clientSecret, assistantId, walletBalance, perMessageCharge, isMultiConfig, jioConfigs } = req.body;
 
     // Validation
     if (!name || !email || !phone || !password) {
@@ -448,6 +448,18 @@ export const createUser = async (req, res) => {
       };
     }
 
+    // Add multi Jio configuration if provided
+    if (isMultiConfig && Array.isArray(jioConfigs) && jioConfigs.length > 0) {
+      userData.isMultiConfig = true;
+      userData.jioConfigs = jioConfigs.map((config, i) => ({
+        label: config.label?.trim() || `JioBot ${i + 1}`,
+        clientId: config.clientId?.trim() || '',
+        clientSecret: config.clientSecret?.trim() || '',
+        assistantId: config.assistantId?.trim() || '',
+        isConfigured: !!(config.clientId && config.clientSecret),
+      }));
+    }
+
     const user = await User.createUser(userData, true);
 
     res.status(201).json({
@@ -485,7 +497,7 @@ export const createUser = async (req, res) => {
 export const updateUser = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { name, email, phone, companyname, isActive, jioConfig, perMessageCharge } = req.body;
+    const { name, email, phone, companyname, isActive, jioConfig, perMessageCharge, isMultiConfig, jioConfigs } = req.body;
 
     // Validation
     if (!name || !email || !phone) {
@@ -538,6 +550,20 @@ export const updateUser = async (req, res) => {
       updateData['jioConfig.clientSecret'] = jioConfig.clientSecret?.trim() || '';
       updateData['jioConfig.assistantId'] = jioConfig.assistantId?.trim() || '';
       updateData['jioConfig.isConfigured'] = !!(jioConfig.clientId && jioConfig.clientSecret);
+    }
+
+    // Update multi Jio config if provided
+    if (isMultiConfig !== undefined) {
+      updateData.isMultiConfig = !!isMultiConfig;
+    }
+    if (Array.isArray(jioConfigs)) {
+      updateData.jioConfigs = jioConfigs.map((config, i) => ({
+        label: config.label?.trim() || `JioBot ${i + 1}`,
+        clientId: config.clientId?.trim() || '',
+        clientSecret: config.clientSecret?.trim() || '',
+        assistantId: config.assistantId?.trim() || '',
+        isConfigured: !!(config.clientId && config.clientSecret),
+      }));
     }
 
     const updatedUser = await User.findByIdAndUpdate(

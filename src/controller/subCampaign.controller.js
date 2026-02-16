@@ -34,7 +34,7 @@ export const createMasterCampaign = async (req, res) => {
   try {
     const { name, templateId, phoneNumbers } = req.body;
     const userId = req.user._id;
-    
+
     console.log(`[Campaign] 🚀 Creating master campaign for user ${userId}`);
     console.log(`[Campaign] 📝 Campaign name: ${name}`);
     console.log(`[Campaign] 📱 Phone numbers count: ${phoneNumbers?.length || 0}`);
@@ -51,19 +51,19 @@ export const createMasterCampaign = async (req, res) => {
     // Calculate estimated cost
     const estimatedCost = phoneNumbers.length * 1; // ₹1 per message
     console.log(`[Campaign] 💰 Estimated cost: ₹${estimatedCost} for ${phoneNumbers.length} contacts`);
-    
+
     // Check and block wallet balance
     const User = (await import('../models/user.model.js')).default;
-    const user = await User.findById(userId);
-    
+    const user = await User.findById(userId).select('+jioConfigs.clientSecret');
+
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
-    
+
     console.log(`[Campaign] 👤 User wallet before: Balance=₹${user.wallet.balance}, Blocked=₹${user.wallet.blockedBalance || 0}`);
-    
+
     const availableBalance = user.wallet.balance;
-    
+
     if (availableBalance < estimatedCost) {
       return res.status(402).json({
         success: false,
@@ -74,7 +74,7 @@ export const createMasterCampaign = async (req, res) => {
     }
 
     const botId = await Campaign.findAvailableBot();
-    
+
     const campaign = await Campaign.create({
       name,
       userId,
@@ -92,12 +92,12 @@ export const createMasterCampaign = async (req, res) => {
         failed: 0
       }
     });
-    
+
     // Block wallet balance
     console.log(`[Campaign] 🔄 Attempting to block ₹${estimatedCost} for campaign ${campaign._id}`);
     await user.blockBalanceForCampaign(estimatedCost, campaign._id);
     console.log(`[Campaign] 🔒 Blocked ₹${estimatedCost} for campaign ${campaign._id}. New blocked balance: ₹${user.wallet.blockedBalance}`);
-    
+
     // Verify in database
     const verifyUser = await User.findById(userId);
     console.log(`[Campaign] ✅ Verified in DB: Balance=₹${verifyUser.wallet.balance}, Blocked=₹${verifyUser.wallet.blockedBalance}`);
@@ -105,8 +105,13 @@ export const createMasterCampaign = async (req, res) => {
     // Check if contacts < 100: manually add to MongoDB, else use Kafka
     if (phoneNumbers.length < 100) {
       console.log(`[Campaign] 📝 Small batch (${phoneNumbers.length} < 100), adding directly to MongoDB`);
-      
+
       try {
+        // Determine config count for multi-config round-robin
+        const configCount = (user.isMultiConfig && user.jioConfigs?.length > 0)
+          ? user.jioConfigs.length
+          : 0;
+
         const entries = phoneNumbers.map((phoneNumber, i) => ({
           messageId: `${campaign._id}-${i}-${crypto.randomBytes(8).toString('hex')}`,
           recipientPhoneNumber: phoneNumber.replace('+91', ''),
@@ -114,15 +119,16 @@ export const createMasterCampaign = async (req, res) => {
           campaignId: campaign._id,
           templateId,
           status: 'pending',
-          queuedAt: new Date()
+          queuedAt: new Date(),
+          ...(configCount > 0 ? { configIndex: i % configCount } : {})
         }));
-        
+
         await ContactCampaignMessage.insertMany(entries, { ordered: false });
         console.log(`[Campaign] ✅ Added ${phoneNumbers.length} contact entries to MongoDB`);
-        
+
         campaign.status = 'pending';
         await campaign.save();
-        
+
       } catch (error) {
         console.error('[Campaign] MongoDB insert failed:', error);
         // Rollback: delete campaign and unblock balance
@@ -141,15 +147,21 @@ export const createMasterCampaign = async (req, res) => {
       }
     } else {
       console.log(`[Campaign] 📤 Large batch (${phoneNumbers.length} >= 100), sending to Kafka`);
-      
+
+      // Determine config count for multi-config round-robin
+      const configCount = (user.isMultiConfig && user.jioConfigs?.length > 0)
+        ? user.jioConfigs.length
+        : 0;
+
       // Send to Kafka for fast bulk processing
       const kafkaResult = await sendBatchEntriesToKafka({
         campaignId: campaign._id,
         templateId,
         userId,
-        phoneNumbers
+        phoneNumbers,
+        ...(configCount > 0 ? { configCount } : {})
       });
-      
+
       if (!kafkaResult.success) {
         console.error('[Campaign] Kafka send failed:', kafkaResult.error);
         // Rollback: delete campaign and unblock balance

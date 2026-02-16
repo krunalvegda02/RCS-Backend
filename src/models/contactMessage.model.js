@@ -38,6 +38,9 @@ const contactCampaignMessageSchema = new mongoose.Schema(
     externalMessageId: String,
     assistantId: String,
 
+    /* -------- MULTI CONFIG -------- */
+    configIndex: { type: Number, default: null },  // index into user.jioConfigs[]
+
     /* -------- STATUS (PER CAMPAIGN) -------- */
     status: {
       type: String,

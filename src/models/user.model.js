@@ -150,6 +150,35 @@ const userSchema = new mongoose.Schema(
       },
     },
 
+    // Multi Jio Config Support
+    isMultiConfig: {
+      type: Boolean,
+      default: false,
+    },
+    jioConfigs: [{
+      label: {
+        type: String,
+        trim: true,
+      },
+      clientId: {
+        type: String,
+        trim: true,
+      },
+      clientSecret: {
+        type: String,
+        trim: true,
+        select: false,
+      },
+      assistantId: {
+        type: String,
+        trim: true,
+      },
+      isConfigured: {
+        type: Boolean,
+        default: false,
+      },
+    }],
+
 
     perMessageCharge: {
       type: Number,
@@ -268,11 +297,11 @@ const userSchema = new mongoose.Schema(
       default: false
     },
     twoFactorSecret: {
-      type: String, 
+      type: String,
       select: false
     },
     twoFactorBackupCodes: [{
-      type: String, 
+      type: String,
       select: false
     }],
 
@@ -771,6 +800,12 @@ userSchema.statics.createUser = async function (userData, createdByAdmin = false
   if (userObject.jioConfig) {
     delete userObject.jioConfig.clientSecret;
   }
+  if (userObject.jioConfigs) {
+    userObject.jioConfigs = userObject.jioConfigs.map(c => {
+      const { clientSecret, ...rest } = c;
+      return rest;
+    });
+  }
 
   return userObject;
 };
@@ -781,6 +816,12 @@ userSchema.methods.toJSON = function () {
   delete userObject.password;
   if (userObject.jioConfig) {
     delete userObject.jioConfig.clientSecret;
+  }
+  if (userObject.jioConfigs) {
+    userObject.jioConfigs = userObject.jioConfigs.map(c => {
+      const { clientSecret, ...rest } = c;
+      return rest;
+    });
   }
   delete userObject.passwordResetToken;
   delete userObject.emailVerificationToken;

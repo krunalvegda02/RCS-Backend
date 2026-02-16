@@ -53,7 +53,7 @@ async function startBatchEntriesConsumer() {
     } catch (error) {
       console.error('❌ Connection failed:', error.message);
       reconnectAttempts++;
-      
+
       if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
         console.log(`⏳ Retrying in ${delay}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
@@ -72,7 +72,7 @@ async function startBatchEntriesConsumer() {
   consumer.on(consumer.events.CRASH, async (event) => {
     console.error('❌ Consumer crashed:', event.payload.error.message);
     isConnected = false;
-    
+
     if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
       console.log('🔄 Attempting to reconnect...');
       await connect();
@@ -104,10 +104,13 @@ async function startBatchEntriesConsumer() {
           const start = Date.now();
           const data = JSON.parse(message.value.toString());
 
-          const { campaignId, templateId, userId, phoneNumbers, chunkIndex, totalChunks, batchId } = data;
+          const { campaignId, templateId, userId, phoneNumbers, chunkIndex, totalChunks, batchId, configCount } = data;
           const campaignObjectId = new mongoose.Types.ObjectId(campaignId);
 
-          console.log(`[BatchConsumer] Campaign ${campaignId} | Chunk ${chunkIndex + 1}/${totalChunks} | ${phoneNumbers.length}`);
+          console.log(`[BatchConsumer] Campaign ${campaignId} | Chunk ${chunkIndex + 1}/${totalChunks} | ${phoneNumbers.length}${configCount ? ` | ${configCount} configs` : ''}`);
+
+          // Global index offset for this chunk (so configIndex distributes across all chunks)
+          const globalOffset = chunkIndex * phoneNumbers.length;
 
           const docs = phoneNumbers.map((phone, index) => {
             const messageId = `${campaignId}-${chunkIndex}-${index}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -120,7 +123,8 @@ async function startBatchEntriesConsumer() {
               status: 'pending',
               queuedAt: new Date(),
               userClickCount: 0,
-              userReplyCount: 0
+              userReplyCount: 0,
+              ...(configCount > 0 ? { configIndex: (globalOffset + index) % configCount } : {})
             };
           });
 
