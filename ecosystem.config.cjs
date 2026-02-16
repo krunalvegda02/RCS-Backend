@@ -54,7 +54,7 @@ module.exports = {
     {
       name: 'webhook-consumer',
       script: 'src/workers/webhookConsumer.js',
-      instances: 5,
+      instances: 8,
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
