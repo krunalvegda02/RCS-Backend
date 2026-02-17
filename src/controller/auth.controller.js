@@ -635,7 +635,7 @@ export const getAllUsers = async (req, res) => {
 
     // Use lean() to bypass toJSON and get raw data including clientSecret
     const users = await User.find(query)
-      .select('name email phone companyname role isActive isVerified wallet.balance wallet.currency jioConfig perMessageCharge createdAt lastLogin')
+      .select('name email phone companyname role isActive isVerified wallet.balance wallet.currency jioConfig isMultiConfig jioConfigs perMessageCharge createdAt lastLogin')
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit)
