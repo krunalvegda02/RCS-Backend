@@ -109,8 +109,9 @@ async function startBatchEntriesConsumer() {
 
           console.log(`[BatchConsumer] Campaign ${campaignId} | Chunk ${chunkIndex + 1}/${totalChunks} | ${phoneNumbers.length}${configCount ? ` | ${configCount} configs` : ''}`);
 
-          // Global index offset for this chunk (so configIndex distributes across all chunks)
-          const globalOffset = chunkIndex * phoneNumbers.length;
+          // Calculate global offset: sum of all previous chunks (each chunk is 1000 except possibly the last)
+          const CHUNK_SIZE = 1000;
+          const globalOffset = chunkIndex * CHUNK_SIZE;
 
           const docs = phoneNumbers.map((phone, index) => {
             const messageId = `${campaignId}-${chunkIndex}-${index}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;

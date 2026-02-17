@@ -235,6 +235,7 @@ export async function sendBatchEntriesToKafka(batchData) {
     const templateId = batchData.templateId?.toString();
     const userId = batchData.userId.toString();
     const phoneNumbers = batchData.phoneNumbers;
+    const configCount = batchData.configCount || 0;
 
     if (!dbProducerConnected) {
       if (!dbConnectingPromise) {
@@ -266,7 +267,8 @@ export async function sendBatchEntriesToKafka(batchData) {
           phoneNumbers: chunk,
           chunkIndex,
           totalChunks,
-          batchId
+          batchId,
+          ...(configCount > 0 ? { configCount } : {})
         }),
         timestamp: Date.now()
       });
@@ -280,7 +282,7 @@ export async function sendBatchEntriesToKafka(batchData) {
     });
 
     console.log(
-      `[Kafka] ✅ Sent ${phoneNumbers.length} contacts in ${totalChunks} chunks`
+      `[Kafka] ✅ Sent ${phoneNumbers.length} contacts in ${totalChunks} chunks${configCount > 0 ? ` with ${configCount} configs` : ''}`
     );
 
     return { success: true, chunks: totalChunks };
