@@ -33,6 +33,10 @@ if (cluster.isPrimary) {
   const { startPaymentExpirationCron } = await import('./services/paymentExpiration.service.js');
   startPaymentExpirationCron();
 
+  // Start archive cron job for archiving campaigns everyday at midnight
+  await import('../scripts/cronArchive.js');
+  console.log('📦 Archive cron job initialized');
+
   for (let i = 0; i < numCPUs; i++) {
     cluster.fork();
   }

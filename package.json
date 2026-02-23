@@ -10,7 +10,9 @@
     "batch-consumer": "node -r dotenv/config src/workers/batchEntriesConsumer.js",
     "stats-consumer": "node -r dotenv/config src/workers/statsConsumer.js",
     "expire-messages": "node -r dotenv/config scripts/expirePendingMessages.js",
-    "expire-payments": "node -r dotenv/config scripts/expireAbandonedPayments.js"
+    "expire-payments": "node -r dotenv/config scripts/expireAbandonedPayments.js",
+    "archive-old": "node -r dotenv/config scripts/archiveOldCampaigns.js",
+    "cron-archive": "node -r dotenv/config scripts/cronArchive.js"
   },
   "keywords": [],
   "author": "",
@@ -31,6 +33,7 @@
     "cors": "^2.8.5",
     "crypto": "^1.0.1",
     "dotenv": "^16.4.7",
+    "exceljs": "^4.4.0",
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
     "kafkajs": "^2.2.4",

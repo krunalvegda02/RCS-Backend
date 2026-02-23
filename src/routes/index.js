@@ -13,6 +13,7 @@ import demoRequestRoutes from './demoRequest.routes.js';
 import onboardingRoutes from './onboarding.routes.js';
 import landingMessageRoutes from './landingMessage.routes.js';
 import paymentRoutes from './payment.routes.js';
+import archivedCampaignRoutes from './archivedCampaign.routes.js';
 import * as CampaignController from '../controller/campaign.controller.js';
 import { authenticateToken, requireUser, requireAdmin } from '../middlewares/auth.middleware.js';
 
@@ -47,6 +48,7 @@ router.use('/demo-requests', demoRequestRoutes);
 router.use('/onboarding', onboardingRoutes);
 router.use('/landing-message', landingMessageRoutes);
 router.use('/payment', paymentRoutes);
+router.use('/archived-campaigns', archivedCampaignRoutes);
 
 router.use('/webhooks', webhookRoutes);
 

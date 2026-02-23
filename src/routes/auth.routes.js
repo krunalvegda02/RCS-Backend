@@ -42,5 +42,6 @@ router.get('/admin/pending-users', authenticateToken, requireAdmin, PendingUsers
 router.post('/admin/approve-user/:userId', authenticateToken, requireAdmin, PendingUsersController.approveUser);
 router.delete('/admin/reject-user/:userId', authenticateToken, requireAdmin, PendingUsersController.rejectUser);
 router.post('/admin/impersonate/:userId', authenticateToken, requireAdmin, AuthController.impersonateUser);
+router.delete('/admin/users/:userId', authenticateToken, requireAdmin, AuthController.deleteUser);
 
 export default router;

@@ -1052,7 +1052,7 @@ export const getAllForAdmin = async (req, res) => {
       .sort({ createdAt: sortOrder })
       .limit(limit)
       .skip((page - 1) * limit)
-      .select('name status stats estimatedCost actualCost createdAt rcsCapableCount')
+      .select('name botId status stats estimatedCost actualCost createdAt rcsCapableCount')
       .lean();
 
     // Apply user filter if provided
@@ -1067,6 +1067,7 @@ export const getAllForAdmin = async (req, res) => {
       return {
         _id: campaign._id,
         CampaignName: campaign.name,
+        botId: campaign.botId,
         type: campaign.templateId?.templateType || 'RCS',
         cost: stats.total || 0,
         rcsCapableCount: campaign.rcsCapableCount || stats.rcsCapable || 0,
@@ -1305,7 +1306,7 @@ export const getAllCampaignsForExport = async (req, res) => {
       .populate('templateId', 'name templateType')
       .populate('userId', 'name email')
       .sort({ createdAt: sortOrder })
-      .select('name status stats createdAt')
+      .select('name botId status stats createdAt')
       .lean();
 
     // Apply user filter if admin
@@ -1327,6 +1328,7 @@ export const getAllCampaignsForExport = async (req, res) => {
     const transformedCampaigns = campaigns.map(campaign => ({
       _id: campaign._id,
       CampaignName: campaign.name,
+      botId: campaign.botId,
       type: campaign.templateId?.templateType || 'RCS',
       cost: campaign.stats?.total || 0,
       successCount: campaign.stats?.sent || 0,
