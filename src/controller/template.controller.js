@@ -48,7 +48,7 @@ export const getAll = async (req, res) => {
 
     let query = { userId, isActive: isActive !== 'false' };
     if (templateType) query.templateType = templateType;
-    
+
     if (search) {
       query.$or = [
         { name: { $regex: search, $options: 'i' } },
@@ -162,34 +162,36 @@ export const deleteTemplate = async (req, res) => {
       });
     }
 
-    // Extract image URLs from template content
-    const imageUrls = [];
-    
+    // Extract media URLs from template content (images, videos, thumbnails)
+    const mediaUrls = [];
+
     if (template.templateType === 'richCard' && template.content?.imageUrl) {
-      imageUrls.push(template.content.imageUrl);
+      mediaUrls.push(template.content.imageUrl);
+      if (template.content.thumbnailUrl) mediaUrls.push(template.content.thumbnailUrl);
     } else if (template.templateType === 'carousel' && template.content?.cards) {
       template.content.cards.forEach(card => {
-        if (card.imageUrl) imageUrls.push(card.imageUrl);
+        if (card.imageUrl) mediaUrls.push(card.imageUrl);
+        if (card.thumbnailUrl) mediaUrls.push(card.thumbnailUrl);
       });
     }
 
     // Delete template from database
     await Template.findByIdAndDelete(id);
 
-    // Delete images from Cloudinary
-    if (imageUrls.length > 0) {
-      for (const url of imageUrls) {
+    // Delete media files from Cloudinary
+    if (mediaUrls.length > 0) {
+      for (const url of mediaUrls) {
         try {
           await deleteFromCloudinary(url);
         } catch (err) {
-          console.error('Failed to delete image from Cloudinary:', url, err);
+          console.error('Failed to delete media from Cloudinary:', url, err);
         }
       }
     }
 
     res.json({
       success: true,
-      message: 'Template and associated images deleted successfully',
+      message: 'Template and associated media deleted successfully',
     });
   } catch (error) {
     res.status(500).json({

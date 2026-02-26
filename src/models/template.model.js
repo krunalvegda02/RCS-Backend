@@ -45,6 +45,12 @@ const templateSchema = new mongoose.Schema(
       subtitle: String,
       description: String,
       imageUrl: String,
+      mediaType: {
+        type: String,
+        enum: ['image', 'video'],
+        default: 'image',
+      },
+      thumbnailUrl: String,
       actions: [
         {
           label: String,
@@ -63,6 +69,12 @@ const templateSchema = new mongoose.Schema(
           subtitle: String,
           description: String,
           imageUrl: String,
+          mediaType: {
+            type: String,
+            enum: ['image', 'video'],
+            default: 'image',
+          },
+          thumbnailUrl: String,
           actions: [
             {
               label: String,
@@ -154,7 +166,7 @@ templateSchema.methods.validateContentStructure = function () {
   switch (templateType) {
     case 'richCard':
       if (!content.title) throw new Error('Rich card requires title');
-      if (!content.imageUrl) throw new Error('Rich card requires image URL');
+      if (!content.imageUrl) throw new Error('Rich card requires media URL');
       break;
 
     case 'carousel':
@@ -215,29 +227,29 @@ templateSchema.methods.incrementUsage = async function () {
 //   switch (templateType) {
 //     case 'richCard': {
 //       const cardContent = {};
-      
+
 //       if (content.title?.trim()) {
 //         cardContent.cardTitle = content.title.trim();
 //       }
-      
+
 //       if ((content.description || content.subtitle)?.trim()) {
 //         cardContent.cardDescription = (content.description || content.subtitle).trim();
 //       }
-      
+
 //       if (content.imageUrl?.trim()) {
 //         cardContent.cardMedia = {
 //           mediaHeight: 'TALL',
 //           contentInfo: { fileUrl: content.imageUrl.trim() }
 //         };
 //       }
-      
+
 //       if (content.actions?.length > 0) {
 //         cardContent.suggestions = content.actions
 //           .filter(action => action.label && action.uri)
 //           .map(action => {
 //             const label = action.label;
 //             const uri = action.uri;
-            
+
 //             if (action.actionType === 'openUri' || uri.startsWith('http')) {
 //               return {
 //                 action: {
@@ -247,7 +259,7 @@ templateSchema.methods.incrementUsage = async function () {
 //                 }
 //               };
 //             }
-            
+
 //             if (action.actionType === 'dialPhone' || uri.startsWith('+')) {
 //               return {
 //                 action: {
@@ -257,7 +269,7 @@ templateSchema.methods.incrementUsage = async function () {
 //                 }
 //               };
 //             }
-            
+
 //             return {
 //               reply: {
 //                 plainText: label,
@@ -266,7 +278,7 @@ templateSchema.methods.incrementUsage = async function () {
 //             };
 //           });
 //       }
-      
+
 //       jioContent = {
 //         richCardDetails: {
 //           standalone: {
@@ -283,7 +295,7 @@ templateSchema.methods.incrementUsage = async function () {
 //         if (!card.title?.trim() || !(card.description || card.subtitle)?.trim() || !card.imageUrl?.trim()) {
 //           return null;
 //         }
-        
+
 //         const cardContent = {
 //           cardTitle: card.title.trim(),
 //           cardDescription: (card.description || card.subtitle).trim(),
@@ -292,7 +304,7 @@ templateSchema.methods.incrementUsage = async function () {
 //             mediaHeight: 'MEDIUM'
 //           }
 //         };
-        
+
 //         if (card.actions?.length > 0) {
 //           cardContent.suggestions = card.actions
 //             .filter(action => action.label && action.uri)
@@ -323,10 +335,10 @@ templateSchema.methods.incrementUsage = async function () {
 //               };
 //             });
 //         }
-        
+
 //         return cardContent;
 //       }).filter(Boolean);
-      
+
 //       jioContent = {
 //         richCardDetails: {
 //           carousel: {
@@ -342,9 +354,9 @@ templateSchema.methods.incrementUsage = async function () {
 //       const textSuggestions = (content.buttons || []).map(btn => {
 //         const label = btn.label || btn.text || 'Action';
 //         const value = btn.value || btn.uri || '';
-        
+
 //         if (!label || !value) return null;
-        
+
 //         if (btn.actionType === 'dialPhone') {
 //           return {
 //             action: {
@@ -354,7 +366,7 @@ templateSchema.methods.incrementUsage = async function () {
 //             }
 //           };
 //         }
-        
+
 //         if (btn.actionType === 'openUri') {
 //           return {
 //             action: {
@@ -364,7 +376,7 @@ templateSchema.methods.incrementUsage = async function () {
 //             }
 //           };
 //         }
-        
+
 //         return {
 //           reply: {
 //             plainText: label,
@@ -372,7 +384,7 @@ templateSchema.methods.incrementUsage = async function () {
 //           }
 //         };
 //       }).filter(Boolean);
-      
+
 //       jioContent = {
 //         plainText: content.text,
 //         ...(textSuggestions.length > 0 ? { suggestions: textSuggestions } : {})
@@ -407,8 +419,29 @@ templateSchema.methods.generatePayload = function () {
   const sanitizeLabel = (label) =>
     String(label).trim().slice(0, 25); // Jio max 25 chars
 
-  const ensureHttps = (url) =>
-    url.startsWith('http') ? url : `https://${url}`;
+  const sanitizePhoneNumber = (phone) => {
+    if (!phone) return phone;
+    // Convert to string and remove all whitespace and special characters except digits and +
+    let cleaned = String(phone).trim().replace(/[^\d+]/g, '');
+    // Remove any + signs that aren't at the start
+    cleaned = cleaned.replace(/(?!^)\+/g, '');
+    // If it starts with +, keep it; otherwise add +91
+    if (!cleaned.startsWith('+')) {
+      // Remove leading zeros
+      cleaned = cleaned.replace(/^0+/, '');
+      cleaned = '+91' + cleaned;
+    }
+    // E.164 format: max 15 chars total (including +)
+    return cleaned.slice(0, 15);
+  };
+
+  const ensureHttps = (url) => {
+    if (!url) return url;
+    // Force https and handle protocol-less URLs
+    let formatted = url.startsWith('//') ? `https:${url}` : url;
+    if (!formatted.startsWith('http')) formatted = `https://${formatted}`;
+    return formatted.replace(/^http:/, 'https:');
+  };
 
   // =========================
   // Suggestion Builder
@@ -439,7 +472,7 @@ templateSchema.methods.generatePayload = function () {
           plainText: label,
           postback: { data: toBase64(value) },
           dialerAction: {
-            phoneNumber: value.startsWith('+') ? value : `+91${value}`,
+            phoneNumber: sanitizePhoneNumber(value),
           },
         },
       };
@@ -466,18 +499,25 @@ templateSchema.methods.generatePayload = function () {
         throw new Error('Rich card requires title and imageUrl');
       }
 
+      // Build contentInfo based on media type
+      const richCardContentInfo = {
+        fileUrl: ensureHttps(content.imageUrl),
+      };
+      // If video and thumbnailUrl exists, add it
+      if (content.mediaType === 'video' && content.thumbnailUrl) {
+        richCardContentInfo.thumbnailUrl = ensureHttps(content.thumbnailUrl);
+      }
+
       const cardContent = {
         cardTitle: content.title.trim().slice(0, 200),
         ...(content.description || content.subtitle
           ? {
-              cardDescription: (content.description || content.subtitle).trim().slice(0, 2000),
-            }
+            cardDescription: (content.description || content.subtitle).trim().slice(0, 2000),
+          }
           : {}),
         cardMedia: {
           mediaHeight: 'MEDIUM',
-          contentInfo: {
-            fileUrl: ensureHttps(content.imageUrl),
-          },
+          contentInfo: richCardContentInfo,
         },
       };
 
@@ -509,18 +549,25 @@ templateSchema.methods.generatePayload = function () {
         .map((card) => {
           if (!card.title || !card.imageUrl) return null;
 
+          // Build contentInfo based on media type
+          const carouselContentInfo = {
+            fileUrl: ensureHttps(card.imageUrl),
+          };
+          // If video and thumbnailUrl exists, add it
+          if (card.mediaType === 'video' && card.thumbnailUrl) {
+            carouselContentInfo.thumbnailUrl = ensureHttps(card.thumbnailUrl);
+          }
+
           const c = {
             cardTitle: card.title.trim().slice(0, 200),
             ...(card.description || card.subtitle
               ? {
-                  cardDescription: (card.description || card.subtitle).trim().slice(0, 2000),
-                }
+                cardDescription: (card.description || card.subtitle).trim().slice(0, 2000),
+              }
               : {}),
             cardMedia: {
               mediaHeight: 'MEDIUM',
-              contentInfo: {
-                fileUrl: ensureHttps(card.imageUrl),
-              },
+              contentInfo: carouselContentInfo,
             },
           };
 

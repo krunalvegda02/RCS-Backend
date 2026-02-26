@@ -27,14 +27,16 @@ export const uploadImage = multer({
     fileSize: 10000 * 1024 * 1024, // 10GB
   },
   fileFilter: (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png|webp|gif|pdf/;
-    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = allowedTypes.test(file.mimetype) || file.mimetype === 'application/pdf';
+    const imageTypes = /jpeg|jpg|png|webp|gif|pdf/;
+    const videoTypes = /mp4|mov|webm|avi|mkv/;
+    const ext = path.extname(file.originalname).toLowerCase();
+    const isImage = imageTypes.test(ext) || file.mimetype === 'application/pdf' || imageTypes.test(file.mimetype);
+    const isVideo = videoTypes.test(ext) || file.mimetype.startsWith('video/');
 
-    if (mimetype && extname) {
+    if (isImage || isVideo) {
       return cb(null, true);
     }
-    cb(new Error('Only image and PDF files are allowed'));
+    cb(new Error('Only image, video, and PDF files are allowed'));
   }
 });
 
