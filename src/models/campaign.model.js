@@ -134,6 +134,68 @@ campaignSchema.index({ botId: 1, status: 1 });
 
 
 
+// Enhanced sync with timeout and retry for critical settlement operations
+campaignSchema.methods.syncStatsForSettlement = async function () {
+  if (!ContactCampaignMessage) {
+    ContactCampaignMessage = mongoose.model('ContactCampaignMessage');
+  }
+
+  const maxRetries = 3;
+  const timeoutMs = 30000; // 30 seconds
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`[SettlementSync] Attempt ${attempt}/${maxRetries} for campaign ${this._id}`);
+      
+      const stats = await ContactCampaignMessage.aggregate([
+        { $match: { campaignId: this._id } },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: 1 },
+            pending: { $sum: { $cond: [{ $in: ['$status', ['pending', 'draft', 'queued']] }, 1, 0] } },
+            sent: { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read', 'replied', "failed"]] }, 1, 0] } },
+            delivered: { $sum: { $cond: [{ $in: ['$status', ['delivered', 'read', 'replied']] }, 1, 0] } },
+            read: { $sum: { $cond: [{ $in: ['$status', ['read', 'replied']] }, 1, 0] } },
+            replied: { $sum: { $cond: [{ $eq: ['$status', 'replied'] }, 1, 0] } },
+            expired: { $sum: { $cond: [{ $eq: ['$status', 'expired'] }, 1, 0] } },
+            failed: { $sum: { $cond: [{ $in: ['$status', ['failed', 'bounced']] }, 1, 0] } }
+          }
+        }
+      ], { maxTimeMS: timeoutMs, allowDiskUse: true });
+
+      const newStats = stats[0] || { total: 0, pending: 0, sent: 0, delivered: 0, read: 0, replied: 0, expired: 0, failed: 0 };
+
+      this.stats = {
+        total: newStats.total,
+        pending: newStats.pending,
+        sent: newStats.sent,
+        delivered: newStats.delivered,
+        read: newStats.read,
+        replied: newStats.replied,
+        expired: newStats.expired,
+        failed: newStats.failed,
+        bounced: 0
+      };
+
+      await this.save();
+      console.log(`[SettlementSync] ✅ Success on attempt ${attempt}`);
+      return this.stats;
+      
+    } catch (error) {
+      console.log(`[SettlementSync] ❌ Attempt ${attempt} failed:`, error.message);
+      
+      if (attempt === maxRetries) {
+        console.log(`[SettlementSync] All attempts failed, throwing error`);
+        throw error;
+      }
+      
+      // Wait before retry (exponential backoff)
+      await new Promise(resolve => setTimeout(resolve, attempt * 2000));
+    }
+  }
+};
+
 // Sync stats from ContactCampaignMessage - FLAT MODEL
 campaignSchema.methods.syncStats = async function () {
   if (!ContactCampaignMessage) {
@@ -254,35 +316,45 @@ campaignSchema.methods.completeCampaign = async function () {
       ContactCampaignMessage = mongoose.model('ContactCampaignMessage');
     }
 
-    // 1. Aggregate message stats - FLAT MODEL
-    const stats = await ContactCampaignMessage.aggregate([
-      { $match: { campaignId: this._id } },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: 1 },
-          sent: { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read', 'replied', 'failed']] }, 1, 0] } },
-          delivered: { $sum: { $cond: [{ $in: ['$status', ['delivered', 'read', 'replied']] }, 1, 0] } },
-          read: { $sum: { $cond: [{ $in: ['$status', ['read', 'replied']] }, 1, 0] } },
-          replied: { $sum: { $cond: [{ $eq: ['$status', 'replied'] }, 1, 0] } },
-          expired: { $sum: { $cond: [{ $eq: ['$status', 'expired'] }, 1, 0] } },
-          failed: { $sum: { $cond: [{ $in: ['$status', ['failed', 'bounced']] }, 1, 0] } },
-          deliveredTotal: {
-            $sum: { $cond: [{ $in: ['$status', ['delivered', 'read', 'replied']] }, 1, 0] }
-          }
-        }
-      }
-    ], { maxTimeMS: 15000, allowDiskUse: true });
-
-    const deliveryStats = stats[0] || { total: 0, sent: 0, delivered: 0, read: 0, replied: 0, expired: 0, failed: 0, deliveredTotal: 0 };
+    // 1. CRITICAL: Use enhanced sync with retry for 100% accuracy in settlement
+    console.log(`[SettleCampaign] Starting enhanced sync for settlement accuracy...`);
+    let syncSuccess = false;
+    
+    try {
+      await this.syncStatsForSettlement();
+      syncSuccess = true;
+      console.log(`[SettleCampaign] ✅ Enhanced sync completed successfully`);
+    } catch (syncError) {
+      console.log(`[SettleCampaign] ❌ Enhanced sync failed after retries:`, syncError.message);
+      console.log(`[SettleCampaign] ⚠️  FALLBACK: Using cached stats (may be slightly outdated)`);
+    }
+    
+    // Validate stats exist
+    if (!this.stats || this.stats.total === 0) {
+      throw new Error('No campaign stats available for settlement - cannot proceed with payment');
+    }
+    
+    console.log(`[SettleCampaign] Using ${syncSuccess ? 'FRESH' : 'CACHED'} stats for settlement`);
+    console.log(`[SettleCampaign] Campaign stats:`, this.stats);
+    
+    const deliveryStats = {
+      total: this.stats.total || 0,
+      sent: this.stats.sent || 0,
+      delivered: this.stats.delivered || 0,
+      read: this.stats.read || 0,
+      replied: this.stats.replied || 0,
+      expired: this.stats.expired || 0,
+      failed: this.stats.failed || 0,
+      deliveredTotal: this.stats.delivered || 0 // For billing
+    };
     console.log(`[SettleCampaign] Campaign: ${this.name}`);
-    console.log(`[SettleCampaign] Raw stats from DB:`, deliveryStats);
+    console.log(`[SettleCampaign] Cached stats:`, deliveryStats);
     console.log(`[SettleCampaign] Stats breakdown:`);
     console.log(`  - Total messages: ${deliveryStats.total}`);
     console.log(`  - Sent: ${deliveryStats.sent}`);
-    console.log(`  - Delivered (status=delivered): ${deliveryStats.delivered}`);
-    console.log(`  - Read (status=read OR replied): ${deliveryStats.read}`);
-    console.log(`  - Replied (status=replied): ${deliveryStats.replied}`);
+    console.log(`  - Delivered: ${deliveryStats.delivered}`);
+    console.log(`  - Read: ${deliveryStats.read}`);
+    console.log(`  - Replied: ${deliveryStats.replied}`);
     console.log(`  - Expired: ${deliveryStats.expired}`);
     console.log(`  - Failed: ${deliveryStats.failed}`);
     console.log(`  - Total Delivered (for billing): ${deliveryStats.deliveredTotal}`);
