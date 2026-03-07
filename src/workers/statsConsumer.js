@@ -1,12 +1,14 @@
 import mongoose from 'mongoose';
 import { Kafka } from 'kafkajs';
 import connectDB from '../db/index.js';
+import campaignStatsWorker from './campaignStatsWorker.js';
 
 process.env.WORKER_MODE = 'true';
 
 async function startStatsConsumer() {
   try {
     await connectDB();
+    await campaignStatsWorker.start();
 
     const kafka = new Kafka({
       clientId: 'stats-consumer',
@@ -19,10 +21,10 @@ async function startStatsConsumer() {
 
     const consumer = kafka.consumer({
       groupId: `stats-processor-${process.env.NODE_ENV || 'dev'}`,
-      sessionTimeout: 120000, // 2 minutes
-      heartbeatInterval: 5000, // 5 seconds
-      rebalanceTimeout: 120000, // 2 minutes
-      maxWaitTimeInMs: 5000,
+      sessionTimeout: 300000, // 5 minutes (increased from 2 minutes)
+      heartbeatInterval: 3000, // 3 seconds (reduced from 5 seconds)
+      rebalanceTimeout: 300000, // 5 minutes (increased from 2 minutes)
+      maxWaitTimeInMs: 3000, // Reduced from 5 seconds
       retry: {
         retries: 5,
         initialRetryTime: 300
@@ -106,114 +108,115 @@ async function startStatsConsumer() {
         for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
           const chunk = chunks[chunkIndex];
           const bulkOps = [];
-          const affectedCampaigns = new Set();
+          const statusChanges = new Map();
           
           await heartbeat(); // Heartbeat before each chunk
 
-
-
           for (const log of chunk) {
-          const { messageId, webhookData, eventType: logEventType } = log;
-          const eventType = webhookData?.eventType;
-          const entity = webhookData?.rawPayload?.entity;
-          const entityType = webhookData?.rawPayload?.entityType;
+            const { messageId, webhookData, eventType: logEventType } = log;
+            const eventType = webhookData?.eventType;
+            const entity = webhookData?.rawPayload?.entity;
+            const entityType = webhookData?.rawPayload?.entityType;
 
-          const webhookTimestamp = entity?.sendTime || entity?.deliveryTime ||
-            entity?.readTime || entity?.receiveTime || log.timestamp;
-          const timestamp = new Date(webhookTimestamp);
+            const webhookTimestamp = entity?.sendTime || entity?.deliveryTime ||
+              entity?.readTime || entity?.receiveTime || log.timestamp;
+            const timestamp = new Date(webhookTimestamp);
 
-          let newStatus = null;
-          let updateFields = {};
+            let newStatus = null;
+            let updateFields = {};
 
-          const isUserInteraction = logEventType === 'user_interaction' || entityType === 'USER_MESSAGE';
+            const isUserInteraction = logEventType === 'user_interaction' || entityType === 'USER_MESSAGE';
 
-          // Status priority: replied > read > delivered > sent > pending
-          const statusPriority = {
-            'pending': 1,
-            'queued': 1,
-            'sent': 2,
-            'delivered': 3,
-            'read': 4,
-            'replied': 5,
-            'failed': 6,
-            'expired': 6
-          };
+            // Status priority: replied > read > delivered > sent > pending
+            const statusPriority = {
+              'pending': 1,
+              'queued': 1,
+              'sent': 2,
+              'delivered': 3,
+              'read': 4,
+              'replied': 5,
+              'failed': 6,
+              'expired': 6
+            };
 
-          if (isUserInteraction) {
-            newStatus = 'replied';
-            updateFields.lastInteractionAt = timestamp;
-            if (webhookData.suggestionResponse) {
-              updateFields.suggestionResponse = webhookData.suggestionResponse;
-              updateFields.clickedAt = timestamp;
-              updateFields.clickedAction = webhookData.suggestionResponse.plainText;
-            }
-            if (webhookData.rawPayload?.entity?.text) {
-              updateFields.userText = webhookData.rawPayload.entity.text;
-            }
-          } else {
-            switch (eventType) {
-              case 'MESSAGE_SENT':
-              case 'SEND_MESSAGE_SUCCESS':
-                newStatus = 'sent';
-                updateFields.sentAt = timestamp;
-                break;
+            if (isUserInteraction) {
+              newStatus = 'replied';
+              updateFields.lastInteractionAt = timestamp;
+              if (webhookData.suggestionResponse) {
+                updateFields.suggestionResponse = webhookData.suggestionResponse;
+                updateFields.clickedAt = timestamp;
+                updateFields.clickedAction = webhookData.suggestionResponse.plainText;
+              }
+              if (webhookData.rawPayload?.entity?.text) {
+                updateFields.userText = webhookData.rawPayload.entity.text;
+              }
+            } else {
+              switch (eventType) {
+                case 'MESSAGE_SENT':
+                case 'SEND_MESSAGE_SUCCESS':
+                  newStatus = 'sent';
+                  updateFields.sentAt = timestamp;
+                  break;
 
-              case 'MESSAGE_DELIVERED':
-                newStatus = 'delivered';
-                updateFields.deliveredAt = timestamp;
-                break;
+                case 'MESSAGE_DELIVERED':
+                  newStatus = 'delivered';
+                  updateFields.deliveredAt = timestamp;
+                  break;
 
-              case 'MESSAGE_READ':
-                newStatus = 'read';
-                updateFields.readAt = timestamp;
-                break;
+                case 'MESSAGE_READ':
+                  newStatus = 'read';
+                  updateFields.readAt = timestamp;
+                  break;
 
-              case 'SEND_MESSAGE_FAILURE':
-              case 'MESSAGE_EXPIRED':
-              case 'MESSAGE_REVOKED':
-                newStatus = 'failed';
-                updateFields.failedAt = timestamp;
-                updateFields.errorCode = webhookData.rawPayload?.entity?.error?.code || 'UNKNOWN';
-                updateFields.errorMessage = webhookData.rawPayload?.entity?.error?.message || 'Failed';
-                break;
-            }
-          }
-
-          if (newStatus) {
-            const currentPriority = statusPriority[newStatus] || 0;
-            
-            // Build list of statuses that can be upgraded from
-            const upgradableStatuses = [];
-            for (const [status, priority] of Object.entries(statusPriority)) {
-              if (priority < currentPriority) {
-                upgradableStatuses.push(status);
+                case 'SEND_MESSAGE_FAILURE':
+                case 'MESSAGE_EXPIRED':
+                case 'MESSAGE_REVOKED':
+                  newStatus = 'failed';
+                  updateFields.failedAt = timestamp;
+                  updateFields.errorCode = webhookData.rawPayload?.entity?.error?.code || 'UNKNOWN';
+                  updateFields.errorMessage = webhookData.rawPayload?.entity?.error?.message || 'Failed';
+                  break;
               }
             }
-            
-            bulkOps.push({
-              updateOne: {
-                filter: { 
-                  messageId,
-                  $or: [
-                    { status: { $exists: false } },
-                    { status: { $in: upgradableStatuses } }
-                  ]
-                },
-                update: {
-                  $set: {
-                    status: newStatus,
-                    lastWebhookAt: timestamp,
-                    ...updateFields
+
+            if (newStatus) {
+              const currentPriority = statusPriority[newStatus] || 0;
+              
+              // Build list of statuses that can be upgraded from
+              const upgradableStatuses = [];
+              for (const [status, priority] of Object.entries(statusPriority)) {
+                if (priority < currentPriority) {
+                  upgradableStatuses.push(status);
+                }
+              }
+              
+              // Store for incremental update
+              statusChanges.set(messageId, newStatus);
+              
+              bulkOps.push({
+                updateOne: {
+                  filter: { 
+                    messageId,
+                    $or: [
+                      { status: { $exists: false } },
+                      { status: { $in: upgradableStatuses } }
+                    ]
                   },
-                  $inc: {
-                    ...(webhookData.suggestionResponse && { userClickCount: 1 }),
-                    ...(webhookData.rawPayload?.entity?.text && { userReplyCount: 1 })
-                  }
-                },
-                upsert: false
-              }
-            });
-          }
+                  update: {
+                    $set: {
+                      status: newStatus,
+                      lastWebhookAt: timestamp,
+                      ...updateFields
+                    },
+                    $inc: {
+                      ...(webhookData.suggestionResponse && { userClickCount: 1 }),
+                      ...(webhookData.rawPayload?.entity?.text && { userReplyCount: 1 })
+                    }
+                  },
+                  upsert: false
+                }
+              });
+            }
           }
 
           // Bulk update ContactCampaignMessage for this chunk
@@ -223,14 +226,21 @@ async function startStatsConsumer() {
               totalProcessed += result.modifiedCount;
               console.log(`[StatsConsumer] Chunk ${chunkIndex + 1}/${chunks.length}: Updated ${result.modifiedCount} messages`);
 
-              // Collect affected campaigns
+              // Update campaign stats incrementally
               const updatedMessages = await ContactCampaignMessage.find(
-                { messageId: { $in: chunk.map(l => l.messageId) } },
-                { campaignId: 1 }
+                { messageId: { $in: Array.from(statusChanges.keys()) } },
+                { messageId: 1, campaignId: 1, status: 1 }
               ).lean();
-              updatedMessages.forEach(msg => {
-                if (msg.campaignId) affectedCampaigns.add(msg.campaignId.toString());
-              });
+              
+              for (const msg of updatedMessages) {
+                const newStatus = statusChanges.get(msg.messageId);
+                if (newStatus && msg.campaignId) {
+                  campaignStatsWorker.addStatsUpdate(msg.campaignId, {
+                    oldStatus: 'pending',
+                    newStatus: msg.status
+                  });
+                }
+              }
             } catch (error) {
               console.error(`[StatsConsumer] Chunk ${chunkIndex + 1} bulk write error:`, error.message);
             }
@@ -249,26 +259,7 @@ async function startStatsConsumer() {
           }
 
           await heartbeat(); // Heartbeat after marking processed
-
-          // Sync campaign stats for this chunk
-          if (affectedCampaigns.size > 0) {
-            const campaignIds = Array.from(affectedCampaigns);
-            for (const campaignId of campaignIds) {
-              try {
-                const campaign = await Campaign.findById(campaignId);
-                if (campaign) {
-                  await campaign.syncStats();
-                }
-              } catch (err) {
-                console.error(`[StatsConsumer] Sync error for ${campaignId}:`, err.message);
-              }
-            }
-          }
-
-          await heartbeat(); // Heartbeat after campaign sync
         }
-
-
 
         const duration = Date.now() - startTime;
         console.log(`[StatsConsumer] Batch #${batchCount} complete in ${duration}ms | Total processed: ${totalProcessed}`);
@@ -286,11 +277,6 @@ async function startStatsConsumer() {
       console.log(`[StatsConsumer] Status: ${batchCount} batches processed | ${totalProcessed} messages updated`);
     }, 30000);
 
-
-
-
-
-
     const shutdown = async () => {
       console.log('🛑 Shutting down stats consumer...');
       await consumer.disconnect();
@@ -298,13 +284,8 @@ async function startStatsConsumer() {
       process.exit(0);
     };
 
-
     process.on('SIGTERM', shutdown);
     process.on('SIGINT', shutdown);
-
-
-
-
 
   } catch (error) {
     console.error('❌ Stats consumer startup failed:', error);

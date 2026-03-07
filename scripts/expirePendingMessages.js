@@ -10,7 +10,7 @@ async function expirePendingMessages() {
     const ContactCampaignMessage = (await import('../src/models/contactMessage.model.js')).default;
     const Campaign = (await import('../src/models/campaign.model.js')).default;
 
-    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    const twoDaysAgo = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
     console.log(`📅 Expiring messages older than: ${twoDaysAgo.toISOString()} (2 days ago)`);
 
     // 1. Expire stale pending/sent messages
