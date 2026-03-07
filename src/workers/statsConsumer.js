@@ -219,6 +219,24 @@ async function startStatsConsumer() {
             }
           }
 
+          // Get OLD status BEFORE bulk update for accurate incremental stats
+          const messageIds = Array.from(statusChanges.keys());
+          const oldStatusMap = new Map();
+          
+          if (messageIds.length > 0) {
+            const existingMessages = await ContactCampaignMessage.find(
+              { messageId: { $in: messageIds } },
+              { messageId: 1, status: 1, campaignId: 1 }
+            ).lean();
+            
+            for (const msg of existingMessages) {
+              oldStatusMap.set(msg.messageId, {
+                oldStatus: msg.status || 'pending',
+                campaignId: msg.campaignId
+              });
+            }
+          }
+
           // Bulk update ContactCampaignMessage for this chunk
           if (bulkOps.length > 0) {
             try {
@@ -226,18 +244,13 @@ async function startStatsConsumer() {
               totalProcessed += result.modifiedCount;
               console.log(`[StatsConsumer] Chunk ${chunkIndex + 1}/${chunks.length}: Updated ${result.modifiedCount} messages`);
 
-              // Update campaign stats incrementally
-              const updatedMessages = await ContactCampaignMessage.find(
-                { messageId: { $in: Array.from(statusChanges.keys()) } },
-                { messageId: 1, campaignId: 1, status: 1 }
-              ).lean();
-              
-              for (const msg of updatedMessages) {
-                const newStatus = statusChanges.get(msg.messageId);
-                if (newStatus && msg.campaignId) {
-                  campaignStatsWorker.addStatsUpdate(msg.campaignId, {
-                    oldStatus: 'pending',
-                    newStatus: msg.status
+              // Update campaign stats with ACTUAL old/new status pairs
+              for (const [messageId, newStatus] of statusChanges) {
+                const messageData = oldStatusMap.get(messageId);
+                if (messageData && messageData.campaignId) {
+                  campaignStatsWorker.addStatsUpdate(messageData.campaignId, {
+                    oldStatus: messageData.oldStatus,
+                    newStatus: newStatus
                   });
                 }
               }

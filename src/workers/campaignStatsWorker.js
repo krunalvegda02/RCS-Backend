@@ -19,7 +19,7 @@ class CampaignStatsWorker {
     }, this.intervalMs);
   }
 
-  // Add incremental stat changes with proper overlapping logic (prevents double counting)
+  // Correct cumulative counting logic - delivered never decreases when read
   addStatsUpdate(campaignId, statusChange) {
     const id = campaignId.toString();
     if (!this.pendingUpdates.has(id)) {
@@ -29,46 +29,57 @@ class CampaignStatsWorker {
     const updates = this.pendingUpdates.get(id);
     const { oldStatus, newStatus } = statusChange;
     
-    // Define status groups for overlapping logic
+    // Skip if no actual change
+    if (oldStatus === newStatus) return;
+    
+    console.log(`[CampaignStats] ${id}: ${oldStatus} → ${newStatus}`);
+    
+    // Define status groups for CUMULATIVE counting (matches syncCampaignStats.js)
     const statusGroups = {
-      sent: ['sent', 'delivered', 'read', 'replied', 'failed'],
-      delivered: ['delivered', 'read', 'replied'],
-      read: ['read', 'replied']
+      sent: ['sent', 'delivered', 'read', 'replied', 'failed'],      // All non-pending
+      delivered: ['delivered', 'read', 'replied'],                   // All delivered+ 
+      read: ['read', 'replied']                                      // All read+
     };
     
-    // Only decrement if oldStatus was actually pending
-    if (oldStatus === 'pending') {
+    // Handle pending decrements
+    if (['pending', 'queued', 'draft'].includes(oldStatus)) {
       updates['stats.pending'] = (updates['stats.pending'] || 0) - 1;
     }
     
-    if (newStatus && oldStatus !== newStatus) {
-      // Handle overlapping groups - only increment if not already in that group
-      
-      // Sent group: increment only if old status wasn't in sent group
-      if (statusGroups.sent.includes(newStatus) && !statusGroups.sent.includes(oldStatus)) {
-        updates['stats.sent'] = (updates['stats.sent'] || 0) + 1;
-      }
-      
-      // Delivered group: increment only if old status wasn't in delivered group  
-      if (statusGroups.delivered.includes(newStatus) && !statusGroups.delivered.includes(oldStatus)) {
-        updates['stats.delivered'] = (updates['stats.delivered'] || 0) + 1;
-      }
-      
-      // Read group: increment only if old status wasn't in read group
-      if (statusGroups.read.includes(newStatus) && !statusGroups.read.includes(oldStatus)) {
-        updates['stats.read'] = (updates['stats.read'] || 0) + 1;
-      }
-      
-      // Individual exact counts - always safe to increment
-      if (newStatus === 'replied' && oldStatus !== 'replied') {
-        updates['stats.replied'] = (updates['stats.replied'] || 0) + 1;
-      }
-      if (newStatus === 'failed' && oldStatus !== 'failed') {
-        updates['stats.failed'] = (updates['stats.failed'] || 0) + 1;
-      }
-      if (newStatus === 'expired' && oldStatus !== 'expired') {
-        updates['stats.expired'] = (updates['stats.expired'] || 0) + 1;
-      }
+    // CUMULATIVE LOGIC: Only increment when entering a group, never decrement
+    
+    // SENT group: increment when first entering sent group
+    const wasInSent = statusGroups.sent.includes(oldStatus);
+    const nowInSent = statusGroups.sent.includes(newStatus);
+    if (!wasInSent && nowInSent) {
+      updates['stats.sent'] = (updates['stats.sent'] || 0) + 1;
+    }
+    
+    // DELIVERED group: increment when first entering delivered group
+    const wasInDelivered = statusGroups.delivered.includes(oldStatus);
+    const nowInDelivered = statusGroups.delivered.includes(newStatus);
+    if (!wasInDelivered && nowInDelivered) {
+      updates['stats.delivered'] = (updates['stats.delivered'] || 0) + 1;
+    }
+    
+    // READ group: increment when first entering read group
+    const wasInRead = statusGroups.read.includes(oldStatus);
+    const nowInRead = statusGroups.read.includes(newStatus);
+    if (!wasInRead && nowInRead) {
+      updates['stats.read'] = (updates['stats.read'] || 0) + 1;
+    }
+    
+    // Individual exact counts
+    if (oldStatus !== 'replied' && newStatus === 'replied') {
+      updates['stats.replied'] = (updates['stats.replied'] || 0) + 1;
+    }
+    
+    if (oldStatus !== 'failed' && newStatus === 'failed') {
+      updates['stats.failed'] = (updates['stats.failed'] || 0) + 1;
+    }
+    
+    if (oldStatus !== 'expired' && newStatus === 'expired') {
+      updates['stats.expired'] = (updates['stats.expired'] || 0) + 1;
     }
   }
 
