@@ -56,46 +56,37 @@ class CampaignStatsWorker {
       }
     }
     
-    // Define status groups for CUMULATIVE counting
+    // Status groups for CUMULATIVE counting (matches legacy syncCampaignStats.js)
     const statusGroups = {
+      pending: ['pending', 'draft', 'queued'],
       sent: ['sent', 'delivered', 'read', 'replied', 'failed'],
       delivered: ['delivered', 'read', 'replied'],
-      read: ['read', 'replied']
+      read: ['read', 'replied'],
+      replied: ['replied'],
+      failed: ['failed', 'bounced'],
+      expired: ['expired']
     };
     
     // Handle pending decrements
-    if (['pending', 'queued', 'draft'].includes(oldStatus)) {
+    if (statusGroups.pending.includes(oldStatus)) {
       updates['stats.pending'] = (updates['stats.pending'] || 0) - 1;
     }
     
-    // CUMULATIVE LOGIC - optimized for performance
-    const wasInSent = statusGroups.sent.includes(oldStatus);
-    const nowInSent = statusGroups.sent.includes(newStatus);
-    if (!wasInSent && nowInSent) {
-      updates['stats.sent'] = (updates['stats.sent'] || 0) + 1;
-    }
+    // CUMULATIVE COUNTING LOGIC - matches legacy behavior exactly
+    // Only increment when ENTERING a group for the first time
+    // Never decrement cumulative groups (delivered stays delivered even when read)
     
-    const wasInDelivered = statusGroups.delivered.includes(oldStatus);
-    const nowInDelivered = statusGroups.delivered.includes(newStatus);
-    if (!wasInDelivered && nowInDelivered) {
-      updates['stats.delivered'] = (updates['stats.delivered'] || 0) + 1;
-    }
-    
-    const wasInRead = statusGroups.read.includes(oldStatus);
-    const nowInRead = statusGroups.read.includes(newStatus);
-    if (!wasInRead && nowInRead) {
-      updates['stats.read'] = (updates['stats.read'] || 0) + 1;
-    }
-    
-    // Individual exact counts
-    if (oldStatus !== 'replied' && newStatus === 'replied') {
-      updates['stats.replied'] = (updates['stats.replied'] || 0) + 1;
-    }
-    if (oldStatus !== 'failed' && newStatus === 'failed') {
-      updates['stats.failed'] = (updates['stats.failed'] || 0) + 1;
-    }
-    if (oldStatus !== 'expired' && newStatus === 'expired') {
-      updates['stats.expired'] = (updates['stats.expired'] || 0) + 1;
+    for (const [groupName, statuses] of Object.entries(statusGroups)) {
+      if (groupName === 'pending') continue; // Already handled above
+      
+      const wasInGroup = statuses.includes(oldStatus);
+      const nowInGroup = statuses.includes(newStatus);
+      
+      // Only increment when entering group for first time
+      if (!wasInGroup && nowInGroup) {
+        updates[`stats.${groupName}`] = (updates[`stats.${groupName}`] || 0) + 1;
+      }
+      // NEVER decrement cumulative groups - once delivered, always counts as delivered
     }
   }
 
