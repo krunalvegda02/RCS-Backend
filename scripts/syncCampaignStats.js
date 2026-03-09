@@ -26,7 +26,7 @@ const syncCampaignStats = async (campaignId, Campaign, ContactCampaignMessage) =
   }
 
   const totalCount = await ContactCampaignMessage.countDocuments({ campaignId: campaign._id });
-  
+
   if (totalCount === 0) {
     console.log(`⚠️  ${campaign.name}: No messages`);
     return { success: false };
@@ -39,7 +39,7 @@ const syncCampaignStats = async (campaignId, Campaign, ContactCampaignMessage) =
         _id: null,
         total: { $sum: 1 },
         pending: { $sum: { $cond: [{ $in: ['$status', ['pending', 'draft', 'queued']] }, 1, 0] } },
-        sent: { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read', 'replied', 'failed']] }, 1, 0] } },
+        sent: { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read', 'replied']] }, 1, 0] } },
         delivered: { $sum: { $cond: [{ $in: ['$status', ['delivered', 'read', 'replied']] }, 1, 0] } },
         read: { $sum: { $cond: [{ $in: ['$status', ['read', 'replied']] }, 1, 0] } },
         replied: { $sum: { $cond: [{ $eq: ['$status', 'replied'] }, 1, 0] } },
@@ -63,18 +63,20 @@ const syncCampaignStats = async (campaignId, Campaign, ContactCampaignMessage) =
         'stats.replied': newStats.replied,
         'stats.expired': newStats.expired,
         'stats.failed': newStats.failed,
-        'stats.bounced': 0
+        'stats.bounced': 0,
+        'stats.lastUpdated': new Date()
       }
     }
   );
 
-  console.log(`✅ ${campaign.name}: total=${newStats.total}, delivered=${newStats.delivered}, failed=${newStats.failed}`);
+  console.log(`✅ ${campaign.name}: total=${newStats.total}, sent=${newStats.sent}, failed=${newStats.failed}`);
   return { success: true };
 };
 
 const main = async () => {
   const campaignId = process.argv[2];
-  
+  const mode = process.argv[3] || 'recent'; // 'recent', 'all', or 'affected'
+
   await connectDB();
 
   const Campaign = mongoose.model('Campaign', new mongoose.Schema({}, { strict: false }));
@@ -83,11 +85,22 @@ const main = async () => {
   if (campaignId && campaignId !== 'all') {
     await syncCampaignStats(campaignId, Campaign, ContactCampaignMessage);
   } else {
-    const campaigns = await Campaign.find({}).select('_id name');
-    console.log(`\n📊 Found ${campaigns.length} campaigns\n`);
+    let campaigns;
     
+    if (mode === 'recent') {
+      // Only sync campaigns from last 4 days
+      const fourDaysAgo = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000);
+      campaigns = await Campaign.find({
+        createdAt: { $gte: fourDaysAgo }
+      }).select('_id name createdAt');
+      console.log(`📊 Found ${campaigns.length} recent campaigns (last 4 days)`);
+    } else {
+      campaigns = await Campaign.find({}).select('_id name');
+      console.log(`📊 Found ${campaigns.length} campaigns (all)`);
+    }
+
     let synced = 0, skipped = 0;
-    
+
     for (const campaign of campaigns) {
       try {
         const result = await syncCampaignStats(campaign._id, Campaign, ContactCampaignMessage);
@@ -98,8 +111,8 @@ const main = async () => {
         skipped++;
       }
     }
-    
-    console.log(`\n📈 ✅ ${synced} synced, ⚠️  ${skipped} skipped`);
+
+    console.log(`📈 ✅ ${synced} synced, ⚠️ ${skipped} skipped (mode: ${mode})`);
   }
 
   await mongoose.connection.close();
