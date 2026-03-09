@@ -940,7 +940,8 @@ export const getUserCampaignReports = async (req, res) => {
           read: stats.read || 0,
           replied: stats.replied || 0,
           total: stats.total || 0,
-          pending: stats.pending || 0
+          pending: stats.pending || 0,
+          lastUpdated: stats.lastUpdated || null
         }
       };
     });
@@ -1918,11 +1919,24 @@ export const refreshStats = async (req, res) => {
       success: true,
       message: 'Campaign stats refreshed successfully',
       data: {
-        ...campaign.toObject(),
+        _id: campaign._id,
+        CampaignName: campaign.name,
         stats: {
           ...newStats,
           lastUpdated: new Date()
-        }
+        },
+        // Include other fields that frontend expects - PRESERVE original rcsCapableCount
+        status: campaign.status,
+        createdAt: campaign.createdAt,
+        type: campaign.templateId?.templateType || 'RCS',
+        cost: newStats.total || 0,
+        rcsCapableCount: campaign.rcsCapableCount || campaign.stats?.rcsCapable || 0, // PRESERVE original RCS count
+        successCount: newStats.sent || 0,
+        failedCount: newStats.failed || 0,
+        expiredCount: newStats.expired || 0,
+        totalDelivered: newStats.delivered || 0,
+        totalRead: newStats.read || 0,
+        totalReplied: newStats.replied || 0
       }
     });
   } catch (error) {

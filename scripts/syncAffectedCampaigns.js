@@ -142,3 +142,17 @@ const main = async () => {
 };
 
 main();
+
+
+
+
+
+// # SSH into production
+// ssh root@167.86.106.173
+
+// # Run manually
+// cd /var/www/rcs-backend
+// node scripts/syncAffectedCampaigns.js
+
+// # Watch logs live
+// tail -f /var/log/campaign-stats-affected.log
