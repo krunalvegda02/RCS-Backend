@@ -154,7 +154,7 @@ campaignSchema.methods.syncStatsForSettlement = async function () {
             _id: null,
             total: { $sum: 1 },
             pending: { $sum: { $cond: [{ $in: ['$status', ['pending', 'draft', 'queued']] }, 1, 0] } },
-            sent: { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read', 'replied', "failed"]] }, 1, 0] } },
+            sent: { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read', 'replied']] }, 1, 0] } },
             delivered: { $sum: { $cond: [{ $in: ['$status', ['delivered', 'read', 'replied']] }, 1, 0] } },
             read: { $sum: { $cond: [{ $in: ['$status', ['read', 'replied']] }, 1, 0] } },
             replied: { $sum: { $cond: [{ $eq: ['$status', 'replied'] }, 1, 0] } },
@@ -209,7 +209,7 @@ campaignSchema.methods.syncStats = async function () {
         _id: null,
         total: { $sum: 1 },
         pending: { $sum: { $cond: [{ $in: ['$status', ['pending', 'draft', 'queued']] }, 1, 0] } },
-        sent: { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read', 'replied', "failed"]] }, 1, 0] } },
+        sent: { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read', 'replied']] }, 1, 0] } },
         delivered: { $sum: { $cond: [{ $in: ['$status', ['delivered', 'read', 'replied']] }, 1, 0] } },
         read: { $sum: { $cond: [{ $in: ['$status', ['read', 'replied']] }, 1, 0] } },
         replied: { $sum: { $cond: [{ $eq: ['$status', 'replied'] }, 1, 0] } },
@@ -360,12 +360,13 @@ campaignSchema.methods.completeCampaign = async function () {
     console.log(`  - Total Delivered (for billing): ${deliveryStats.deliveredTotal}`);
     console.log(`[SettleCampaign] Stats: total=${deliveryStats.total}, delivered=${deliveryStats.deliveredTotal}, expired=${deliveryStats.expired}, failed=${deliveryStats.failed}`);
 
-    // 2. Calculate costs
+    // 2. Calculate costs - charge only for sent messages (failed are already excluded from sent count)
     const blockedAmount = this.blockedAmount || this.estimatedCost || deliveryStats.total;
-    const actualCost = deliveryStats.deliveredTotal * 1; // ₹1 per delivered
+    const chargeableMessages = deliveryStats.sent; // sent already excludes failed messages
+    const actualCost = chargeableMessages * 1; // ₹1 per sent message
     const refundAmount = Math.max(0, blockedAmount - actualCost);
 
-    console.log(`[SettleCampaign] Blocked=₹${blockedAmount}, Charge=₹${actualCost}, Refund=₹${refundAmount}`);
+    console.log(`[SettleCampaign] Blocked=₹${blockedAmount}, Chargeable=${chargeableMessages} sent messages, Failed=${deliveryStats.failed} (not charged), Charge=₹${actualCost}, Refund=₹${refundAmount}`);
 
     // 3. Update wallet (release blocked, add refund if any)
     if (blockedAmount > 0) {
@@ -389,7 +390,7 @@ campaignSchema.methods.completeCampaign = async function () {
             type: 'debit',
             amount: actualCost,
             balanceAfter: user.wallet.balance + refundAmount,
-            description: `Campaign "${this.name}" settled - ${deliveryStats.deliveredTotal} messages delivered`,
+            description: `Campaign "${this.name}" settled - ${chargeableMessages} messages charged (${deliveryStats.failed} failed messages not charged)`,
             processedBy: null,
             createdAt: new Date()
           }
@@ -399,8 +400,9 @@ campaignSchema.methods.completeCampaign = async function () {
 
       const updatedUser = await User.findById(this.userId);
       console.log(`[SettleCampaign] After: balance=₹${updatedUser.wallet.balance}, blocked=₹${updatedUser.wallet.blockedBalance}`);
-      console.log(`[SettleCampaign] ✅ Wallet settled: Charged ₹${actualCost} for ${deliveryStats.deliveredTotal} delivered messages`);
-      console.log(`[SettleCampaign] ✅ Refunded ₹${refundAmount} for ${deliveryStats.failed + deliveryStats.expired} undelivered messages`);
+      console.log(`[SettleCampaign] ✅ Wallet settled: Charged ₹${actualCost} for ${chargeableMessages} sent messages`);
+      console.log(`[SettleCampaign] ✅ Not charged for ${deliveryStats.failed} failed messages`);
+      console.log(`[SettleCampaign] ✅ Refunded ₹${refundAmount} for ${deliveryStats.total - chargeableMessages - deliveryStats.failed} unsent messages`);
       console.log(`[SettleCampaign] ✅ Net balance change: +₹${refundAmount} (released ₹${blockedAmount} - charged ₹${actualCost})`);
       console.log(`[SettleCampaign] ✅ Transaction record added to wallet history`);
     } else {
@@ -442,7 +444,7 @@ campaignSchema.methods.completeCampaign = async function () {
 
     console.log(`[SettleCampaign] ✅ Campaign ${this._id} settled successfully`);
 
-    return { actualCost, refundAmount, delivered: deliveryStats.deliveredTotal, failed: deliveryStats.failed };
+    return { actualCost, refundAmount, sent: chargeableMessages, failed: deliveryStats.failed };
   } catch (error) {
     console.error(`[SettleCampaign] ❌ Error:`, error.message);
     throw error;
@@ -456,5 +458,23 @@ campaignSchema.methods.completeCampaign = async function () {
 
 
 
+
+// Pre-save hook to ensure stats are initialized
+campaignSchema.pre('save', function(next) {
+  if (this.isNew && !this.stats) {
+    this.stats = {
+      total: 0,
+      pending: 0,
+      sent: 0,
+      delivered: 0,
+      read: 0,
+      replied: 0,
+      failed: 0,
+      bounced: 0,
+      expired: 0
+    };
+  }
+  next();
+});
 
 export default mongoose.model('Campaign', campaignSchema);

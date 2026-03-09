@@ -931,7 +931,17 @@ export const getUserCampaignReports = async (req, res) => {
         isMaster: campaign.isMaster || false,
         actualCost: campaign.actualCost || 0,
         estimatedCost: campaign.estimatedCost || 0,
-        refundedAmount: campaign.refundedAmount || 0
+        refundedAmount: campaign.refundedAmount || 0,
+        stats: {
+          sent: stats.sent || 0,
+          delivered: stats.delivered || 0,
+          failed: stats.failed || 0,
+          expired: stats.expired || 0,
+          read: stats.read || 0,
+          replied: stats.replied || 0,
+          total: stats.total || 0,
+          pending: stats.pending || 0
+        }
       };
     });
 
@@ -1843,6 +1853,80 @@ export const completeCampaign = async (req, res) => {
     });
   } catch (error) {
     console.error('[Campaign] Complete campaign error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+// Manual refresh campaign stats
+export const refreshStats = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+
+    const campaign = await Campaign.findOne({ _id: id, userId });
+    if (!campaign) {
+      return res.status(404).json({
+        success: false,
+        message: 'Campaign not found'
+      });
+    }
+
+    // Use same logic as syncCampaignStats.js
+    const stats = await ContactCampaignMessage.aggregate([
+      { $match: { campaignId: campaign._id } },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: 1 },
+          pending: { $sum: { $cond: [{ $in: ['$status', ['pending', 'draft', 'queued']] }, 1, 0] } },
+          sent: { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read', 'replied']] }, 1, 0] } },
+          delivered: { $sum: { $cond: [{ $in: ['$status', ['delivered', 'read', 'replied']] }, 1, 0] } },
+          read: { $sum: { $cond: [{ $in: ['$status', ['read', 'replied']] }, 1, 0] } },
+          replied: { $sum: { $cond: [{ $eq: ['$status', 'replied'] }, 1, 0] } },
+          failed: { $sum: { $cond: [{ $in: ['$status', ['failed', 'bounced']] }, 1, 0] } },
+          expired: { $sum: { $cond: [{ $eq: ['$status', 'expired'] }, 1, 0] } }
+        }
+      }
+    ]);
+
+    const newStats = stats[0] || { 
+      total: 0, pending: 0, sent: 0, delivered: 0, 
+      read: 0, replied: 0, failed: 0, expired: 0 
+    };
+
+    // Update campaign stats
+    await Campaign.updateOne(
+      { _id: campaign._id },
+      {
+        $set: {
+          'stats.total': newStats.total,
+          'stats.pending': newStats.pending,
+          'stats.sent': newStats.sent,
+          'stats.delivered': newStats.delivered,
+          'stats.read': newStats.read,
+          'stats.replied': newStats.replied,
+          'stats.failed': newStats.failed,
+          'stats.expired': newStats.expired,
+          'stats.lastUpdated': new Date()
+        }
+      }
+    );
+
+    res.json({
+      success: true,
+      message: 'Campaign stats refreshed successfully',
+      data: {
+        ...campaign.toObject(),
+        stats: {
+          ...newStats,
+          lastUpdated: new Date()
+        }
+      }
+    });
+  } catch (error) {
+    console.error('[Campaign] Refresh stats error:', error);
     res.status(500).json({
       success: false,
       message: error.message

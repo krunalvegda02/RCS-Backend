@@ -244,26 +244,9 @@ async function startStatsConsumer() {
               totalProcessed += result.modifiedCount;
               console.log(`[StatsConsumer] Chunk ${chunkIndex + 1}/${chunks.length}: Updated ${result.modifiedCount} messages`);
 
-              // CRITICAL FIX: Only update stats for messages that were ACTUALLY modified
-              // Get the actual updated messages to ensure accurate old/new status pairs
+              // MINIMAL CPU: Just log affected campaigns, no queue
               if (result.modifiedCount > 0) {
-                const updatedMessages = await ContactCampaignMessage.find(
-                  { messageId: { $in: messageIds } },
-                  { messageId: 1, status: 1, campaignId: 1 }
-                ).lean();
-                
-                for (const msg of updatedMessages) {
-                  const newStatus = statusChanges.get(msg.messageId);
-                  const oldData = oldStatusMap.get(msg.messageId);
-                  
-                  // Only update stats if the message was actually changed AND we have old status
-                  if (newStatus && oldData && msg.status === newStatus && oldData.oldStatus !== newStatus) {
-                    campaignStatsWorker.addStatsUpdate(msg.campaignId, {
-                      oldStatus: oldData.oldStatus,
-                      newStatus: newStatus
-                    });
-                  }
-                }
+                console.log(`[StatsConsumer] ${result.modifiedCount} messages updated - stats will sync periodically`);
               }
             } catch (error) {
               console.error(`[StatsConsumer] Chunk ${chunkIndex + 1} bulk write error:`, error.message);

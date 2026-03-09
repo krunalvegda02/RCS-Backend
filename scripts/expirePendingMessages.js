@@ -61,14 +61,15 @@ async function expirePendingMessages() {
           continue;
         }
 
-        // Check message status
+        // Check message status with updated logic
         const messageStats = await ContactCampaignMessage.aggregate([
           { $match: { campaignId: campaign._id } },
           {
             $group: {
               _id: null,
               total: { $sum: 1 },
-              pending: { $sum: { $cond: [{ $in: ['$status', ['draft', 'queued', 'pending', 'sent']] }, 1, 0] } },
+              pending: { $sum: { $cond: [{ $in: ['$status', ['draft', 'queued', 'pending']] }, 1, 0] } },
+              sent: { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read', 'replied']] }, 1, 0] } },
               delivered: { $sum: { $cond: [{ $in: ['$status', ['delivered', 'read', 'replied']] }, 1, 0] } },
               expired: { $sum: { $cond: [{ $eq: ['$status', 'expired'] }, 1, 0] } },
               failed: { $sum: { $cond: [{ $in: ['$status', ['failed', 'bounced']] }, 1, 0] } }
@@ -76,8 +77,9 @@ async function expirePendingMessages() {
           }
         ]);
 
-        const stats = messageStats[0] || { total: 0, pending: 0, delivered: 0, expired: 0, failed: 0 };
-        console.log(`  Messages: ${stats.total} total, ${stats.pending} pending, ${stats.delivered} delivered, ${stats.expired} expired, ${stats.failed} failed`);
+        const stats = messageStats[0] || { total: 0, pending: 0, sent: 0, delivered: 0, expired: 0, failed: 0 };
+        console.log(`  Messages: ${stats.total} total, ${stats.pending} pending, ${stats.sent} sent, ${stats.delivered} delivered, ${stats.expired} expired, ${stats.failed} failed`);
+        console.log(`  Chargeable: ${stats.sent} messages (failed messages excluded from billing)`);
 
         // Settle if no pending messages OR campaign is old enough
         if (stats.total === 0) {
@@ -88,6 +90,7 @@ async function expirePendingMessages() {
 
         if (stats.pending === 0) {
           console.log(`  ✅ No pending messages, settling campaign...`);
+          console.log(`  💰 Will charge for ${stats.sent} sent messages, ${stats.failed} failed messages not charged`);
           await campaign.completeCampaign();
           console.log(`  ✅ Campaign settled successfully`);
           settledCount++;

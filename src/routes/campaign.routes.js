@@ -47,6 +47,8 @@ router.post('/', CampaignController.createSimple);
 router.get('/', cacheMiddleware, CampaignController.getAll);
 router.get('/:id', cacheMiddleware, CampaignController.getById);
 router.get('/:id/stats', cacheMiddleware, CampaignController.getStats);
+router.post('/:id/refresh-stats', CampaignController.refreshStats);
+router.post('/:id/sync-stats', CampaignController.refreshStats);
 router.get('/:id/messages', cacheMiddleware, CampaignController.getCampaignMessages);
 router.post('/:id/start', CampaignController.start);
 router.post('/:id/pause', CampaignController.pause);
