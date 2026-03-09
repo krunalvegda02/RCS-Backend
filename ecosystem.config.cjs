@@ -54,7 +54,7 @@ module.exports = {
     {
       name: 'webhook-consumer',
       script: 'src/workers/webhookConsumer.js',
-      instances: 8,
+      instances: 5,
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
@@ -78,7 +78,7 @@ module.exports = {
     {
       name: 'stats-consumer',
       script: 'src/workers/statsConsumer.js',
-      instances: 15,
+      instances: 10,
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
@@ -120,7 +120,7 @@ module.exports = {
       restart_delay: 10000,
       max_memory_restart: '400M',
       min_uptime: '30s',
-      max_restarts: 5,
+      max_restarts: 3,
       kill_timeout: 5000
     },
     {
