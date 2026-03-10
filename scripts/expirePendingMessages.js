@@ -16,7 +16,7 @@ async function expirePendingMessages() {
     // 1. Expire stale pending/sent messages
     const expireResult = await ContactCampaignMessage.updateMany(
       {
-        status: { $in: ['pending', 'sent', 'draft', 'queued'] },
+        status: { $in: ['pending', 'draft', 'queued'] },
         createdAt: { $lt: twoDaysAgo }
       },
       {
