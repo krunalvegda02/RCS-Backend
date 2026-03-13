@@ -3,9 +3,14 @@ import ExcelJS from 'exceljs';
 import { v2 as cloudinary } from 'cloudinary';
 import { Readable } from 'stream';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-// Load environment variables
-dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Load environment variables from parent directory
+dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 const MONGODB_URI = process.env.MONGODB_URI;
 
