@@ -2,8 +2,22 @@ import mongoose from 'mongoose';
 import ExcelJS from 'exceljs';
 import { v2 as cloudinary } from 'cloudinary';
 import { Readable } from 'stream';
+import dotenv from 'dotenv';
+
+// Load environment variables
+dotenv.config();
 
 const MONGODB_URI = process.env.MONGODB_URI;
+
+if (!MONGODB_URI) {
+  console.error('[ArchiveCron] ❌ MONGODB_URI environment variable is not set');
+  process.exit(1);
+}
+
+if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+  console.error('[ArchiveCron] ❌ Cloudinary environment variables are not set');
+  process.exit(1);
+}
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -46,10 +60,9 @@ async function archiveOldCampaigns() {
       
       oldCampaigns = [campaign];
     } else {
-      // Calculate cutoff date (1.5 months ago)
+      // Calculate cutoff date (1 month ago)
       const cutoffDate = new Date();
       cutoffDate.setMonth(cutoffDate.getMonth() - 1);
-      cutoffDate.setDate(cutoffDate.getDate() - 15);
 
       console.log(`[ArchiveCron] Finding campaigns older than ${cutoffDate.toISOString()}`);
 
@@ -151,28 +164,48 @@ async function archiveOldCampaigns() {
         console.log('[ArchiveCron] Generating Excel file...');
         const buffer = await workbook.xlsx.writeBuffer();
 
-        // Upload to Cloudinary
+        // Upload to Cloudinary with proper Excel format
         console.log('[ArchiveCron] Uploading to Cloudinary...');
         const uploadResult = await new Promise((resolve, reject) => {
           const uploadStream = cloudinary.uploader.upload_stream(
             {
               resource_type: 'raw',
               folder: 'archived_campaigns',
-              public_id: `campaign-${campaign.name}-${campaign._id}-${Date.now()}`,
-              format: 'xlsx'
+              public_id: `campaign-${campaign.name.replace(/[^a-zA-Z0-9]/g, '_')}-${campaign._id}-${Date.now()}`,
+              format: 'xlsx',
+              access_mode: 'public',
+              flags: 'attachment'
             },
             (error, result) => {
-              if (error) reject(error);
-              else resolve(result);
+              if (error) {
+                console.error('[ArchiveCron] Cloudinary upload error:', error);
+                reject(error);
+              } else {
+                console.log('[ArchiveCron] Cloudinary upload success:', result.secure_url);
+                resolve(result);
+              }
             }
           );
-          Readable.from(buffer).pipe(uploadStream);
+          
+          const stream = Readable.from(buffer);
+          stream.on('error', (error) => {
+            console.error('[ArchiveCron] Stream error:', error);
+            reject(error);
+          });
+          
+          stream.pipe(uploadStream);
         });
 
-        console.log(`[ArchiveCron] ✅ Archived campaign ${campaign._id} (${totalMessages} messages)`);
+        // Verify Excel file is properly accessible
         console.log(`[ArchiveCron] 📁 Excel URL: ${uploadResult.secure_url}`);
+        console.log(`[ArchiveCron] 📁 File size: ${(buffer.length / 1024 / 1024).toFixed(2)} MB`);
+        console.log(`[ArchiveCron] 📁 Public ID: ${uploadResult.public_id}`);
+        
+        // Test download URL
+        const downloadUrl = uploadResult.secure_url.replace('/upload/', '/upload/fl_attachment/');
+        console.log(`[ArchiveCron] 📥 Download URL: ${downloadUrl}`);
 
-        // Save archived campaign record to database
+        // Save archived campaign record to database with download URL
         await ArchivedCampaign.create({
           campaignId: campaign._id.toString(),
           campaignName: campaign.name,
@@ -181,7 +214,10 @@ async function archiveOldCampaigns() {
           userEmail: campaign.userId.email || 'N/A',
           botId: campaign.botId,
           excelUrl: uploadResult.secure_url,
+          downloadUrl: downloadUrl,
           cloudinaryPublicId: uploadResult.public_id,
+          fileSize: buffer.length,
+          totalMessages: totalMessages,
           stats: {
             total: campaign.stats?.total || 0,
             sent: campaign.stats?.sent || 0,
@@ -196,6 +232,7 @@ async function archiveOldCampaigns() {
           campaignCreatedAt: campaign.createdAt,
           campaignCompletedAt: campaign.completedAt
         });
+        console.log(`[ArchiveCron] ✅ Archived campaign ${campaign._id} (${totalMessages} messages)`);
         console.log(`[ArchiveCron] 💾 Saved archived campaign record to database`);
 
         // Delete messages in batches to avoid overload
