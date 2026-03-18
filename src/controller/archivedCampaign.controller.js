@@ -5,12 +5,12 @@ export const getUsersWithArchives = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     
-    // Build match stage for date filtering
+    // Build match stage for date filtering based on campaign creation date
     const matchStage = {};
     if (startDate || endDate) {
-      matchStage.archivedAt = {};
-      if (startDate) matchStage.archivedAt.$gte = new Date(startDate);
-      if (endDate) matchStage.archivedAt.$lte = new Date(endDate);
+      matchStage.campaignCreatedAt = {};
+      if (startDate) matchStage.campaignCreatedAt.$gte = new Date(startDate);
+      if (endDate) matchStage.campaignCreatedAt.$lte = new Date(endDate);
     }
 
     const pipeline = [];
@@ -28,10 +28,11 @@ export const getUsersWithArchives = async (req, res) => {
           userName: { $first: '$userName' },
           userEmail: { $first: '$userEmail' },
           totalArchived: { $sum: 1 },
-          lastArchived: { $max: '$archivedAt' }
+          lastArchived: { $max: '$archivedAt' },
+          lastCampaignCreated: { $max: '$campaignCreatedAt' }
         }
       },
-      { $sort: { lastArchived: -1 } }
+      { $sort: { lastCampaignCreated: -1 } }
     );
 
     const users = await ArchivedCampaign.aggregate(pipeline);
@@ -59,15 +60,15 @@ export const getArchivedCampaigns = async (req, res) => {
       ];
     }
     
-    // Add date filtering
+    // Add date filtering based on campaign creation date
     if (startDate || endDate) {
-      query.archivedAt = {};
-      if (startDate) query.archivedAt.$gte = new Date(startDate);
-      if (endDate) query.archivedAt.$lte = new Date(endDate);
+      query.campaignCreatedAt = {};
+      if (startDate) query.campaignCreatedAt.$gte = new Date(startDate);
+      if (endDate) query.campaignCreatedAt.$lte = new Date(endDate);
     }
 
     const archives = await ArchivedCampaign.find(query)
-      .sort({ archivedAt: -1 })
+      .sort({ campaignCreatedAt: -1 }) // Sort by campaign creation date instead of archived date
       .limit(limit * 1)
       .skip((page - 1) * limit)
       .lean();
@@ -117,10 +118,11 @@ export const getArchivedStats = async (req, res) => {
     
     if (userId) query.userId = userId;
     
+    // Filter based on campaign creation date instead of archived date
     if (startDate || endDate) {
-      query.archivedAt = {};
-      if (startDate) query.archivedAt.$gte = new Date(startDate);
-      if (endDate) query.archivedAt.$lte = new Date(endDate);
+      query.campaignCreatedAt = {};
+      if (startDate) query.campaignCreatedAt.$gte = new Date(startDate);
+      if (endDate) query.campaignCreatedAt.$lte = new Date(endDate);
     }
 
     const stats = await ArchivedCampaign.aggregate([

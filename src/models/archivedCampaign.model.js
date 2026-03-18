@@ -25,16 +25,17 @@ const archivedCampaignSchema = new mongoose.Schema({
   },
   cloudinaryPublicId: String,
   stats: {
-    total: Number,
-    sent: Number,
-    delivered: Number,
-    read: Number,
-    failed: Number,
-    expired: Number
+    total: { type: Number, default: 0 },
+    sent: { type: Number, default: 0 },
+    delivered: { type: Number, default: 0 },
+    read: { type: Number, default: 0 },
+    failed: { type: Number, default: 0 },
+    pending: { type: Number, default: 0 },
+    expired: { type: Number, default: 0 }
   },
-  estimatedCost: Number,
-  actualCost: Number,
-  refundedAmount: Number,
+  estimatedCost: { type: Number, default: 0 },
+  actualCost: { type: Number, default: 0 },
+  refundedAmount: { type: Number, default: 0 },
   campaignCreatedAt: Date,
   campaignCompletedAt: Date,
   archivedAt: {
@@ -48,5 +49,8 @@ const archivedCampaignSchema = new mongoose.Schema({
 
 archivedCampaignSchema.index({ archivedAt: -1 });
 archivedCampaignSchema.index({ userId: 1, archivedAt: -1 });
+archivedCampaignSchema.index({ campaignCreatedAt: -1 });
+archivedCampaignSchema.index({ userId: 1, campaignCreatedAt: -1 });
+archivedCampaignSchema.index({ campaignCreatedAt: 1, archivedAt: -1 });
 
 export default mongoose.model('ArchivedCampaign', archivedCampaignSchema);
