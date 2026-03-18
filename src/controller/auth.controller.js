@@ -462,7 +462,7 @@ export const createUser = async (req, res) => {
 
     const user = await User.createUser(userData, true);
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: 'User created successfully',
       data: user,
@@ -486,7 +486,7 @@ export const createUser = async (req, res) => {
       });
     }
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Internal server error',
     });
@@ -572,7 +572,7 @@ export const updateUser = async (req, res) => {
       { new: true, runValidators: true }
     );
 
-    res.json({
+    return res.json({
       success: true,
       message: 'User updated successfully',
       data: updatedUser,
@@ -596,7 +596,7 @@ export const updateUser = async (req, res) => {
       });
     }
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Internal server error',
     });
@@ -939,7 +939,7 @@ export const updateWallet = async (req, res) => {
     const description = `Wallet ${operation === 'add' ? 'credited' : 'debited'} by admin`;
     const newBalance = await user.updateWallet(amount, operation, description, req.user._id);
 
-    res.json({
+    return res.json({
       success: true,
       message: `Wallet ${operation === 'add' ? 'credited' : 'debited'} successfully`,
       data: {
@@ -951,7 +951,7 @@ export const updateWallet = async (req, res) => {
     });
   } catch (error) {
     console.error('Update wallet error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: error.message || 'Internal server error',
     });
@@ -973,14 +973,14 @@ export const cleanupUserBlockedBalance = async (req, res) => {
 
     const result = await user.cleanupBlockedBalance();
 
-    res.json({
+    return res.json({
       success: true,
       message: 'Blocked balance cleanup completed',
       data: result,
     });
   } catch (error) {
     console.error('Cleanup blocked balance error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: error.message || 'Internal server error',
     });
@@ -992,14 +992,14 @@ export const cleanupAllBlockedBalances = async (req, res) => {
   try {
     const results = await User.cleanupAllBlockedBalances();
 
-    res.json({
+    return res.json({
       success: true,
       message: `Cleaned up blocked balances for ${results.length} users`,
       data: results,
     });
   } catch (error) {
     console.error('Cleanup all blocked balances error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: error.message || 'Internal server error',
     });
@@ -1023,14 +1023,14 @@ export const toggleUserStatus = async (req, res) => {
     user.updatedBy = req.user._id;
     await user.save();
 
-    res.json({
+    return res.json({
       success: true,
       message: `User ${user.isActive ? 'activated' : 'deactivated'} successfully`,
       data: { isActive: user.isActive },
     });
   } catch (error) {
     console.error('Toggle user status error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Internal server error',
     });
@@ -1052,13 +1052,13 @@ export const unlockUserAccount = async (req, res) => {
 
     await user.resetLoginAttempts();
 
-    res.json({
+    return res.json({
       success: true,
       message: 'User account unlocked successfully',
     });
   } catch (error) {
     console.error('Unlock user account error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Internal server error',
     });
@@ -1265,13 +1265,13 @@ export const deleteUser = async (req, res) => {
 
     await User.findByIdAndDelete(userId);
 
-    res.json({
+    return res.json({
       success: true,
       message: 'User deleted successfully',
     });
   } catch (error) {
     console.error('Delete user error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Internal server error',
     });

@@ -6,6 +6,7 @@ const router = express.Router();
 
 // Admin routes
 router.get('/users', authenticateToken, requireAdmin, ArchivedCampaignController.getUsersWithArchives);
+router.get('/stats', authenticateToken, requireAdmin, ArchivedCampaignController.getArchivedStats);
 router.get('/', authenticateToken, requireAdmin, ArchivedCampaignController.getArchivedCampaigns);
 router.get('/:id', authenticateToken, requireAdmin, ArchivedCampaignController.getArchivedCampaign);
 router.delete('/:id', authenticateToken, requireAdmin, ArchivedCampaignController.deleteArchivedCampaign);

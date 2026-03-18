@@ -3,7 +3,25 @@ import ArchivedCampaign from '../models/archivedCampaign.model.js';
 // Get users with archived campaigns count
 export const getUsersWithArchives = async (req, res) => {
   try {
-    const users = await ArchivedCampaign.aggregate([
+    const { startDate, endDate } = req.query;
+    
+    // Build match stage for date filtering
+    const matchStage = {};
+    if (startDate || endDate) {
+      matchStage.archivedAt = {};
+      if (startDate) matchStage.archivedAt.$gte = new Date(startDate);
+      if (endDate) matchStage.archivedAt.$lte = new Date(endDate);
+    }
+
+    const pipeline = [];
+    
+    // Add match stage if we have date filters
+    if (Object.keys(matchStage).length > 0) {
+      pipeline.push({ $match: matchStage });
+    }
+    
+    // Add grouping and sorting
+    pipeline.push(
       {
         $group: {
           _id: '$userId',
@@ -14,7 +32,9 @@ export const getUsersWithArchives = async (req, res) => {
         }
       },
       { $sort: { lastArchived: -1 } }
-    ]);
+    );
+
+    const users = await ArchivedCampaign.aggregate(pipeline);
 
     res.json({ success: true, data: users });
   } catch (error) {
@@ -26,7 +46,7 @@ export const getUsersWithArchives = async (req, res) => {
 // Get all archived campaigns (Admin only)
 export const getArchivedCampaigns = async (req, res) => {
   try {
-    const { page = 1, limit = 20, search, userId } = req.query;
+    const { page = 1, limit = 20, search, userId, startDate, endDate } = req.query;
 
     const query = {};
     
@@ -37,6 +57,13 @@ export const getArchivedCampaigns = async (req, res) => {
         { campaignId: { $regex: search, $options: 'i' } },
         { userName: { $regex: search, $options: 'i' } }
       ];
+    }
+    
+    // Add date filtering
+    if (startDate || endDate) {
+      query.archivedAt = {};
+      if (startDate) query.archivedAt.$gte = new Date(startDate);
+      if (endDate) query.archivedAt.$lte = new Date(endDate);
     }
 
     const archives = await ArchivedCampaign.find(query)
@@ -77,6 +104,85 @@ export const getArchivedCampaign = async (req, res) => {
     res.json({ success: true, data: archive });
   } catch (error) {
     console.error('Get archived campaign error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Get archived campaigns stats with date filtering
+export const getArchivedStats = async (req, res) => {
+  try {
+    const { startDate, endDate, userId } = req.query;
+
+    const query = {};
+    
+    if (userId) query.userId = userId;
+    
+    if (startDate || endDate) {
+      query.archivedAt = {};
+      if (startDate) query.archivedAt.$gte = new Date(startDate);
+      if (endDate) query.archivedAt.$lte = new Date(endDate);
+    }
+
+    const stats = await ArchivedCampaign.aggregate([
+      { $match: query },
+      {
+        $group: {
+          _id: null,
+          totalCampaigns: { $sum: 1 },
+          totalMessages: { $sum: '$stats.total' },
+          totalSent: { $sum: '$stats.sent' },
+          totalDelivered: { $sum: '$stats.delivered' },
+          totalFailed: { $sum: '$stats.failed' },
+          totalPending: { $sum: '$stats.pending' },
+          totalExpired: { $sum: '$stats.expired' },
+          uniqueUsers: { $addToSet: '$userId' }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          totalCampaigns: 1,
+          totalMessages: 1,
+          totalSent: 1,
+          totalDelivered: 1,
+          totalFailed: 1,
+          totalPending: 1,
+          totalExpired: 1,
+          uniqueUsers: { $size: '$uniqueUsers' },
+          deliveryRate: {
+            $cond: {
+              if: { $eq: ['$totalSent', 0] },
+              then: 0,
+              else: { $multiply: [{ $divide: ['$totalDelivered', '$totalSent'] }, 100] }
+            }
+          },
+          sentRate: {
+            $cond: {
+              if: { $eq: ['$totalMessages', 0] },
+              then: 0,
+              else: { $multiply: [{ $divide: ['$totalSent', '$totalMessages'] }, 100] }
+            }
+          }
+        }
+      }
+    ]);
+
+    const result = stats[0] || {
+      totalCampaigns: 0,
+      totalMessages: 0,
+      totalSent: 0,
+      totalDelivered: 0,
+      totalFailed: 0,
+      totalPending: 0,
+      totalExpired: 0,
+      uniqueUsers: 0,
+      deliveryRate: 0,
+      sentRate: 0
+    };
+
+    res.json({ success: true, data: result });
+  } catch (error) {
+    console.error('Get archived stats error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
