@@ -86,6 +86,45 @@ export async function connectProducer() {
 
 
 
+// Batch webhook sender for high-volume processing with retry logic
+export async function sendWebhookBatchToKafka(webhookBatch) {
+  if (!webhookBatch || webhookBatch.length === 0) return;
+  
+  const maxRetries = 3;
+  let attempt = 0;
+  
+  while (attempt < maxRetries) {
+    try {
+      await connectProducer();
+
+      const messages = webhookBatch.map(item => ({
+        key: item.data.messageId || Date.now().toString(),
+        value: JSON.stringify(item.data),
+        timestamp: item.timestamp
+      }));
+
+      await producer.sendBatch({
+        topicMessages: [{
+          topic: 'webhook-events',
+          messages
+        }]
+      });
+
+      return { success: true, count: messages.length };
+    } catch (error) {
+      attempt++;
+      console.error(`Kafka batch send attempt ${attempt}/${maxRetries} failed:`, error.message);
+      
+      if (attempt >= maxRetries) {
+        throw error; // Re-throw after all retries exhausted
+      }
+      
+      // Wait before retry (exponential backoff)
+      await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 100));
+    }
+  }
+}
+
 export async function sendWebhookToKafka(webhookData) {
   await connectProducer();
 

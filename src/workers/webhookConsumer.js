@@ -70,14 +70,14 @@ async function startWebhookConsumer() {
           
           try {
             // Insert in chunks to prevent timeout
-            const CHUNK_SIZE = 1000;
+            const CHUNK_SIZE = 2000; // Increased chunk size for better performance
             const insertedLogs = [];
             
             for (let i = 0; i < logsToInsert.length; i += CHUNK_SIZE) {
               const chunk = logsToInsert.slice(i, i + CHUNK_SIZE);
               const result = await MessageLog.insertMany(chunk, { 
                 ordered: false,
-                writeConcern: { w: 1, wtimeout: 10000 }
+                writeConcern: { w: 1, wtimeout: 5000 } // Reduced timeout
               });
               insertedLogs.push(...result);
               if (i + CHUNK_SIZE < logsToInsert.length) {

@@ -97,7 +97,7 @@ async function startStatsConsumer() {
         console.log(`[StatsConsumer] Batch #${batchCount}: Found ${logs.length} unprocessed logs`);
 
         // Process in chunks to avoid timeout
-        const CHUNK_SIZE = 500;
+        const CHUNK_SIZE = 1000; // Increased from 500
         const chunks = [];
         for (let i = 0; i < logs.length; i += CHUNK_SIZE) {
           chunks.push(logs.slice(i, i + CHUNK_SIZE));

@@ -107,13 +107,30 @@ export const createCampaignEntries = async (req, res) => {
       return res.status(400).json({ success: false, message: "Phone numbers array is required" });
     }
 
+    // Immediate response for large campaigns
+    if (phoneNumbers.length > 5000) {
+      res.status(202).json({
+        success: true,
+        message: `Large campaign accepted for processing. ${phoneNumbers.length} entries will be processed in background.`,
+        campaignSize: phoneNumbers.length,
+        processing: true
+      });
+      
+      // Process in background without blocking
+      setImmediate(() => {
+        processCampaignEntriesBackground(campaignId, templateId, phoneNumbers, userId);
+      });
+      return;
+    }
+
     console.log(`[Campaign] Creating entries for ${phoneNumbers.length} contacts`);
     console.time("CampaignInsert");
 
     const { v4: uuidv4 } = await import("uuid");
 
-    const CHUNK_SIZE = 1000;
-    const CONCURRENCY = 3;
+    // Optimize chunk size and concurrency for large campaigns
+    const CHUNK_SIZE = phoneNumbers.length > 20000 ? 2000 : 1000;
+    const CONCURRENCY = phoneNumbers.length > 20000 ? 2 : 3; // Reduce concurrency for very large campaigns
     const chunks = [];
     for (let i = 0; i < phoneNumbers.length; i += CHUNK_SIZE) {
       chunks.push(phoneNumbers.slice(i, i + CHUNK_SIZE));

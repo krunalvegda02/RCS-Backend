@@ -9,11 +9,13 @@ const connectDB = async () => {
         serverSelectionTimeoutMS: 30000,
         socketTimeoutMS: 120000,
         connectTimeoutMS: 30000,
-        maxPoolSize: 50,
-        minPoolSize: 10,
-        maxIdleTimeMS: 60000,
+        maxPoolSize: 80,  // Reduced for M20 cluster (80 * 5 services = 400 connections)
+        minPoolSize: 20,  // Adequate minimum pool
+        maxIdleTimeMS: 30000, // Reduced idle time
         retryWrites: true,
-        retryReads: true
+        retryReads: true,
+        writeConcern: { w: 1, wtimeout: 5000 }, // Fast writes
+        readConcern: { level: 'local' } // Fast reads
       }
     );
 
