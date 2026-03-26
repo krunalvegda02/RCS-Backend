@@ -1,34 +1,32 @@
-// High-performance webhook buffer for burst handling
+// Ultra-high performance webhook buffer for burst handling
 class WebhookBuffer {
   constructor() {
     this.buffer = [];
-    this.maxSize = 50000; // Increased to 50k for 1 lakh webhooks
-    this.flushInterval = 50; // Faster flush (50ms)
+    this.maxSize = 100000; // Increased to 100k for extreme bursts
+    this.flushInterval = 25; // Ultra-fast flush (25ms)
     this.isProcessing = false;
     this.overflowBuffer = []; // Emergency overflow buffer
     this.droppedCount = 0;
+    this.batchSize = 5000; // Larger batches for efficiency
     
     // Start background flushing
     this.startFlushing();
   }
   
-  // Add webhook to buffer (non-blocking with overflow protection)
+  // Ultra-fast add with exact same structure as before
   add(webhookData) {
     if (this.buffer.length >= this.maxSize) {
-      // Try overflow buffer first
-      if (this.overflowBuffer.length < 10000) {
+      if (this.overflowBuffer.length < 20000) {
         this.overflowBuffer.push({
           data: webhookData,
           timestamp: Date.now()
         });
-        console.warn(`⚠️ Using overflow buffer: ${this.overflowBuffer.length}/10000`);
         return;
       }
       
-      // Last resort: drop oldest (but count it)
+      // Drop oldest with minimal logging
       this.buffer.shift();
       this.droppedCount++;
-      console.error(`🔴 DROPPED WEBHOOK! Total dropped: ${this.droppedCount}`);
     }
     
     this.buffer.push({
@@ -37,23 +35,21 @@ class WebhookBuffer {
     });
   }
   
-  // Background flushing to Kafka with overflow handling
+  // Ultra-fast background flushing with larger batches
   startFlushing() {
     setInterval(async () => {
       if (this.isProcessing) return;
       
-      // Process overflow buffer first
+      // Process overflow buffer first with larger batches
       if (this.overflowBuffer.length > 0) {
         this.isProcessing = true;
-        const overflowBatch = this.overflowBuffer.splice(0, 2000);
+        const overflowBatch = this.overflowBuffer.splice(0, this.batchSize);
         
         try {
           const { sendWebhookBatchToKafka } = await import('../services/kafka.service.js');
           await sendWebhookBatchToKafka(overflowBatch);
-          console.log(`📤 Flushed ${overflowBatch.length} overflow webhooks to Kafka`);
         } catch (error) {
-          console.error('Overflow Kafka send error:', error.message);
-          // Re-add to main buffer if space available
+          // Silent error handling - re-add to buffer
           if (this.buffer.length + overflowBatch.length <= this.maxSize) {
             this.buffer.unshift(...overflowBatch);
           } else {
@@ -65,22 +61,17 @@ class WebhookBuffer {
         return;
       }
       
-      // Process main buffer
+      // Process main buffer with larger batches
       if (this.buffer.length === 0) return;
       
       this.isProcessing = true;
-      const batch = this.buffer.splice(0, 2000); // Increased batch size
+      const batch = this.buffer.splice(0, this.batchSize);
       
       try {
         const { sendWebhookBatchToKafka } = await import('../services/kafka.service.js');
         await sendWebhookBatchToKafka(batch);
-        
-        if (batch.length > 100) {
-          console.log(`📤 Flushed ${batch.length} webhooks to Kafka`);
-        }
       } catch (error) {
-        console.error('Kafka batch send error:', error.message);
-        // Re-add failed batch to front of buffer
+        // Silent error handling - re-add failed batch
         this.buffer.unshift(...batch);
       }
       
@@ -88,7 +79,7 @@ class WebhookBuffer {
     }, this.flushInterval);
   }
   
-  // Get buffer status with overflow info
+  // Get buffer status with minimal overhead
   getStatus() {
     return {
       buffered: this.buffer.length,
@@ -96,7 +87,7 @@ class WebhookBuffer {
       maxSize: this.maxSize,
       processing: this.isProcessing,
       dropped: this.droppedCount,
-      totalCapacity: this.maxSize + 10000
+      totalCapacity: this.maxSize + 20000
     };
   }
 }

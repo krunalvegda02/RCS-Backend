@@ -20,13 +20,16 @@ async function startWebhookConsumer() {
     let totalProcessed = 0;
 
     await consumer.run({
-      partitionsConsumedConcurrently: 1, 
+      partitionsConsumedConcurrently: 1, // Keep at 1 since you have 5-6 instances
       eachBatchAutoResolve: false,
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
         const startTime = Date.now();
         const messages = batch.messages;
 
-        console.log(`[WebhookConsumer] Processing batch: ${messages.length} messages`);
+        // Skip logging for small batches to reduce overhead
+        if (messages.length > 10) {
+          console.log(`[WebhookConsumer-${process.env.PM2_INSTANCE_ID || 'single'}] Processing batch: ${messages.length} messages`);
+        }
 
         const logsToInsert = [];
 
@@ -59,25 +62,28 @@ async function startWebhookConsumer() {
               metadata: { source: 'webhook' }
             });
           } catch (error) {
-            console.error('[WebhookConsumer] Parse error:', error.message);
+            // Silent error handling for performance
+            if (messages.length > 100) {
+              console.error('[WebhookConsumer] Parse error:', error.message);
+            }
           }
         }
 
         let dbSuccess = false;
 
         if (logsToInsert.length > 0) {
-          await heartbeat(); // 🔥 Heartbeat BEFORE DB write
+          await heartbeat(); // Heartbeat BEFORE DB write
           
           try {
-            // Insert in chunks to prevent timeout
-            const CHUNK_SIZE = 2000; // Increased chunk size for better performance
+            // Optimized chunk size for high-volume processing
+            const CHUNK_SIZE = 3000; // Increased from 2000
             const insertedLogs = [];
             
             for (let i = 0; i < logsToInsert.length; i += CHUNK_SIZE) {
               const chunk = logsToInsert.slice(i, i + CHUNK_SIZE);
               const result = await MessageLog.insertMany(chunk, { 
                 ordered: false,
-                writeConcern: { w: 1, wtimeout: 5000 } // Reduced timeout
+                writeConcern: { w: 1, wtimeout: 3000 } // Reduced timeout for faster processing
               });
               insertedLogs.push(...result);
               if (i + CHUNK_SIZE < logsToInsert.length) {
@@ -88,10 +94,14 @@ async function startWebhookConsumer() {
             dbSuccess = true;
             totalProcessed += insertedLogs.length;
             const duration = Date.now() - startTime;
-            console.log(`[WebhookConsumer] ✅ ${insertedLogs.length} logs processed in ${duration}ms | Total: ${totalProcessed}`);
+            
+            // Throttled logging for performance
+            if (insertedLogs.length > 50 || duration > 1000) {
+              console.log(`[WebhookConsumer] ✅ ${insertedLogs.length} logs processed in ${duration}ms | Total: ${totalProcessed}`);
+            }
 
             if (insertedLogs.length > 0) {
-              await heartbeat(); // 🔥 Heartbeat BEFORE Kafka send
+              await heartbeat(); // Heartbeat BEFORE Kafka send
               const { sendStatsToKafka } = await import('../services/kafka.service.js');
               const messages = insertedLogs.map(log => ({
                 key: log._id.toString(),

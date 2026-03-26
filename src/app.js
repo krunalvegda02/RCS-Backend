@@ -38,26 +38,26 @@ app.use(
 //   next();
 // });
 
-// High-performance middleware for large payloads
+// High-performance middleware with minimal overhead
 app.use(express.json({
-  limit: '100mb', // Consistent with urlencoded
-  parameterLimit: 100000, // Reduced for performance
+  limit: '50mb', // Reduced from 100mb
+  parameterLimit: 50000, // Reduced for performance
   extended: true
 }));
 app.use(express.urlencoded({
-  limit: '100mb', // Consistent with json
+  limit: '50mb', // Reduced from 100mb
   extended: true,
-  parameterLimit: 100000 // Reduced for performance
+  parameterLimit: 50000 // Reduced for performance
 }));
 
-// Optimize timeout for different endpoints
+// Ultra-fast timeout for webhooks only
 app.use((req, res, next) => {
-  if (req.path.includes('/campaigns') || req.path.includes('/check-capability')) {
-    req.setTimeout(300000); // 5 minutes instead of 10
+  if (req.path.includes('/webhooks')) {
+    req.setTimeout(2000); // Reduced to 2 seconds
+    res.setTimeout(2000);
+  } else if (req.path.includes('/campaigns') || req.path.includes('/check-capability')) {
+    req.setTimeout(300000); // 5 minutes for campaigns
     res.setTimeout(300000);
-  } else if (req.path.includes('/webhooks')) {
-    req.setTimeout(5000); // 5 seconds for webhooks
-    res.setTimeout(5000);
   }
   next();
 });
@@ -78,6 +78,7 @@ app.use((err, req, res, next) => {
 //Routes Import
 import router from "./routes/index.js";
 import realtimeRoutes from "./routes/realtime.routes.js";
+import performanceRoutes from "./routes/performance.routes.js";
 import { authenticateToken } from "./middlewares/auth.middleware.js";
 import { sendWebhookToKafka } from "./services/kafka.service.js";
 import { webhookBuffer } from "./services/webhookBuffer.service.js";
@@ -86,6 +87,7 @@ import { webhookBuffer } from "./services/webhookBuffer.service.js";
 app.use("/api/v1", router);
 app.use("/api", router);
 app.use("/api/realtime", authenticateToken, realtimeRoutes);
+app.use("/api/performance", performanceRoutes); // Public performance monitoring
 
 
 
@@ -98,48 +100,48 @@ let webhookCount = 0;
 let lastLogTime = Date.now();
 const LOG_INTERVAL = 5000; // Log every 5 seconds for high-volume monitoring
 
-// Jio RCS Webhook Endpoint - Ultra lightweight with buffering
+// Ultra-high performance webhook endpoint with minimal processing
 app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
+  // IMMEDIATE response - no processing
+  res.status(200).end();
 
+  // Minimal data extraction (no JSON parsing overhead)
+  const body = req.body;
 
-  // Immediate response to prevent carrier timeouts
-  res.status(200).json({ success: true });
-
-  webhookCount++;
-  const now = Date.now();
-  
-  // High-frequency logging for 1 lakh webhook monitoring
-  if (now - lastLogTime > LOG_INTERVAL) {
-    const bufferStatus = webhookBuffer.getStatus();
-    const rate = Math.round(webhookCount / ((now - (lastLogTime - LOG_INTERVAL)) / 1000));
-    
-    console.log(`📤 Rate: ${rate}/sec | Total: ${webhookCount} | Buffer: ${bufferStatus.buffered}/${bufferStatus.maxSize} | Overflow: ${bufferStatus.overflow} | Dropped: ${bufferStatus.dropped}`);
-    
-    // Alert if buffer is getting full
-    if (bufferStatus.buffered > bufferStatus.maxSize * 0.8) {
-      console.warn(`🚨 BUFFER WARNING: ${Math.round((bufferStatus.buffered / bufferStatus.maxSize) * 100)}% full`);
-    }
-    
-    lastLogTime = now;
-  }
-
-  const entityType = req.body?.entityType || req.body?.entity?.eventType || 'unknown';
+  const entityType = body?.entityType || body?.entity?.eventType || 'unknown';
 
   let messageId = 'no-id';
-  if (entityType === 'USER_MESSAGE' && req.body.metaData && req.body.metaData.orgMsgId) {
-    messageId = req.body.metaData.orgMsgId;
-  } else if (req.body.entity && req.body.entity.messageId) {
-    messageId = req.body.entity.messageId;
+  if (entityType === 'USER_MESSAGE' && body.metaData && body.metaData.orgMsgId) {
+    messageId = body.metaData.orgMsgId;
+  } else if (body.entity && body.entity.messageId) {
+    messageId = body.entity.messageId;
   }
-
-  const kafkaPayload = {
-    data: req.body,
+  
+  // Direct buffer add (fastest possible)
+  webhookBuffer.add({
+    data: body,
     timestamp: Date.now(),
     messageId
-  };
-
-  // Add to buffer instead of direct Kafka send (non-blocking)
-  webhookBuffer.add(kafkaPayload);
+  });
+  
+  // Async logging (non-blocking)
+  setImmediate(() => {
+    webhookCount++;
+    const now = Date.now();
+    
+    if (now - lastLogTime > LOG_INTERVAL) {
+      const bufferStatus = webhookBuffer.getStatus();
+      const rate = Math.round(webhookCount / ((now - (lastLogTime - LOG_INTERVAL)) / 1000));
+      
+      console.log(`📤 Rate: ${rate}/sec | Total: ${webhookCount} | Buffer: ${bufferStatus.buffered}/${bufferStatus.maxSize} | Overflow: ${bufferStatus.overflow}`);
+      
+      if (bufferStatus.buffered > bufferStatus.maxSize * 0.8) {
+        console.warn(`🚨 BUFFER WARNING: ${Math.round((bufferStatus.buffered / bufferStatus.maxSize) * 100)}% full`);
+      }
+      
+      lastLogTime = now;
+    }
+  });
 });
 
 
