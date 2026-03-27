@@ -3,7 +3,7 @@ class WebhookBuffer {
   constructor() {
     this.buffer = [];
     this.maxSize = 100000; // Increased to 100k for extreme bursts
-    this.flushInterval = 25; // Ultra-fast flush (25ms)
+    this.flushInterval = 10; // Ultra-fast flush (10ms)
     this.isProcessing = false;
     this.overflowBuffer = []; // Emergency overflow buffer
     this.droppedCount = 0;

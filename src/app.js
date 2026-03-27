@@ -38,16 +38,23 @@ app.use(
 //   next();
 // });
 
-// High-performance middleware with minimal overhead
+// EXTREME performance middleware - webhook optimized
+app.use('/api/v1/jio/rcs/webhooks', express.json({
+  limit: '10mb',
+  strict: false,
+  type: 'application/json'
+}));
+
+// Standard middleware for other routes
 app.use(express.json({
-  limit: '50mb', // Reduced from 100mb
-  parameterLimit: 50000, // Reduced for performance
+  limit: '50mb',
+  parameterLimit: 50000,
   extended: true
 }));
 app.use(express.urlencoded({
-  limit: '50mb', // Reduced from 100mb
+  limit: '50mb',
   extended: true,
-  parameterLimit: 50000 // Reduced for performance
+  parameterLimit: 50000
 }));
 
 // Ultra-fast timeout for webhooks only
@@ -100,21 +107,24 @@ let webhookCount = 0;
 let lastLogTime = Date.now();
 const LOG_INTERVAL = 5000; // Log every 5 seconds for high-volume monitoring
 
-// Ultra-high performance webhook endpoint with minimal processing
+// EXTREME performance webhook endpoint - zero blocking operations
 app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
-  // IMMEDIATE response - no processing
-  res.status(200).end();
+  // INSTANT response with keep-alive
+  res.writeHead(200, { 'Connection': 'keep-alive' });
+  res.end();
 
-  // Minimal data extraction (no JSON parsing overhead)
+  // Ultra-minimal extraction - no optional chaining
   const body = req.body;
-
-  const entityType = body?.entityType || body?.entity?.eventType || 'unknown';
-
+  const entity = body.entity;
+  const metaData = body.metaData;
+  
+  const entityType = body.entityType || (entity && entity.eventType) || 'unknown';
   let messageId = 'no-id';
-  if (entityType === 'USER_MESSAGE' && body.metaData && body.metaData.orgMsgId) {
-    messageId = body.metaData.orgMsgId;
-  } else if (body.entity && body.entity.messageId) {
-    messageId = body.entity.messageId;
+  
+  if (entityType === 'USER_MESSAGE' && metaData && metaData.orgMsgId) {
+    messageId = metaData.orgMsgId;
+  } else if (entity && entity.messageId) {
+    messageId = entity.messageId;
   }
   
   // Direct buffer add (fastest possible)
@@ -124,24 +134,17 @@ app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
     messageId
   });
   
-  // Async logging (non-blocking)
-  setImmediate(() => {
-    webhookCount++;
-    const now = Date.now();
-    
-    if (now - lastLogTime > LOG_INTERVAL) {
-      const bufferStatus = webhookBuffer.getStatus();
-      const rate = Math.round(webhookCount / ((now - (lastLogTime - LOG_INTERVAL)) / 1000));
+  // Micro-batched logging (every 1000 requests)
+  if (++webhookCount % 1000 === 0) {
+    process.nextTick(() => {
+      const now = Date.now();
+      const rate = Math.round(1000 / ((now - lastLogTime) / 1000));
+      const status = webhookBuffer.getStatus();
       
-      console.log(`📤 Rate: ${rate}/sec | Total: ${webhookCount} | Buffer: ${bufferStatus.buffered}/${bufferStatus.maxSize} | Overflow: ${bufferStatus.overflow}`);
-      
-      if (bufferStatus.buffered > bufferStatus.maxSize * 0.8) {
-        console.warn(`🚨 BUFFER WARNING: ${Math.round((bufferStatus.buffered / bufferStatus.maxSize) * 100)}% full`);
-      }
-      
+      console.log(`📤 ${rate}/sec | ${webhookCount} total | Buffer: ${status.buffered}`);
       lastLogTime = now;
-    }
-  });
+    });
+  }
 });
 
 
