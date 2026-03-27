@@ -54,7 +54,7 @@ module.exports = {
     {
       name: 'webhook-consumer',
       script: 'src/workers/webhookConsumer.js',
-      instances: 1,
+      instances: 3, // REDUCED TO 1 to stop rebalancing
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
@@ -70,7 +70,7 @@ module.exports = {
         RAZORPAY_WEBHOOK_SECRET: 'largemedia@rcssender123@123@stzk'
       },
       restart_delay: 10000,
-      max_memory_restart: '400M',
+      max_memory_restart: '800M', // Increased memory for single instance
       min_uptime: '30s',
       max_restarts: 5,
       kill_timeout: 5000
@@ -78,7 +78,7 @@ module.exports = {
     {
       name: 'stats-consumer',
       script: 'src/workers/statsConsumer.js',
-      instances: 1,
+      instances: 10,
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
@@ -102,7 +102,7 @@ module.exports = {
     {
       name: 'batch-consumer',
       script: 'src/workers/batchEntriesConsumer.js',
-      instances: 1,
+      instances: 3,
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
