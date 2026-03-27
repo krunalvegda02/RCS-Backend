@@ -63,18 +63,6 @@ app.use((req, res, next) => {
 });
 app.use(cookieParser());
 
-
-
-// Error handler
-app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(err.status || 500).json({
-    success: false,
-    message: err.message,
-  });
-});
-
-
 //Routes Import
 import router from "./routes/index.js";
 import realtimeRoutes from "./routes/realtime.routes.js";
@@ -88,6 +76,15 @@ app.use("/api/v1", router);
 app.use("/api", router);
 app.use("/api/realtime", authenticateToken, realtimeRoutes);
 app.use("/api/performance", performanceRoutes); // Public performance monitoring
+
+// Error handler - MUST BE AFTER ROUTES
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(err.status || 500).json({
+    success: false,
+    message: err.message,
+  });
+});
 
 
 
