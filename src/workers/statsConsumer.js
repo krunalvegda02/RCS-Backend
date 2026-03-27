@@ -32,7 +32,7 @@ async function startStatsConsumer() {
     });
 
     await consumer.connect();
-    await consumer.subscribe({ topic: 'message-stats', fromBeginning: false });
+    await consumer.subscribe({ topic: 'message-stats', fromBeginning: true });
 
     console.log('✅ Stats Consumer subscribed to message-stats');
     console.log(`[StatsConsumer] Consumer group: stats-processor-${process.env.NODE_ENV || 'dev'}`);
