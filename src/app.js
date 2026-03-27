@@ -38,14 +38,7 @@ app.use(
 //   next();
 // });
 
-// EXTREME performance middleware - webhook optimized
-app.use('/api/v1/jio/rcs/webhooks', express.json({
-  limit: '10mb',
-  strict: false,
-  type: 'application/json'
-}));
-
-// Standard middleware for other routes
+// Standard middleware for all routes
 app.use(express.json({
   limit: '50mb',
   parameterLimit: 50000,
@@ -108,7 +101,11 @@ let lastLogTime = Date.now();
 const LOG_INTERVAL = 5000; // Log every 5 seconds for high-volume monitoring
 
 // EXTREME performance webhook endpoint - zero blocking operations
-app.post('/api/v1/jio/rcs/webhooks', (req, res) => {
+app.post('/api/v1/jio/rcs/webhooks', express.json({
+  limit: '10mb',
+  strict: false,
+  type: 'application/json'
+}), (req, res) => {
   // INSTANT response with keep-alive
   res.writeHead(200, { 'Connection': 'keep-alive' });
   res.end();
