@@ -67,7 +67,7 @@ const syncCampaignStats = async (campaignId, Campaign, ContactCampaignMessage) =
       }
     );
 
-    console.log(`✅ ${campaign.name}: sent=${newStats.sent}, failed=${newStats.failed}`);
+    console.log(`✅ ${campaign.name}: total=${newStats.total}, sent=${newStats.sent}, delivered=${newStats.delivered}, read=${newStats.read}, replied=${newStats.replied}, failed=${newStats.failed}`);
     return { success: true };
   } catch (error) {
     console.error(`❌ syncCampaignStats error for ${campaignId}:`, error.message);
@@ -81,52 +81,74 @@ const main = async () => {
 
     const Campaign = mongoose.model('Campaign', new mongoose.Schema({}, { strict: false }));
     const ContactCampaignMessage = mongoose.model('ContactCampaignMessage', new mongoose.Schema({}, { strict: false, collection: 'contact_campaign_messages' }));
-    const MessageLog = mongoose.model('MessageLog', new mongoose.Schema({}, { strict: false, collection: 'message_logs' }));
 
-    // Find campaigns from today (instead of last 10 minutes)
-    const today = new Date();
-    const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 0, 0, 0, 0);
-    const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
-    
-    console.log(`📅 Syncing campaigns from: ${startOfDay.toDateString()}`);
-    
+    // Get command line arguments for date range
+    const args = process.argv.slice(2);
+    let startDate, endDate;
+
+    if (args.length >= 1) {
+      // Custom date provided (YYYY-MM-DD format)
+      const dateStr = args[0];
+      startDate = new Date(dateStr + 'T00:00:00.000Z');
+      endDate = new Date(dateStr + 'T23:59:59.999Z');
+      console.log(`📅 Syncing campaigns for: ${dateStr}`);
+    } else {
+      // Default: Today's campaigns
+      const today = new Date();
+      startDate = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 0, 0, 0, 0);
+      endDate = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
+      console.log(`📅 Syncing today's campaigns: ${startDate.toDateString()}`);
+    }
+
     // Find campaigns created or updated today
     const todaysCampaigns = await Campaign.find({
       $or: [
-        { createdAt: { $gte: startOfDay, $lte: endOfDay } },
-        { updatedAt: { $gte: startOfDay, $lte: endOfDay } }
+        { createdAt: { $gte: startDate, $lte: endDate } },
+        { updatedAt: { $gte: startDate, $lte: endDate } },
+        { 'stats.lastUpdated': { $gte: startDate, $lte: endDate } }
       ]
-    }).select('_id').lean();
+    }).select('_id name createdAt').lean();
 
     if (todaysCampaigns.length === 0) {
-      console.log('📊 No campaigns found for today');
+      console.log('📊 No campaigns found for the specified date range');
       await mongoose.connection.close();
       return;
     }
 
-    const affectedCampaigns = todaysCampaigns.map(c => c._id);
-
-    if (affectedCampaigns.length === 0) {
-      console.log('📊 No campaigns with recent updates');
-      await mongoose.connection.close();
-      return;
-    }
-
-    console.log(`📊 Found ${affectedCampaigns.length} campaigns created/updated today`);
+    console.log(`📊 Found ${todaysCampaigns.length} campaigns to sync`);
+    console.log('🔄 Starting sync process...');
 
     let synced = 0;
-    for (const campaignId of affectedCampaigns) {
-      if (!campaignId) continue;
+    let failed = 0;
+
+    for (let i = 0; i < todaysCampaigns.length; i++) {
+      const campaign = todaysCampaigns[i];
       
       try {
-        const result = await syncCampaignStats(campaignId, Campaign, ContactCampaignMessage);
-        if (result.success) synced++;
+        console.log(`📝 [${i + 1}/${todaysCampaigns.length}] Syncing: ${campaign.name}`);
+        
+        const result = await syncCampaignStats(campaign._id, Campaign, ContactCampaignMessage);
+        if (result.success) {
+          synced++;
+        } else {
+          failed++;
+        }
       } catch (error) {
-        console.error(`❌ Campaign ${campaignId}:`, error.message);
+        console.error(`❌ Campaign ${campaign.name}:`, error.message);
+        failed++;
+      }
+
+      // Small delay to avoid overwhelming database
+      if (i % 10 === 0 && i > 0) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
 
-    console.log(`📈 ✅ ${synced} today's campaigns synced`);
+    console.log(`\n🎉 SYNC COMPLETE:`);
+    console.log(`✅ Successfully synced: ${synced} campaigns`);
+    console.log(`❌ Failed: ${failed} campaigns`);
+    console.log(`📊 Total processed: ${todaysCampaigns.length} campaigns`);
+
     await mongoose.connection.close();
   } catch (error) {
     console.error('❌ Script error:', error);
@@ -136,17 +158,3 @@ const main = async () => {
 };
 
 main();
-
-
-
-
-
-// # SSH into production
-// ssh root@167.86.106.173
-
-// # Run manually
-// cd /var/www/rcs-backend
-// node scripts/syncAffectedCampaigns.js
-
-// # Watch logs live
-// tail -f /var/log/campaign-stats-affected.log
