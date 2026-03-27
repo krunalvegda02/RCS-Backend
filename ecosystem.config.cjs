@@ -54,7 +54,7 @@ module.exports = {
     {
       name: 'webhook-consumer',
       script: 'src/workers/webhookConsumer.js',
-      instances: 5,
+      instances: 1,
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
@@ -78,7 +78,7 @@ module.exports = {
     {
       name: 'stats-consumer',
       script: 'src/workers/statsConsumer.js',
-      instances: 10,
+      instances: 1,
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
@@ -102,7 +102,7 @@ module.exports = {
     {
       name: 'batch-consumer',
       script: 'src/workers/batchEntriesConsumer.js',
-      instances: 5,
+      instances: 1,
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
