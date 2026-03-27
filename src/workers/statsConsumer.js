@@ -5,10 +5,182 @@ import campaignStatsWorker from './campaignStatsWorker.js';
 
 process.env.WORKER_MODE = 'true';
 
+// Direct database processing function
+async function processUnprocessedLogsDirectly() {
+  try {
+    const MessageLog = (await import('../models/messageLog.model.js')).default;
+    const ContactCampaignMessage = (await import('../models/contactMessage.model.js')).default;
+
+    const count = await MessageLog.countDocuments({ processed: false });
+    console.log(`📊 Found ${count} unprocessed logs in database`);
+
+    if (count === 0) {
+      console.log('✅ No unprocessed logs found');
+      return;
+    }
+
+    console.log('🚀 Processing unprocessed logs directly from database...');
+    
+    const BATCH_SIZE = 1000;
+    let processed = 0;
+    let skip = 0;
+
+    while (skip < count) {
+      const logs = await MessageLog.find({ processed: false })
+        .limit(BATCH_SIZE)
+        .skip(skip)
+        .lean();
+
+      if (logs.length === 0) break;
+
+      console.log(`📝 Processing batch: ${skip + 1}-${skip + logs.length} of ${count}`);
+
+      // Process logs using same logic as Kafka consumer
+      const bulkOps = [];
+      
+      for (const log of logs) {
+        const { messageId, webhookData, eventType: logEventType } = log;
+        const eventType = webhookData?.eventType;
+        const entity = webhookData?.rawPayload?.entity;
+        const entityType = webhookData?.rawPayload?.entityType;
+
+        const webhookTimestamp = entity?.sendTime || entity?.deliveryTime ||
+          entity?.readTime || entity?.receiveTime || log.timestamp;
+        const timestamp = new Date(webhookTimestamp);
+
+        let newStatus = null;
+        let updateFields = {};
+
+        const isUserInteraction = logEventType === 'user_interaction' || entityType === 'USER_MESSAGE';
+
+        const statusPriority = {
+          'pending': 1,
+          'queued': 1,
+          'sent': 2,
+          'delivered': 3,
+          'read': 4,
+          'replied': 5,
+          'failed': 6,
+          'expired': 6
+        };
+
+        if (isUserInteraction) {
+          newStatus = 'replied';
+          updateFields.lastInteractionAt = timestamp;
+          if (webhookData.suggestionResponse) {
+            updateFields.suggestionResponse = webhookData.suggestionResponse;
+            updateFields.clickedAt = timestamp;
+            updateFields.clickedAction = webhookData.suggestionResponse.plainText;
+          }
+          if (webhookData.rawPayload?.entity?.text) {
+            updateFields.userText = webhookData.rawPayload.entity.text;
+          }
+        } else {
+          switch (eventType) {
+            case 'MESSAGE_SENT':
+            case 'SEND_MESSAGE_SUCCESS':
+              newStatus = 'sent';
+              updateFields.sentAt = timestamp;
+              break;
+
+            case 'MESSAGE_DELIVERED':
+              newStatus = 'delivered';
+              updateFields.deliveredAt = timestamp;
+              break;
+
+            case 'MESSAGE_READ':
+              newStatus = 'read';
+              updateFields.readAt = timestamp;
+              break;
+
+            case 'SEND_MESSAGE_FAILURE':
+            case 'MESSAGE_EXPIRED':
+            case 'MESSAGE_REVOKED':
+              newStatus = 'failed';
+              updateFields.failedAt = timestamp;
+              updateFields.errorCode = webhookData.rawPayload?.entity?.error?.code || 'UNKNOWN';
+              updateFields.errorMessage = webhookData.rawPayload?.entity?.error?.message || 'Failed';
+              break;
+          }
+        }
+
+        if (newStatus) {
+          const currentPriority = statusPriority[newStatus] || 0;
+          const upgradableStatuses = [];
+          for (const [status, priority] of Object.entries(statusPriority)) {
+            if (priority < currentPriority) {
+              upgradableStatuses.push(status);
+            }
+          }
+          
+          bulkOps.push({
+            updateOne: {
+              filter: { 
+                messageId,
+                $or: [
+                  { status: { $exists: false } },
+                  { status: { $in: upgradableStatuses } }
+                ]
+              },
+              update: {
+                $set: {
+                  status: newStatus,
+                  lastWebhookAt: timestamp,
+                  ...updateFields
+                },
+                $inc: {
+                  ...(webhookData.suggestionResponse && { userClickCount: 1 }),
+                  ...(webhookData.rawPayload?.entity?.text && { userReplyCount: 1 })
+                }
+              },
+              upsert: false
+            }
+          });
+        }
+      }
+
+      // Bulk update ContactCampaignMessage
+      if (bulkOps.length > 0) {
+        try {
+          const result = await ContactCampaignMessage.bulkWrite(bulkOps, { ordered: false });
+          console.log(`✅ Updated ${result.modifiedCount} messages`);
+        } catch (error) {
+          console.error(`❌ Bulk write error:`, error.message);
+        }
+      }
+
+      // Mark logs as processed
+      try {
+        await MessageLog.updateMany(
+          { _id: { $in: logs.map(l => l._id) } },
+          { $set: { processed: true, processedAt: new Date() } }
+        );
+        processed += logs.length;
+      } catch (error) {
+        console.error(`❌ Mark processed error:`, error.message);
+      }
+
+      skip += BATCH_SIZE;
+      console.log(`📊 Progress: ${processed}/${count} (${Math.round((processed/count)*100)}%)`);
+
+      // Small delay for M20 cluster
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    console.log(`🎉 Direct processing complete: ${processed} logs processed`);
+  } catch (error) {
+    console.error('❌ Direct processing error:', error);
+  }
+}
+
 async function startStatsConsumer() {
   try {
     await connectDB();
     await campaignStatsWorker.start();
+
+    // First, process unprocessed logs directly from database
+    console.log('🔍 Checking for unprocessed logs in database...');
+    await processUnprocessedLogsDirectly();
 
     const kafka = new Kafka({
       clientId: 'stats-consumer',
