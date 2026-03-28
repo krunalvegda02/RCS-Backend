@@ -153,7 +153,6 @@ async function startBatchEntriesConsumer() {
 
             try {
               // 🥇 3. NATIVE MONGO DRIVER - 2x-4x speed boost
-              // 🛡️ DUPLICATE PREVENTION: Use upsert with unique messageId
               const result = await collection.bulkWrite(bulkOps, { 
                 ordered: false,
                 writeConcern: { w: 1 }
@@ -175,32 +174,9 @@ async function startBatchEntriesConsumer() {
               }
             }
 
-            // 🥇 5. TRACK CAMPAIGN UPDATES - Don't block processing
-            if (chunkIndex === totalChunks - 1) {
-              campaignUpdates.add(campaignId);
-            }
-
             console.log(`[BatchConsumer] ✅ Chunk ${chunkIndex + 1}/${totalChunks} in ${Date.now() - start}ms`);
           })
         );
-
-        // 🥇 5. BATCH CAMPAIGN UPDATES OUTSIDE - Non-blocking
-        if (campaignUpdates.size > 0) {
-          // Process campaign updates in parallel after all inserts are done
-          Promise.all(
-            Array.from(campaignUpdates).map(async (campaignId) => {
-              try {
-                await Campaign.updateOne(
-                  { _id: new mongoose.Types.ObjectId(campaignId) },
-                  { status: 'pending' }
-                );
-                console.log(`[BatchConsumer] 🎯 Campaign ${campaignId} → pending`);
-              } catch (err) {
-                console.error(`[BatchConsumer] Campaign update error: ${err.message}`);
-              }
-            })
-          ).catch(err => console.error('Campaign updates error:', err.message));
-        }
 
         // Resolve all offsets at once
         if (batch.messages.length > 0) {
