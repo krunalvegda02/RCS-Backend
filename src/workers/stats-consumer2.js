@@ -329,7 +329,7 @@ async function startStatsConsumer() {
         console.log(`[StatsConsumer] Batch #${batchCount}: Found ${logs.length} unprocessed logs to process`);
 
         // Process in chunks to avoid timeout
-        const CHUNK_SIZE = 1000; // ⚡ Reduced for faster processing
+        const CHUNK_SIZE = 100; // ⚡ REDUCED from 1000 to prevent timeouts
         const chunks = [];
         for (let i = 0; i < logs.length; i += CHUNK_SIZE) {
           chunks.push(logs.slice(i, i + CHUNK_SIZE));
@@ -483,16 +483,24 @@ async function startStatsConsumer() {
             }
           }
 
-          // 🚀 BULK UPDATE WITH HIGH PERFORMANCE (PRESERVED LOGIC)
+          // 🚀 BULK UPDATE WITH TIMEOUT AND ERROR HANDLING
           if (bulkOps.length > 0) {
             try {
               console.log(`[StatsConsumer] Chunk ${chunkIndex + 1}: Attempting ${bulkOps.length} updates. Sample messageIds: ${Array.from(statusChanges.keys()).slice(0, 3).join(', ')}`);
               
-              const result = await ContactCampaignMessage.bulkWrite(bulkOps, { 
+              // Add timeout to prevent hanging
+              const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Bulk write timeout after 30s')), 30000)
+              );
+              
+              const bulkWritePromise = ContactCampaignMessage.bulkWrite(bulkOps, { 
                 ordered: false,
-                writeConcern: { w: 1, j: false } // ⚡ Fast write concern
+                writeConcern: { w: 1, j: false, wtimeout: 20000 } // 20s write timeout
               });
-              console.log(`[StatsConsumer] Chunk ${chunkIndex + 1}: Updated ${result.modifiedCount}/${bulkOps.length} messages (matched: ${result.matchedCount})`);
+              
+              const result = await Promise.race([bulkWritePromise, timeoutPromise]);
+              
+              console.log(`[StatsConsumer] Chunk ${chunkIndex + 1}: ✅ COMPLETED - Updated ${result.modifiedCount}/${bulkOps.length} messages (matched: ${result.matchedCount})`);
               totalUpdated += result.modifiedCount;
               totalMatched += result.matchedCount;
               totalBulkOps += bulkOps.length;
@@ -506,7 +514,13 @@ async function startStatsConsumer() {
                 console.log(`[StatsConsumer] ✅ ${result.matchedCount} matched but 0 modified - messages already have higher/equal status (expected for duplicate webhooks)`);
               }
             } catch (error) {
-              console.error(`[StatsConsumer] Chunk ${chunkIndex + 1} bulk write error:`, error.message);
+              console.error(`[StatsConsumer] Chunk ${chunkIndex + 1} ❌ BULK WRITE ERROR:`, error.message);
+              console.error(`[StatsConsumer] Error details:`, {
+                name: error.name,
+                code: error.code,
+                timeout: error.message.includes('timeout')
+              });
+              // Continue processing even if bulk write fails
             }
           } else {
             console.log(`[StatsConsumer] Chunk ${chunkIndex + 1}: No valid status updates to process (all events were unrecognized or invalid)`);
@@ -517,18 +531,33 @@ async function startStatsConsumer() {
 
         totalProcessed += totalUpdated;
 
-        // 🚀 ALWAYS MARK AS PROCESSED - If we reach MessageLog processing, mark as processed
+        // 🚀 ALWAYS MARK AS PROCESSED WITH TIMEOUT - If we reach MessageLog processing, mark as processed
         const allLogIds = logs.map(l => l._id);
         
         try {
-          await MessageLog.updateMany(
+          console.log(`[StatsConsumer] Batch #${batchCount}: 🔄 Marking ${allLogIds.length} logs as processed...`);
+          
+          // Add timeout to prevent hanging
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Mark processed timeout after 15s')), 15000)
+          );
+          
+          const markProcessedPromise = MessageLog.updateMany(
             { _id: { $in: allLogIds } },
             { $set: { processed: true, processedAt: new Date() } },
-            { writeConcern: { w: 1, j: false } }
+            { writeConcern: { w: 1, j: false, wtimeout: 10000 } }
           );
-          console.log(`[StatsConsumer] Batch #${batchCount}: ✅ Marked ${allLogIds.length} logs as processed (reached MessageLog processing)`);
+          
+          await Promise.race([markProcessedPromise, timeoutPromise]);
+          
+          console.log(`[StatsConsumer] Batch #${batchCount}: ✅ SUCCESS - Marked ${allLogIds.length} logs as processed`);
         } catch (error) {
-          console.error(`[StatsConsumer] Mark processed error:`, error.message);
+          console.error(`[StatsConsumer] Batch #${batchCount}: ❌ MARK PROCESSED ERROR:`, error.message);
+          console.error(`[StatsConsumer] Error details:`, {
+            name: error.name,
+            timeout: error.message.includes('timeout'),
+            logCount: allLogIds.length
+          });
         }
 
         const duration = Date.now() - startTime;
