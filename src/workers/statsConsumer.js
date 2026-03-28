@@ -339,6 +339,9 @@ async function startStatsConsumer() {
 
         // 🚀 SEQUENTIAL CHUNK PROCESSING (FASTER & MORE STABLE)
         let totalUpdated = 0;
+        let totalMatched = 0;
+        let totalBulkOps = 0;
+        
         for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
           const chunk = chunks[chunkIndex];
           const bulkOps = [];
@@ -491,6 +494,8 @@ async function startStatsConsumer() {
               });
               console.log(`[StatsConsumer] Chunk ${chunkIndex + 1}: Updated ${result.modifiedCount}/${bulkOps.length} messages (matched: ${result.matchedCount})`);
               totalUpdated += result.modifiedCount;
+              totalMatched += result.matchedCount;
+              totalBulkOps += bulkOps.length;
 
               // 🔄 PRESERVED: MINIMAL CPU logging
               if (result.modifiedCount > 0) {
@@ -512,12 +517,28 @@ async function startStatsConsumer() {
 
         totalProcessed += totalUpdated;
 
-        // 🚀 CONDITIONAL MARK AS PROCESSED - Only mark logs that were successfully processed or should be skipped
+        // 🚀 SMART MARK AS PROCESSED - Only mark logs based on processing outcome
         const allLogIds = logs.map(l => l._id);
+        let shouldMarkProcessed = false;
+        let reason = '';
         
-        // Check if we had any successful updates or if all messageIds were invalid
-        const shouldMarkProcessed = totalUpdated > 0 || 
-          (bulkOps.length === 0 && logs.length > 0); // No valid bulk ops means all events were invalid/unrecognized
+        if (totalUpdated > 0) {
+          // Case 1: Successful updates occurred
+          shouldMarkProcessed = true;
+          reason = `${totalUpdated} successful updates`;
+        } else if (totalBulkOps === 0) {
+          // Case 2: No valid bulk operations generated (invalid/unrecognized events)
+          shouldMarkProcessed = true;
+          reason = 'no valid status updates generated from events';
+        } else if (totalMatched > 0) {
+          // Case 3: MessageIds were found but no updates (status priority prevented updates)
+          shouldMarkProcessed = true;
+          reason = `${totalMatched} messageIds matched but status priority prevented updates (expected behavior)`;
+        } else {
+          // Case 4: Bulk operations generated but no messageIds matched (data integrity issue)
+          shouldMarkProcessed = false;
+          reason = `${totalBulkOps} bulk operations generated but 0 messageIds matched - indicates missing ContactCampaignMessage records`;
+        }
         
         if (shouldMarkProcessed) {
           try {
@@ -526,13 +547,13 @@ async function startStatsConsumer() {
               { $set: { processed: true, processedAt: new Date() } },
               { writeConcern: { w: 1, j: false } }
             );
-            console.log(`[StatsConsumer] Batch #${batchCount}: Marked ${allLogIds.length} logs as processed (${totalUpdated} successful updates)`);
+            console.log(`[StatsConsumer] Batch #${batchCount}: ✅ Marked ${allLogIds.length} logs as processed (${reason})`);
           } catch (error) {
             console.error(`[StatsConsumer] Mark processed error:`, error.message);
           }
         } else {
-          console.log(`[StatsConsumer] Batch #${batchCount}: NOT marking ${allLogIds.length} logs as processed - no successful updates and messageIds exist in ContactCampaignMessage`);
-          console.log(`[StatsConsumer] These logs will be retried in future processing cycles`);
+          console.log(`[StatsConsumer] Batch #${batchCount}: ❌ NOT marking ${allLogIds.length} logs as processed (${reason})`);
+          console.log(`[StatsConsumer] 🔄 These logs will be retried in future processing cycles`);
         }
 
         const duration = Date.now() - startTime;
