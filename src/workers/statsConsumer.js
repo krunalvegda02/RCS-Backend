@@ -267,7 +267,7 @@ async function startStatsConsumer() {
     await consumer.subscribe({ topic: 'message-stats', fromBeginning: false });
 
     console.log('✅ Stats Consumer subscribed to message-stats');
-    console.log(`[StatsConsumer] Consumer group: stats-processor-${process.env.NODE_ENV || 'dev'}`);
+    console.log(`[StatsConsumer] Consumer group: stats-processor-shared`);
     console.log(`[StatsConsumer] Kafka broker: ${process.env.KAFKA_BROKER || 'localhost:9092'}`);
 
     const MessageLog = (await import('../models/messageLog.model.js')).default;
