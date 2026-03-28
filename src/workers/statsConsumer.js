@@ -427,6 +427,25 @@ async function startStatsConsumer() {
               // 🔄 PRESERVED: Store for incremental update
               statusChanges.set(messageId, newStatus);
               
+              // Build update document
+              const updateDoc = {
+                $set: {
+                  status: newStatus,
+                  lastWebhookAt: timestamp,
+                  ...updateFields
+                }
+              };
+              
+              // Only add $inc if there are fields to increment
+              const incFields = {
+                ...(webhookData.suggestionResponse && { userClickCount: 1 }),
+                ...(webhookData.rawPayload?.entity?.text && { userReplyCount: 1 })
+              };
+              
+              if (Object.keys(incFields).length > 0) {
+                updateDoc.$inc = incFields;
+              }
+              
               bulkOps.push({
                 updateOne: {
                   filter: { 
@@ -436,17 +455,7 @@ async function startStatsConsumer() {
                       { status: { $in: upgradableStatuses } }
                     ]
                   },
-                  update: {
-                    $set: {
-                      status: newStatus,
-                      lastWebhookAt: timestamp,
-                      ...updateFields
-                    },
-                    $inc: {
-                      ...(webhookData.suggestionResponse && { userClickCount: 1 }),
-                      ...(webhookData.rawPayload?.entity?.text && { userReplyCount: 1 })
-                    }
-                  },
+                  update: updateDoc,
                   upsert: false
                 }
               });
@@ -489,11 +498,13 @@ async function startStatsConsumer() {
               } else if (result.matchedCount === 0) {
                 console.log(`[StatsConsumer] ⚠️ No messages matched - messageIds not found in ContactCampaignMessage`);
               } else {
-                console.log(`[StatsConsumer] ⚠️ ${result.matchedCount} matched but 0 modified - status priority conditions not met`);
+                console.log(`[StatsConsumer] ✅ ${result.matchedCount} matched but 0 modified - messages already have higher/equal status (expected for duplicate webhooks)`);
               }
             } catch (error) {
               console.error(`[StatsConsumer] Chunk ${chunkIndex + 1} bulk write error:`, error.message);
             }
+          } else {
+            console.log(`[StatsConsumer] Chunk ${chunkIndex + 1}: No valid status updates to process (all events were unrecognized or invalid)`);
           }
           
           await heartbeat(); // Heartbeat after each chunk
