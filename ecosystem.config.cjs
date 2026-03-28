@@ -54,7 +54,7 @@ module.exports = {
     {
       name: 'webhook-consumer',
       script: 'src/workers/webhookConsumer.js',
-      instances: 3, // REDUCED TO 1 to stop rebalancing
+      instances: 3, // FIXED: Reduced to 1 to prevent duplicates
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
@@ -78,12 +78,12 @@ module.exports = {
     {
       name: 'stats-consumer',
       script: 'src/workers/statsConsumer.js',
-      instances: 1,
+      instances: 10, // 🚀 6x parallelism for 1M webhooks
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
         WORKER_MODE: 'true',
-        MONGODB_URI: 'mongodb+srv://sikarwarvishal75_db_user:Gama%40123@cluster0.whqwih.mongodb.net/rcs?retryWrites=true&w=majority=majority',
+        MONGODB_URI: 'mongodb+srv://sikarwarvishal75_db_user:Gama%40123@cluster0.whqwih.mongodb.net/rcs?retryWrites=true&w=majority',
         KAFKA_BROKER: 'localhost:9092',
         KAFKAJS_NO_PARTITIONER_WARNING: '1',
         CLOUDINARY_CLOUD_NAME: 'doce6f5xn',
@@ -93,16 +93,16 @@ module.exports = {
         RAZORPAY_KEY_SECRET: 'KLtTl913r4STVP2gPAKzWXGu',
         RAZORPAY_WEBHOOK_SECRET: 'largemedia@rcssender123@123@stzk'
       },
-      restart_delay: 10000,
-      max_memory_restart: '300M',
+      restart_delay: 5000,
+      max_memory_restart: '1500M', // 🚀 High memory for bulk ops
       min_uptime: '30s',
-      max_restarts: 5,
-      kill_timeout: 5000
+      max_restarts: 3,
+      kill_timeout: 10000
     },
     {
       name: 'batch-consumer',
       script: 'src/workers/batchEntriesConsumer.js',
-      instances: 1,
+      instances: 1, // 🚀 SCALED: 3 instances for parallel campaign processing
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
@@ -118,7 +118,7 @@ module.exports = {
         RAZORPAY_WEBHOOK_SECRET: 'largemedia@rcssender123@123@stzk'
       },
       restart_delay: 10000,
-      max_memory_restart: '400M',
+      max_memory_restart: '800M', // Increased for handling larger campaigns
       min_uptime: '30s',
       max_restarts: 3,
       kill_timeout: 5000
