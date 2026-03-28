@@ -84,6 +84,7 @@ export const createMasterCampaign = async (req, res) => {
       payload: JSON.stringify(template.generatePayload()),
       estimatedCost,
       blockedAmount: estimatedCost,
+      totalChunks: Math.ceil(phoneNumbers.length / 1000), // Set total chunks for tracking
       stats: {
         total: phoneNumbers.length,
         pending: phoneNumbers.length,

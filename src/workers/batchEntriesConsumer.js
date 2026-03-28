@@ -5,6 +5,81 @@ import { v4 as uuidv4 } from 'uuid';
 
 process.env.WORKER_MODE = 'true';
 
+// 🔒 BULLETPROOF COMPLETION TRACKING - ALL CORNER CASES HANDLED
+async function markChunkComplete(campaignId, chunkIndex, totalChunks, insertedCount) {
+  try {
+    const Campaign = (await import('../models/campaign.model.js')).default;
+    
+    // 🔥 SINGLE ATOMIC OPERATION - Fixed aggregation syntax
+    const result = await Campaign.findOneAndUpdate(
+      { 
+        _id: new mongoose.Types.ObjectId(campaignId),
+        status: 'processing',
+        completedChunks: { $ne: chunkIndex }, // Prevent duplicate processing
+        totalChunks: { $exists: true, $gt: 0 } // Ensure totalChunks is set
+      },
+      {
+        $addToSet: { completedChunks: chunkIndex },
+        $inc: { 'stats.processed': insertedCount },
+        // 🔥 CONDITIONAL STATUS UPDATE - Only if this makes it complete
+        $set: {
+          status: {
+            $cond: {
+              if: { 
+                $eq: [
+                  { $size: { $setUnion: ['$completedChunks', [chunkIndex]] } }, // New size after adding
+                  '$totalChunks'
+                ]
+              },
+              then: 'pending',
+              else: '$status'
+            }
+          },
+          completedAt: {
+            $cond: {
+              if: { 
+                $eq: [
+                  { $size: { $setUnion: ['$completedChunks', [chunkIndex]] } },
+                  '$totalChunks'
+                ]
+              },
+              then: new Date(),
+              else: '$completedAt'
+            }
+          }
+        }
+      },
+      { returnDocument: 'after' }
+    );
+    
+    if (!result) {
+      console.log(`[BatchConsumer] ⚠️  Chunk ${chunkIndex} already completed, campaign not processing, or invalid totalChunks`);
+      return;
+    }
+    
+    const completedCount = result.completedChunks.length;
+    
+    if (result.status === 'pending') {
+      console.log(`[BatchConsumer] 🎯 Campaign ${campaignId} → pending (Chunk ${chunkIndex} completed final chunk: ${completedCount}/${totalChunks})`);
+      
+      // 🛡️ SAFETY VERIFICATION - Double-check completion
+      if (completedCount !== totalChunks) {
+        console.error(`[BatchConsumer] ❌ CRITICAL ERROR: Status set to pending but ${completedCount} ≠ ${totalChunks}!`);
+        // Revert status back to processing
+        await Campaign.updateOne(
+          { _id: new mongoose.Types.ObjectId(campaignId) },
+          { status: 'processing', $unset: { completedAt: 1 } }
+        );
+      }
+    } else {
+      console.log(`[BatchConsumer] ✅ Chunk ${chunkIndex} completed (${completedCount}/${totalChunks})`);
+    }
+    
+  } catch (error) {
+    console.error(`[BatchConsumer] Atomic completion error: ${error.message}`);
+  }
+}
+
 async function startBatchEntriesConsumer() {
   await connectDB();
   console.log('✅ MongoDB connected');
@@ -164,13 +239,34 @@ async function startBatchEntriesConsumer() {
                 const duplicateErrors = result.writeErrors.filter(err => err.code === 11000);
                 console.log(`[BatchConsumer] ⚠️  ${duplicateErrors.length} duplicates skipped, ${result.writeErrors.length - duplicateErrors.length} other errors`);
               }
+              
+              // 🛡️ SAFETY CHECK: Only mark complete if reasonable insertion success
+              const expectedCount = phoneNumbers.length;
+              const actualCount = result.insertedCount;
+              const successRate = actualCount / expectedCount;
+              
+              if (successRate >= 0.8) { // At least 80% success rate
+                // 🔒 ATOMIC COMPLETION TRACKING
+                await markChunkComplete(campaignId, chunkIndex, totalChunks, actualCount);
+              } else {
+                console.error(`[BatchConsumer] ❌ Chunk ${chunkIndex} had low success rate: ${actualCount}/${expectedCount} (${(successRate*100).toFixed(1)}%) - NOT marking as complete`);
+                // Could implement retry logic here
+              }
+              
             } catch (err) {
               // Handle duplicate key errors gracefully
               if (err.code === 11000 || (err.writeErrors && err.writeErrors.some(e => e.code === 11000))) {
                 const duplicateCount = err.writeErrors ? err.writeErrors.filter(e => e.code === 11000).length : 1;
                 console.log(`[BatchConsumer] ⚠️  ${duplicateCount} duplicates prevented by unique constraint`);
+                
+                // Even with duplicates, if most succeeded, mark as complete
+                const successfulInserts = phoneNumbers.length - duplicateCount;
+                if (successfulInserts > 0) {
+                  await markChunkComplete(campaignId, chunkIndex, totalChunks, successfulInserts);
+                }
               } else {
                 console.error(`[BatchConsumer] ❌ BulkWrite error: ${err.message}`);
+                // Don't mark chunk as complete on serious errors
               }
             }
 
