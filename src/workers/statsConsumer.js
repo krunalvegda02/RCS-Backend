@@ -512,17 +512,27 @@ async function startStatsConsumer() {
 
         totalProcessed += totalUpdated;
 
-        // 🚀 BULK MARK AS PROCESSED (SIMPLIFIED)
+        // 🚀 CONDITIONAL MARK AS PROCESSED - Only mark logs that were successfully processed or should be skipped
         const allLogIds = logs.map(l => l._id);
-        try {
-          await MessageLog.updateMany(
-            { _id: { $in: allLogIds } },
-            { $set: { processed: true, processedAt: new Date() } },
-            { writeConcern: { w: 1, j: false } }
-          );
-          console.log(`[StatsConsumer] Batch #${batchCount}: Marked ${allLogIds.length} logs as processed`);
-        } catch (error) {
-          console.error(`[StatsConsumer] Mark processed error:`, error.message);
+        
+        // Check if we had any successful updates or if all messageIds were invalid
+        const shouldMarkProcessed = totalUpdated > 0 || 
+          (bulkOps.length === 0 && logs.length > 0); // No valid bulk ops means all events were invalid/unrecognized
+        
+        if (shouldMarkProcessed) {
+          try {
+            await MessageLog.updateMany(
+              { _id: { $in: allLogIds } },
+              { $set: { processed: true, processedAt: new Date() } },
+              { writeConcern: { w: 1, j: false } }
+            );
+            console.log(`[StatsConsumer] Batch #${batchCount}: Marked ${allLogIds.length} logs as processed (${totalUpdated} successful updates)`);
+          } catch (error) {
+            console.error(`[StatsConsumer] Mark processed error:`, error.message);
+          }
+        } else {
+          console.log(`[StatsConsumer] Batch #${batchCount}: NOT marking ${allLogIds.length} logs as processed - no successful updates and messageIds exist in ContactCampaignMessage`);
+          console.log(`[StatsConsumer] These logs will be retried in future processing cycles`);
         }
 
         const duration = Date.now() - startTime;
