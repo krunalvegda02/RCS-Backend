@@ -78,7 +78,7 @@ module.exports = {
     {
       name: 'stats-consumer',
       script: 'src/workers/statsConsumer.js',
-      instances: 1, // 🚀 Reduced from 10 to 3 for better stability
+      instances: 5, 
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
@@ -99,34 +99,34 @@ module.exports = {
       max_restarts: 3,
       kill_timeout: 10000
     },
-    {
-      name: 'stats-consumer-force',
-      script: 'src/workers/stats-consumer2.js',
-      instances: 8,
-      exec_mode: 'fork',
-      env: {
-        NODE_ENV: 'production',
-        WORKER_MODE: 'true',
-        MONGODB_URI: 'mongodb+srv://sikarwarvishal75_db_user:Gama%40123@cluster0.whqwih.mongodb.net/rcs?retryWrites=true&w=majority',
-        KAFKA_BROKER: 'localhost:9092',
-        KAFKAJS_NO_PARTITIONER_WARNING: '1',
-        CLOUDINARY_CLOUD_NAME: 'doce6f5xn',
-        CLOUDINARY_API_KEY: '646961174768865',
-        CLOUDINARY_API_SECRET: 'obQQcEz0sHCyg4AbxzTn-DW1Trc',
-        RAZORPAY_KEY_ID: 'rzp_live_SCrX8CCm5kMyCV',
-        RAZORPAY_KEY_SECRET: 'KLtTl913r4STVP2gPAKzWXGu',
-        RAZORPAY_WEBHOOK_SECRET: 'largemedia@rcssender123@123@stzk'
-      },
-      restart_delay: 5000,
-      max_memory_restart: '1500M',
-      min_uptime: '30s',
-      max_restarts: 3,
-      kill_timeout: 10000
-    },
+    // {
+    //   name: 'stats-consumer-force',
+    //   script: 'src/workers/stats-consumer2.js',
+    //   instances: 8,
+    //   exec_mode: 'fork',
+    //   env: {
+    //     NODE_ENV: 'production',
+    //     WORKER_MODE: 'true',
+    //     MONGODB_URI: 'mongodb+srv://sikarwarvishal75_db_user:Gama%40123@cluster0.whqwih.mongodb.net/rcs?retryWrites=true&w=majority',
+    //     KAFKA_BROKER: 'localhost:9092',
+    //     KAFKAJS_NO_PARTITIONER_WARNING: '1',
+    //     CLOUDINARY_CLOUD_NAME: 'doce6f5xn',
+    //     CLOUDINARY_API_KEY: '646961174768865',
+    //     CLOUDINARY_API_SECRET: 'obQQcEz0sHCyg4AbxzTn-DW1Trc',
+    //     RAZORPAY_KEY_ID: 'rzp_live_SCrX8CCm5kMyCV',
+    //     RAZORPAY_KEY_SECRET: 'KLtTl913r4STVP2gPAKzWXGu',
+    //     RAZORPAY_WEBHOOK_SECRET: 'largemedia@rcssender123@123@stzk'
+    //   },
+    //   restart_delay: 5000,
+    //   max_memory_restart: '1500M',
+    //   min_uptime: '30s',
+    //   max_restarts: 3,
+    //   kill_timeout: 10000
+    // },
     {
       name: 'batch-consumer',
       script: 'src/workers/batchEntriesConsumer.js',
-      instances: 1, // 🚀 SCALED: 3 instances for parallel campaign processing
+      instances: 2, // 🚀 SCALED: 3 instances for parallel campaign processing
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
