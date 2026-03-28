@@ -113,30 +113,42 @@ async function startBatchEntriesConsumer() {
           const CHUNK_SIZE = 1000;
           const globalOffset = chunkIndex * CHUNK_SIZE;
 
-          const docs = phoneNumbers.map((phone, index) => {
+          const bulkOps = phoneNumbers.map((phone, index) => {
             const messageId = `${campaignId}-${chunkIndex}-${index}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
             return {
-              messageId,
-              recipientPhoneNumber: phone.replace(/^\+?91/, '').replace(/\D/g, ''),
-              userId,
-              campaignId: campaignObjectId,
-              templateId,
-              status: 'pending',
-              queuedAt: new Date(),
-              userClickCount: 0,
-              userReplyCount: 0,
-              ...(configCount > 0 ? { configIndex: (globalOffset + index) % configCount } : {})
+              insertOne: {
+                document: {
+                  messageId,
+                  recipientPhoneNumber: phone.replace(/^\+?91/, '').replace(/\D/g, ''),
+                  userId,
+                  campaignId: campaignObjectId,
+                  templateId,
+                  status: 'pending',
+                  queuedAt: new Date(),
+                  userClickCount: 0,
+                  userReplyCount: 0,
+                  ...(configCount > 0 ? { configIndex: (globalOffset + index) % configCount } : {})
+                }
+              }
             };
           });
 
           try {
-            const result = await ContactCampaignMessage.insertMany(docs, { ordered: false });
-            console.log(`[BatchConsumer] Inserted ${result.length} contacts`);
+            const result = await ContactCampaignMessage.bulkWrite(bulkOps, { 
+              ordered: false,
+              writeConcern: { w: 1, wtimeout: 30000 }
+            });
+            
+            console.log(`[BatchConsumer] ✅ Inserted ${result.insertedCount} contacts`);
+            
+            if (result.writeErrors && result.writeErrors.length > 0) {
+              console.log(`[BatchConsumer] ⚠️  ${result.writeErrors.length} duplicates/errors skipped`);
+            }
           } catch (err) {
+            console.error(`[BatchConsumer] ❌ BulkWrite error: ${err.message}`);
+            // Log specific errors for debugging
             if (err.writeErrors) {
-              console.error(`[BatchConsumer] ${err.writeErrors.length} duplicates skipped, ${docs.length - err.writeErrors.length} inserted`);
-            } else {
-              console.error(`[BatchConsumer] Insert error: ${err.message}`);
+              console.error(`[BatchConsumer] Write errors: ${err.writeErrors.length}`);
             }
           }
 

@@ -30,8 +30,8 @@ if (cluster.isPrimary) {
   await connectDB();
 
   // Start cron jobs only in primary process
-  const { startPaymentExpirationCron } = await import('./services/paymentExpiration.service.js');
-  startPaymentExpirationCron();
+  const paymentExpirationService = (await import('./services/paymentExpiration.service.js')).default;
+  paymentExpirationService.start();
 
   // Start archive cron job for archiving campaigns everyday at midnight
   await import('../scripts/cronArchive.js');

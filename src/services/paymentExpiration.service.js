@@ -1,40 +1,83 @@
+import mongoose from 'mongoose';
 import cron from 'node-cron';
-import Payment, { PAYMENT_STATUS } from '../models/payment.model.js';
 
-const expireOldPayments = async () => {
-  try {
-    console.log('[Cron] Checking for abandoned payments...');
-    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+// Payment expiration service
+class PaymentExpirationService {
+  constructor() {
+    this.isRunning = false;
+    this.EXPIRATION_MINUTES = 15; // Razorpay orders expire in 15 minutes
+  }
 
-    const expiredPayments = await Payment.find({
-      status: PAYMENT_STATUS.CREATED,
-      createdAt: { $lt: tenMinutesAgo },
+  async expireOldPayments() {
+    try {
+      if (this.isRunning) {
+        console.log('[PaymentExpiration] Already running, skipping...');
+        return;
+      }
+
+      this.isRunning = true;
+      console.log('[PaymentExpiration] Checking for expired payments...');
+
+      const Payment = (await import('../models/payment.model.js')).default;
+      
+      const expirationTime = new Date(Date.now() - this.EXPIRATION_MINUTES * 60 * 1000);
+      
+      const expiredCount = await Payment.countDocuments({
+        status: 'created',
+        createdAt: { $lt: expirationTime }
+      });
+
+      if (expiredCount > 0) {
+        console.log(`[PaymentExpiration] Found ${expiredCount} expired payments`);
+        
+        const updateResult = await Payment.updateMany(
+          {
+            status: 'created',
+            createdAt: { $lt: expirationTime }
+          },
+          {
+            $set: {
+              status: 'failed',
+              errorCode: 'PAYMENT_EXPIRED',
+              errorDescription: 'Payment expired - not completed within time limit',
+              errorReason: 'timeout'
+            }
+          }
+        );
+
+        console.log(`[PaymentExpiration] ✅ Expired ${updateResult.modifiedCount} payments`);
+      } else {
+        console.log('[PaymentExpiration] No expired payments found');
+      }
+
+    } catch (error) {
+      console.error('[PaymentExpiration] ❌ Error:', error.message);
+    } finally {
+      this.isRunning = false;
+    }
+  }
+
+  start() {
+    console.log('[PaymentExpiration] 🚀 Starting payment expiration service...');
+    
+    // Run every 5 minutes
+    cron.schedule('*/5 * * * *', () => {
+      this.expireOldPayments();
     });
 
-    console.log(`[Cron] Found ${expiredPayments.length} payments to expire`);
+    // Run once immediately
+    setTimeout(() => {
+      this.expireOldPayments();
+    }, 5000);
 
-    if (expiredPayments.length > 0) {
-      for (const payment of expiredPayments) {
-        await payment.markAsFailed({
-          code: 'PAYMENT_TIMEOUT',
-          description: 'Payment not completed within 10 minutes',
-          reason: 'User abandoned payment',
-        });
-        console.log(`[Cron] ⏰ Expired: ${payment.razorpayOrderId}`);
-      }
-      console.log(`[Cron] ✅ Expired ${expiredPayments.length} abandoned payments`);
-    }
-  } catch (error) {
-    console.error('[Cron] Error expiring payments:', error);
+    console.log('[PaymentExpiration] ✅ Service started (runs every 5 minutes)');
   }
-};
 
-export const startPaymentExpirationCron = () => {
-  // Run immediately on startup to catch old payments
-  expireOldPayments();
-  
-  // Then run every minute
-  cron.schedule('* * * * *', expireOldPayments);
+  stop() {
+    console.log('[PaymentExpiration] 🛑 Stopping payment expiration service...');
+    // Note: node-cron doesn't provide easy way to stop specific tasks
+    // You would need to track the task reference if you want to stop it
+  }
+}
 
-  console.log('✅ Payment expiration cron started (runs every minute, expires payments after 10 minutes)');
-};
+export default new PaymentExpirationService();
