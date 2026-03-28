@@ -5,78 +5,55 @@ import { v4 as uuidv4 } from 'uuid';
 
 process.env.WORKER_MODE = 'true';
 
-// 🔒 BULLETPROOF COMPLETION TRACKING - ALL CORNER CASES HANDLED
+// 🔒 SIMPLE BULLETPROOF COMPLETION TRACKING
 async function markChunkComplete(campaignId, chunkIndex, totalChunks, insertedCount) {
   try {
     const Campaign = (await import('../models/campaign.model.js')).default;
     
-    // 🔥 SINGLE ATOMIC OPERATION - Fixed aggregation syntax
-    const result = await Campaign.findOneAndUpdate(
+    // Step 1: Add chunk atomically (prevent duplicates)
+    const addResult = await Campaign.updateOne(
       { 
         _id: new mongoose.Types.ObjectId(campaignId),
         status: 'processing',
-        completedChunks: { $ne: chunkIndex }, // Prevent duplicate processing
-        totalChunks: { $exists: true, $gt: 0 } // Ensure totalChunks is set
+        completedChunks: { $ne: chunkIndex } // Prevent duplicate processing
       },
       {
         $addToSet: { completedChunks: chunkIndex },
-        $inc: { 'stats.processed': insertedCount },
-        // 🔥 CONDITIONAL STATUS UPDATE - Only if this makes it complete
-        $set: {
-          status: {
-            $cond: {
-              if: { 
-                $eq: [
-                  { $size: { $setUnion: ['$completedChunks', [chunkIndex]] } }, // New size after adding
-                  '$totalChunks'
-                ]
-              },
-              then: 'pending',
-              else: '$status'
-            }
-          },
-          completedAt: {
-            $cond: {
-              if: { 
-                $eq: [
-                  { $size: { $setUnion: ['$completedChunks', [chunkIndex]] } },
-                  '$totalChunks'
-                ]
-              },
-              then: new Date(),
-              else: '$completedAt'
-            }
-          }
-        }
-      },
-      { returnDocument: 'after' }
+        $inc: { 'stats.processed': insertedCount }
+      }
     );
     
-    if (!result) {
-      console.log(`[BatchConsumer] ⚠️  Chunk ${chunkIndex} already completed, campaign not processing, or invalid totalChunks`);
+    if (addResult.matchedCount === 0) {
+      console.log(`[BatchConsumer] ⚠️  Chunk ${chunkIndex} already completed or campaign not processing`);
       return;
     }
     
-    const completedCount = result.completedChunks.length;
-    
-    if (result.status === 'pending') {
-      console.log(`[BatchConsumer] 🎯 Campaign ${campaignId} → pending (Chunk ${chunkIndex} completed final chunk: ${completedCount}/${totalChunks})`);
-      
-      // 🛡️ SAFETY VERIFICATION - Double-check completion
-      if (completedCount !== totalChunks) {
-        console.error(`[BatchConsumer] ❌ CRITICAL ERROR: Status set to pending but ${completedCount} ≠ ${totalChunks}!`);
-        // Revert status back to processing
-        await Campaign.updateOne(
-          { _id: new mongoose.Types.ObjectId(campaignId) },
-          { status: 'processing', $unset: { completedAt: 1 } }
-        );
+    // Step 2: Check completion and update status (separate atomic operation)
+    const completionResult = await Campaign.updateOne(
+      {
+        _id: new mongoose.Types.ObjectId(campaignId),
+        status: 'processing',
+        $expr: { $eq: [{ $size: '$completedChunks' }, totalChunks] } // Only if ALL chunks complete
+      },
+      {
+        $set: {
+          status: 'pending',
+          completedAt: new Date()
+        }
       }
+    );
+    
+    if (completionResult.modifiedCount > 0) {
+      console.log(`[BatchConsumer] 🎯 Campaign ${campaignId} → pending (Chunk ${chunkIndex} completed final chunk: ${totalChunks}/${totalChunks})`);
     } else {
-      console.log(`[BatchConsumer] ✅ Chunk ${chunkIndex} completed (${completedCount}/${totalChunks})`);
+      // Get current count for logging
+      const campaign = await Campaign.findById(campaignId).select('completedChunks');
+      const currentCount = campaign ? campaign.completedChunks.length : 0;
+      console.log(`[BatchConsumer] ✅ Chunk ${chunkIndex} completed (${currentCount}/${totalChunks})`);
     }
     
   } catch (error) {
-    console.error(`[BatchConsumer] Atomic completion error: ${error.message}`);
+    console.error(`[BatchConsumer] Completion tracking error: ${error.message}`);
   }
 }
 
