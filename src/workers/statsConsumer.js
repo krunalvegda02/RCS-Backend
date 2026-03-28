@@ -313,58 +313,26 @@ async function startStatsConsumer() {
 
         console.log(`[StatsConsumer] Batch #${batchCount}: Processing ${logIds.length} log IDs`);
 
-        // Fetch unprocessed logs from DB with ATOMIC LOCK
+        // Fetch unprocessed logs from DB (SIMPLIFIED APPROACH)
         const logs = await MessageLog.find({
           _id: { $in: logIds },
-          processed: false,
-          processingLock: { $exists: false } // 🔒 Not being processed by another instance
+          processed: false
         }).lean();
 
         if (logs.length === 0) {
-          console.log(`[StatsConsumer] Batch #${batchCount}: No unprocessed logs found (all already processed or locked)`);
+          console.log(`[StatsConsumer] Batch #${batchCount}: No unprocessed logs found (all already processed)`);
           await resolveOffset(messages[messages.length - 1].offset);
           await heartbeat();
           return;
         }
 
-        // 🔒 ATOMIC LOCK: Mark logs as being processed by this instance
-        const instanceId = `${process.pid}-${Date.now()}`;
-        const lockResult = await MessageLog.updateMany(
-          { 
-            _id: { $in: logs.map(l => l._id) },
-            processed: false,
-            processingLock: { $exists: false }
-          },
-          { 
-            $set: { 
-              processingLock: instanceId,
-              processingStartedAt: new Date()
-            }
-          }
-        );
-
-        console.log(`[StatsConsumer] Batch #${batchCount}: Locked ${lockResult.modifiedCount} logs for processing`);
-
-        if (lockResult.modifiedCount === 0) {
-          console.log(`[StatsConsumer] Batch #${batchCount}: All logs already locked by other instances`);
-          await resolveOffset(messages[messages.length - 1].offset);
-          await heartbeat();
-          return;
-        }
-
-        // Re-fetch only the logs we successfully locked
-        const lockedLogs = await MessageLog.find({
-          _id: { $in: logs.map(l => l._id) },
-          processingLock: instanceId
-        }).lean();
-
-        console.log(`[StatsConsumer] Batch #${batchCount}: Found ${lockedLogs.length} locked logs to process`);
+        console.log(`[StatsConsumer] Batch #${batchCount}: Found ${logs.length} unprocessed logs to process`);
 
         // Process in chunks to avoid timeout
-        const CHUNK_SIZE = 2000; // 🚀 Doubled chunk size
+        const CHUNK_SIZE = 2000;
         const chunks = [];
-        for (let i = 0; i < lockedLogs.length; i += CHUNK_SIZE) {
-          chunks.push(lockedLogs.slice(i, i + CHUNK_SIZE));
+        for (let i = 0; i < logs.length; i += CHUNK_SIZE) {
+          chunks.push(logs.slice(i, i + CHUNK_SIZE));
         }
 
         console.log(`[StatsConsumer] Batch #${batchCount}: Processing ${chunks.length} chunks of ${CHUNK_SIZE}`);
@@ -527,28 +495,17 @@ async function startStatsConsumer() {
         const totalUpdated = chunkResults.reduce((sum, result) => sum + result.updated, 0);
         totalProcessed += totalUpdated;
 
-        // 🚀 BULK MARK AS PROCESSED WITH LOCK REMOVAL
-        const allLogIds = lockedLogs.map(l => l._id);
+        // 🚀 BULK MARK AS PROCESSED (SIMPLIFIED)
+        const allLogIds = logs.map(l => l._id);
         try {
           await MessageLog.updateMany(
-            { 
-              _id: { $in: allLogIds },
-              processingLock: instanceId // 🔒 Only update logs we locked
-            },
-            { 
-              $set: { processed: true, processedAt: new Date() },
-              $unset: { processingLock: 1, processingStartedAt: 1 } // 🔓 Remove lock
-            },
+            { _id: { $in: allLogIds } },
+            { $set: { processed: true, processedAt: new Date() } },
             { writeConcern: { w: 1, j: false } }
           );
-          console.log(`[StatsConsumer] Batch #${batchCount}: Marked ${allLogIds.length} logs as processed and unlocked`);
+          console.log(`[StatsConsumer] Batch #${batchCount}: Marked ${allLogIds.length} logs as processed`);
         } catch (error) {
           console.error(`[StatsConsumer] Mark processed error:`, error.message);
-          // 🔒 CLEANUP: Remove locks on error
-          await MessageLog.updateMany(
-            { _id: { $in: allLogIds }, processingLock: instanceId },
-            { $unset: { processingLock: 1, processingStartedAt: 1 } }
-          );
         }
 
         const duration = Date.now() - startTime;
