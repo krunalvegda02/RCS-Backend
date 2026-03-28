@@ -102,14 +102,14 @@ export const createMasterCampaign = async (req, res) => {
     const verifyUser = await User.findById(userId);
     console.log(`[Campaign] ✅ Verified in DB: Balance=₹${verifyUser.wallet.balance}, Blocked=₹${verifyUser.wallet.blockedBalance}`);
 
-    // Check if contacts < 100: manually add to MongoDB, else use Kafka
-    if (phoneNumbers.length < 100) {
-      console.log(`[Campaign] 📝 Small batch (${phoneNumbers.length} < 100), adding directly to MongoDB`);
+    // Check if contacts < 2000: manually add to MongoDB, else use Kafka
+    if (phoneNumbers.length < 3000) {
+      console.log(`[Campaign] 📝 Small batch (${phoneNumbers.length} < 3000), adding directly to MongoDB`);
 
       try {
         // Determine config count for multi-config round-robin
         const configCount = (user.isMultiConfig && user.jioConfigs?.length > 0)
-          ? user.jioConfigs.length
+          ? user.jioConfigs.length  
           : 0;
 
         const entries = phoneNumbers.map((phoneNumber, i) => ({
