@@ -517,7 +517,7 @@ async function startStatsConsumer() {
 
         totalProcessed += totalUpdated;
 
-        // 🚀 SMART MARK AS PROCESSED - Only mark logs based on processing outcome
+        // 🚀 SMART MARK AS PROCESSED - Check if messageIds exist before making decision
         const allLogIds = logs.map(l => l._id);
         let shouldMarkProcessed = false;
         let reason = '';
@@ -530,14 +530,31 @@ async function startStatsConsumer() {
           // Case 2: No valid bulk operations generated (invalid/unrecognized events)
           shouldMarkProcessed = true;
           reason = 'no valid status updates generated from events';
-        } else if (totalMatched > 0) {
-          // Case 3: MessageIds were found but no updates (status priority prevented updates)
-          shouldMarkProcessed = true;
-          reason = `${totalMatched} messageIds matched but status priority prevented updates (expected behavior)`;
         } else {
-          // Case 4: Bulk operations generated but no messageIds matched (data integrity issue)
-          shouldMarkProcessed = false;
-          reason = `${totalBulkOps} bulk operations generated but 0 messageIds matched - indicates missing ContactCampaignMessage records`;
+          // Case 3 & 4: Bulk operations generated but no updates
+          // We need to check if messageIds actually exist in ContactCampaignMessage
+          const messageIds = Array.from(new Set(logs.map(l => l.messageId)));
+          const existingMessages = await ContactCampaignMessage.find(
+            { messageId: { $in: messageIds } },
+            { messageId: 1 }
+          ).lean();
+          
+          const existingMessageIds = new Set(existingMessages.map(m => m.messageId));
+          const foundCount = messageIds.filter(id => existingMessageIds.has(id)).length;
+          
+          if (foundCount === messageIds.length) {
+            // Case 3: All messageIds exist - status priority prevented updates (expected)
+            shouldMarkProcessed = true;
+            reason = `${foundCount}/${messageIds.length} messageIds exist but status priority prevented updates (expected behavior)`;
+          } else if (foundCount === 0) {
+            // Case 4: No messageIds exist - data integrity issue
+            shouldMarkProcessed = false;
+            reason = `0/${messageIds.length} messageIds found in ContactCampaignMessage - data integrity issue`;
+          } else {
+            // Case 5: Some messageIds exist - mixed scenario
+            shouldMarkProcessed = false;
+            reason = `${foundCount}/${messageIds.length} messageIds found - mixed data integrity issue`;
+          }
         }
         
         if (shouldMarkProcessed) {
