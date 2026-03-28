@@ -93,7 +93,7 @@ async function startBatchEntriesConsumer() {
   });
 
   // 🔥 Get native MongoDB collection for maximum performance
-  const collection = mongoose.connection.db.collection('contactcampaignmessages');
+  const collection = mongoose.connection.db.collection('contact_campaign_messages');
   
   await consumer.run({
     partitionsConsumedConcurrently: 5, // 🥇 BIGGEST BOOST: Increased parallelism
