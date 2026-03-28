@@ -329,7 +329,7 @@ async function startStatsConsumer() {
         console.log(`[StatsConsumer] Batch #${batchCount}: Found ${logs.length} unprocessed logs to process`);
 
         // Process in chunks to avoid timeout
-        const CHUNK_SIZE = 2000;
+        const CHUNK_SIZE = 1000; // ⚡ Reduced for faster processing
         const chunks = [];
         for (let i = 0; i < logs.length; i += CHUNK_SIZE) {
           chunks.push(logs.slice(i, i + CHUNK_SIZE));
@@ -337,10 +337,14 @@ async function startStatsConsumer() {
 
         console.log(`[StatsConsumer] Batch #${batchCount}: Processing ${chunks.length} chunks of ${CHUNK_SIZE}`);
 
-        // 🚀 PARALLEL CHUNK PROCESSING (PRESERVING ORIGINAL LOGIC)
-        const chunkPromises = chunks.map(async (chunk, chunkIndex) => {
+        // 🚀 SEQUENTIAL CHUNK PROCESSING (FASTER & MORE STABLE)
+        let totalUpdated = 0;
+        for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+          const chunk = chunks[chunkIndex];
           const bulkOps = [];
           const statusChanges = new Map(); // 🔄 PRESERVED: Original status tracking
+          
+          await heartbeat(); // Heartbeat before each chunk
           
           for (const log of chunk) {
             const { messageId, webhookData, eventType: logEventType } = log;
@@ -475,24 +479,20 @@ async function startStatsConsumer() {
                 writeConcern: { w: 1, j: false } // ⚡ Fast write concern
               });
               console.log(`[StatsConsumer] Chunk ${chunkIndex + 1}: Updated ${result.modifiedCount}/${bulkOps.length} messages`);
+              totalUpdated += result.modifiedCount;
 
               // 🔄 PRESERVED: MINIMAL CPU logging
               if (result.modifiedCount > 0) {
                 console.log(`[StatsConsumer] ${result.modifiedCount} messages updated - stats will sync periodically`);
               }
-              
-              return { updated: result.modifiedCount, chunk };
             } catch (error) {
               console.error(`[StatsConsumer] Chunk ${chunkIndex + 1} bulk write error:`, error.message);
-              return { updated: 0, chunk };
             }
           }
-          return { updated: 0, chunk };
-        });
+          
+          await heartbeat(); // Heartbeat after each chunk
+        }
 
-        // 🚀 WAIT FOR ALL CHUNKS TO COMPLETE
-        const chunkResults = await Promise.all(chunkPromises);
-        const totalUpdated = chunkResults.reduce((sum, result) => sum + result.updated, 0);
         totalProcessed += totalUpdated;
 
         // 🚀 BULK MARK AS PROCESSED (SIMPLIFIED)
