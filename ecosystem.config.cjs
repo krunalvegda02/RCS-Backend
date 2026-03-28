@@ -78,7 +78,7 @@ module.exports = {
     {
       name: 'stats-consumer',
       script: 'src/workers/statsConsumer.js',
-      instances: 5, 
+      instances: 7, 
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
@@ -126,7 +126,7 @@ module.exports = {
     {
       name: 'batch-consumer',
       script: 'src/workers/batchEntriesConsumer.js',
-      instances: 1, // 🚀 SCALED: 3 instances for parallel campaign processing
+      instances: 1, 
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
