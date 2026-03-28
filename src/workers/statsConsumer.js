@@ -5,29 +5,40 @@ import campaignStatsWorker from './campaignStatsWorker.js';
 
 process.env.WORKER_MODE = 'true';
 
-// Direct database processing function
+// Direct database processing function with improved coordination
 async function processUnprocessedLogsDirectly() {
   try {
     const MessageLog = (await import('../models/messageLog.model.js')).default;
     const ContactCampaignMessage = (await import('../models/contactMessage.model.js')).default;
 
-    const count = await MessageLog.countDocuments({ processed: false });
-    console.log(`📊 Found ${count} unprocessed logs in database`);
+    // 🔒 INSTANCE COORDINATION: Only one instance should do initial count
+    const instanceId = `direct-${process.pid}-${Date.now()}`;
+    console.log(`🚀 Instance ${instanceId} starting direct processing...`);
+    
+    // Small random delay to prevent all instances from starting simultaneously
+    await new Promise(resolve => setTimeout(resolve, Math.random() * 5000));
+
+    const count = await MessageLog.countDocuments({ 
+      processed: false,
+      processingLock: { $exists: false } // Only count unlocked logs
+    });
+    
+    console.log(`📊 Instance ${instanceId}: Found ${count} unprocessed unlocked logs`);
 
     if (count === 0) {
-      console.log('✅ No unprocessed logs found');
+      console.log(`✅ Instance ${instanceId}: No unprocessed logs found`);
       return;
     }
 
-    console.log('🚀 Processing unprocessed logs directly from database...');
+    console.log(`🚀 Instance ${instanceId}: Processing unprocessed logs directly from database...`);
     
-    const BATCH_SIZE = 2000; // 🚀 Doubled batch size
+    const BATCH_SIZE = 1000; // Reduced for better coordination
     let processed = 0;
-    let skip = 0;
-    const instanceId = `direct-${process.pid}-${Date.now()}`; // 🔒 Unique instance ID
+    let consecutiveEmptyBatches = 0;
+    const MAX_EMPTY_BATCHES = 3;
 
-    while (skip < count) {
-      // 🔒 ATOMIC FETCH AND LOCK
+    while (consecutiveEmptyBatches < MAX_EMPTY_BATCHES) {
+      // 🔒 ATOMIC FETCH AND LOCK with better query
       const lockResult = await MessageLog.updateMany(
         { 
           processed: false,
@@ -43,9 +54,14 @@ async function processUnprocessedLogsDirectly() {
       );
 
       if (lockResult.modifiedCount === 0) {
-        console.log('🔒 No more unlocked logs available');
-        break;
+        consecutiveEmptyBatches++;
+        console.log(`🔒 Instance ${instanceId}: No more unlocked logs available (attempt ${consecutiveEmptyBatches}/${MAX_EMPTY_BATCHES})`);
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait before retry
+        continue;
       }
+
+      consecutiveEmptyBatches = 0; // Reset counter
+      console.log(`🔒 Instance ${instanceId}: Locked ${lockResult.modifiedCount} logs`);
 
       // Fetch the logs we just locked
       const logs = await MessageLog.find({ 
@@ -55,9 +71,12 @@ async function processUnprocessedLogsDirectly() {
       .limit(BATCH_SIZE)
       .lean();
 
-      if (logs.length === 0) break;
+      if (logs.length === 0) {
+        console.log(`⚠️ Instance ${instanceId}: No logs found after locking`);
+        continue;
+      }
 
-      console.log(`📝 Processing batch: ${processed + 1}-${processed + logs.length} of ${count}`);
+      console.log(`📝 Instance ${instanceId}: Processing batch of ${logs.length} logs (Total processed: ${processed})`);
 
       // 🔄 PRESERVED: Process logs using same logic as Kafka consumer
       const bulkOps = [];
@@ -217,9 +236,9 @@ async function startStatsConsumer() {
     await connectDB();
     await campaignStatsWorker.start();
 
-    // First, process unprocessed logs directly from database
-    console.log('🔍 Checking for unprocessed logs in database...');
-    await processUnprocessedLogsDirectly();
+    // 🚀 TEMPORARILY SKIP DIRECT PROCESSING - Let Kafka consumers work
+    console.log('⚡ Skipping direct processing - starting Kafka consumer immediately...');
+    // await processUnprocessedLogsDirectly();
 
     const kafka = new Kafka({
       clientId: 'stats-consumer',
