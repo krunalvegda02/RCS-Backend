@@ -343,14 +343,14 @@ async function startStatsConsumer() {
           }
         );
 
+        console.log(`[StatsConsumer] Batch #${batchCount}: Locked ${lockResult.modifiedCount} logs for processing`);
+
         if (lockResult.modifiedCount === 0) {
           console.log(`[StatsConsumer] Batch #${batchCount}: All logs already locked by other instances`);
           await resolveOffset(messages[messages.length - 1].offset);
           await heartbeat();
           return;
         }
-
-        console.log(`[StatsConsumer] Batch #${batchCount}: Locked ${lockResult.modifiedCount} logs for processing`);
 
         // Re-fetch only the logs we successfully locked
         const lockedLogs = await MessageLog.find({
