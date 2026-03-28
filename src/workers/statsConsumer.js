@@ -474,16 +474,22 @@ async function startStatsConsumer() {
           // 🚀 BULK UPDATE WITH HIGH PERFORMANCE (PRESERVED LOGIC)
           if (bulkOps.length > 0) {
             try {
+              console.log(`[StatsConsumer] Chunk ${chunkIndex + 1}: Attempting ${bulkOps.length} updates. Sample messageIds: ${Array.from(statusChanges.keys()).slice(0, 3).join(', ')}`);
+              
               const result = await ContactCampaignMessage.bulkWrite(bulkOps, { 
                 ordered: false,
                 writeConcern: { w: 1, j: false } // ⚡ Fast write concern
               });
-              console.log(`[StatsConsumer] Chunk ${chunkIndex + 1}: Updated ${result.modifiedCount}/${bulkOps.length} messages`);
+              console.log(`[StatsConsumer] Chunk ${chunkIndex + 1}: Updated ${result.modifiedCount}/${bulkOps.length} messages (matched: ${result.matchedCount})`);
               totalUpdated += result.modifiedCount;
 
               // 🔄 PRESERVED: MINIMAL CPU logging
               if (result.modifiedCount > 0) {
                 console.log(`[StatsConsumer] ${result.modifiedCount} messages updated - stats will sync periodically`);
+              } else if (result.matchedCount === 0) {
+                console.log(`[StatsConsumer] ⚠️ No messages matched - messageIds not found in ContactCampaignMessage`);
+              } else {
+                console.log(`[StatsConsumer] ⚠️ ${result.matchedCount} matched but 0 modified - status priority conditions not met`);
               }
             } catch (error) {
               console.error(`[StatsConsumer] Chunk ${chunkIndex + 1} bulk write error:`, error.message);
