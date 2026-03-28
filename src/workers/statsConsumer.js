@@ -218,7 +218,7 @@ async function startStatsConsumer() {
     let batchCount = 0;
 
     await consumer.run({
-      partitionsConsumedConcurrently: 1,
+      partitionsConsumedConcurrently: 5,
       eachBatchAutoResolve: false,
 
       eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
