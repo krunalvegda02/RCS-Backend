@@ -78,7 +78,7 @@ module.exports = {
     {
       name: 'stats-consumer',
       script: 'src/workers/statsConsumer.js',
-      instances: 10, // 🚀 6x parallelism for 1M webhooks
+      instances: 1, // 🚀 Reduced from 10 to 3 for better stability
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
