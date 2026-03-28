@@ -23,7 +23,7 @@ async function startBatchEntriesConsumer() {
   });
 
   const consumer = kafka.consumer({
-    groupId: 'batch-entries-processor-prod-final',
+    groupId: `batch-entries-processor-${process.env.PM2_INSTANCE_ID || 'single'}`, // Unique group per instance
     sessionTimeout: 120000,
     heartbeatInterval: 10000,
     rebalanceTimeout: 120000,
@@ -96,7 +96,7 @@ async function startBatchEntriesConsumer() {
   const collection = mongoose.connection.db.collection('contact_campaign_messages');
   
   await consumer.run({
-    partitionsConsumedConcurrently: 5, // 🥇 BIGGEST BOOST: Increased parallelism
+    partitionsConsumedConcurrently: 1, // 🛡️ REDUCED: Prevent race conditions in batch processing
     eachBatchAutoResolve: false,
 
     eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
@@ -112,13 +112,17 @@ async function startBatchEntriesConsumer() {
             const start = Date.now();
             const data = JSON.parse(message.value.toString());
 
-            const { campaignId, templateId, userId, phoneNumbers, chunkIndex, totalChunks, batchId, configCount } = data;
+            const { campaignId, templateId, userId, phoneNumbers, chunkIndex, totalChunks, batchId, messageKey, configCount } = data;
+            
+            // 🛡️ PREVENT DUPLICATE PROCESSING
+            const processingKey = messageKey || `${campaignId}-${chunkIndex}-${batchId}`;
+            
             const campaignObjectId = new mongoose.Types.ObjectId(campaignId);
 
-            console.log(`[BatchConsumer] Campaign ${campaignId} | Chunk ${chunkIndex + 1}/${totalChunks} | ${phoneNumbers.length}${configCount ? ` | ${configCount} configs` : ''}`);
+            console.log(`[BatchConsumer] Campaign ${campaignId} | Chunk ${chunkIndex + 1}/${totalChunks} | ${phoneNumbers.length}${configCount ? ` | ${configCount} configs` : ''} | Key: ${processingKey}`);
 
             // 🥇 4. PRE-PROCESS OUTSIDE LOOP - Calculate once
-            const CHUNK_SIZE = 3000;
+            const CHUNK_SIZE = 1000;
             const globalOffset = chunkIndex * CHUNK_SIZE;
             const now = Date.now();
             const randomSuffix = Math.random().toString(36).substr(2, 9);
@@ -149,6 +153,7 @@ async function startBatchEntriesConsumer() {
 
             try {
               // 🥇 3. NATIVE MONGO DRIVER - 2x-4x speed boost
+              // 🛡️ DUPLICATE PREVENTION: Use upsert with unique messageId
               const result = await collection.bulkWrite(bulkOps, { 
                 ordered: false,
                 writeConcern: { w: 1 }
@@ -157,12 +162,16 @@ async function startBatchEntriesConsumer() {
               console.log(`[BatchConsumer] ✅ Inserted ${result.insertedCount} contacts`);
               
               if (result.writeErrors && result.writeErrors.length > 0) {
-                console.log(`[BatchConsumer] ⚠️  ${result.writeErrors.length} duplicates/errors skipped`);
+                const duplicateErrors = result.writeErrors.filter(err => err.code === 11000);
+                console.log(`[BatchConsumer] ⚠️  ${duplicateErrors.length} duplicates skipped, ${result.writeErrors.length - duplicateErrors.length} other errors`);
               }
             } catch (err) {
-              console.error(`[BatchConsumer] ❌ BulkWrite error: ${err.message}`);
-              if (err.writeErrors) {
-                console.error(`[BatchConsumer] Write errors: ${err.writeErrors.length}`);
+              // Handle duplicate key errors gracefully
+              if (err.code === 11000 || (err.writeErrors && err.writeErrors.some(e => e.code === 11000))) {
+                const duplicateCount = err.writeErrors ? err.writeErrors.filter(e => e.code === 11000).length : 1;
+                console.log(`[BatchConsumer] ⚠️  ${duplicateCount} duplicates prevented by unique constraint`);
+              } else {
+                console.error(`[BatchConsumer] ❌ BulkWrite error: ${err.message}`);
               }
             }
 

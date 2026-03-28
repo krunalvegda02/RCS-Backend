@@ -102,6 +102,12 @@ const contactCampaignMessageSchema = new mongoose.Schema(
 contactCampaignMessageSchema.index({ messageId: 1 }, { unique: true });
 contactCampaignMessageSchema.index({ jioMessageId: 1 }, { sparse: true });
 contactCampaignMessageSchema.index({ rcsMessageId: 1 }, { sparse: true });
+w
+// DUPLICATE PREVENTION: Unique compound index
+contactCampaignMessageSchema.index(
+  { campaignId: 1, recipientPhoneNumber: 1 }, 
+  { unique: true, name: 'campaign_phone_unique' }
+);
 
 // Indexes for campaign queries
 contactCampaignMessageSchema.index({ userId: 1, createdAt: -1 });

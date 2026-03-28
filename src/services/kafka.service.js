@@ -291,14 +291,18 @@ export async function sendBatchEntriesToKafka(batchData) {
     const totalChunks = Math.ceil(phoneNumbers.length / CHUNK_SIZE);
 
     const messages = [];
-    const batchId = `${campaignId}-${Date.now()}`;
+    const batchId = `${campaignId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`; // 🔧 UNIQUE BATCH ID
+
+    console.log(`[Kafka] 🚀 Sending ${phoneNumbers.length} contacts in ${totalChunks} chunks for campaign ${campaignId}`);
 
     for (let i = 0; i < phoneNumbers.length; i += CHUNK_SIZE) {
       const chunkIndex = Math.floor(i / CHUNK_SIZE);
       const chunk = phoneNumbers.slice(i, i + CHUNK_SIZE);
 
+      const messageKey = `${campaignId}-chunk-${chunkIndex}-${batchId}`; // 🔧 UNIQUE MESSAGE KEY
+
       messages.push({
-        key: campaignId,
+        key: messageKey, // 🔧 UNIQUE KEY PER CHUNK
         value: JSON.stringify({
           campaignId,
           templateId,
@@ -307,6 +311,7 @@ export async function sendBatchEntriesToKafka(batchData) {
           chunkIndex,
           totalChunks,
           batchId,
+          messageKey, // 🔧 ADD MESSAGE KEY FOR TRACKING
           ...(configCount > 0 ? { configCount } : {})
         }),
         timestamp: Date.now()
@@ -321,10 +326,10 @@ export async function sendBatchEntriesToKafka(batchData) {
     });
 
     console.log(
-      `[Kafka] ✅ Sent ${phoneNumbers.length} contacts in ${totalChunks} chunks${configCount > 0 ? ` with ${configCount} configs` : ''}`
+      `[Kafka] ✅ Sent ${phoneNumbers.length} contacts in ${totalChunks} chunks${configCount > 0 ? ` with ${configCount} configs` : ''} | BatchID: ${batchId}`
     );
 
-    return { success: true, chunks: totalChunks };
+    return { success: true, chunks: totalChunks, batchId };
   } catch (error) {
     console.error('[Kafka] Batch entries send error:', error.message);
     return { success: false, error: error.message };
