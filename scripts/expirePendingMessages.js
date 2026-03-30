@@ -22,21 +22,26 @@ async function expirePendingMessages() {
     const oneDayAgo = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
     console.log(`📅 Expiring messages older than: ${oneDayAgo.toISOString()} (1 day ago)`);
 
-    // Debug: Check how many pending messages exist before expiration
-    const pendingCount = await ContactCampaignMessage.countDocuments({
-      status: { $in: ['pending', 'draft', 'queued'] }
-    });
+    // Find campaigns older than 24 hours
+    const oldCampaigns = await Campaign.find({
+      createdAt: { $lt: oneDayAgo }
+    }).select('_id createdAt').lean();
+    
+    const oldCampaignIds = oldCampaigns.map(c => c._id);
     const oldPendingCount = await ContactCampaignMessage.countDocuments({
       status: { $in: ['pending', 'draft', 'queued'] },
-      createdAt: { $lt: oneDayAgo }
+      campaignId: { $in: oldCampaignIds }
     });
-    console.log(`🔍 Debug: ${pendingCount} total pending messages, ${oldPendingCount} older than 24h`);
+    
+    console.log(`🔍 Debug: ${pendingCount} total pending messages`);
+    console.log(`🔍 Debug: ${oldCampaigns.length} campaigns older than 24h`);
+    console.log(`🔍 Debug: ${oldPendingCount} pending messages from old campaigns`);
 
-    // 1. Expire stale pending/queued messages (NOT sent messages)
+    // 1. Expire stale pending/queued messages based on CAMPAIGN age (NOT message age)
     const expireResult = await ContactCampaignMessage.updateMany(
       {
         status: { $in: ['pending', 'draft', 'queued'] },
-        createdAt: { $lt: oneDayAgo }
+        campaignId: { $in: oldCampaignIds } // Use campaign age, not message age
       },
       {
         $set: {
