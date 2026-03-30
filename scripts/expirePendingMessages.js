@@ -22,7 +22,17 @@ async function expirePendingMessages() {
     const oneDayAgo = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
     console.log(`📅 Expiring messages older than: ${oneDayAgo.toISOString()} (1 day ago)`);
 
-    // 1. Expire stale pending/sent messages
+    // Debug: Check how many pending messages exist before expiration
+    const pendingCount = await ContactCampaignMessage.countDocuments({
+      status: { $in: ['pending', 'draft', 'queued'] }
+    });
+    const oldPendingCount = await ContactCampaignMessage.countDocuments({
+      status: { $in: ['pending', 'draft', 'queued'] },
+      createdAt: { $lt: oneDayAgo }
+    });
+    console.log(`🔍 Debug: ${pendingCount} total pending messages, ${oldPendingCount} older than 24h`);
+
+    // 1. Expire stale pending/queued messages (NOT sent messages)
     const expireResult = await ContactCampaignMessage.updateMany(
       {
         status: { $in: ['pending', 'draft', 'queued'] },
@@ -33,7 +43,7 @@ async function expirePendingMessages() {
           status: 'expired',
           failedAt: new Date(),
           errorCode: 'TIMEOUT',
-          errorMessage: 'No webhook received within 1 day'
+          errorMessage: 'No webhook received within 1 day - message never sent'
         }
       }
     );
@@ -94,8 +104,10 @@ async function expirePendingMessages() {
 
         // Settle if no pending messages OR campaign is old enough
         if (stats.total === 0) {
-          console.log(`  ⚠️  No messages found, skipping`);
-          skippedCount++;
+          console.log(`  ⚠️  No messages found - settling with 0 charge to release blocked amount`);
+          await campaign.completeCampaign();
+          console.log(`  ✅ Campaign settled with 0 charge, blocked amount released`);
+          settledCount++;
           continue;
         }
 
@@ -107,6 +119,7 @@ async function expirePendingMessages() {
           settledCount++;
         } else {
           console.log(`  ⏳ Still has ${stats.pending} pending messages, will retry next run`);
+          console.log(`  📊 Note: ${stats.sent} sent messages are chargeable even without delivery confirmation`);
           skippedCount++;
         }
       } catch (err) {
