@@ -19,34 +19,36 @@ async function expirePendingMessages() {
     const ContactCampaignMessage = (await import('../src/models/contactMessage.model.js')).default;
     const Campaign = (await import('../src/models/campaign.model.js')).default;
 
-    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
-    console.log(`📅 Expiring messages older than: ${twoDaysAgo.toISOString()} (2 days ago)`);
+    const oneDayAgo = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
+    console.log(`📅 Expiring messages older than: ${oneDayAgo.toISOString()} (1 day ago)`);
 
     // 1. Expire stale pending/sent messages
     const expireResult = await ContactCampaignMessage.updateMany(
       {
         status: { $in: ['pending', 'draft', 'queued'] },
-        createdAt: { $lt: twoDaysAgo }
+        createdAt: { $lt: oneDayAgo }
       },
       {
         $set: {
           status: 'expired',
           failedAt: new Date(),
           errorCode: 'TIMEOUT',
-          errorMessage: 'No webhook received within 2 days'
+          errorMessage: 'No webhook received within 1 day'
         }
       }
     );
 
-    console.log(`✅ Expired ${expireResult.modifiedCount} messages older than 2 days`);
+    console.log(`✅ Expired ${expireResult.modifiedCount} messages older than 1 day`);
 
-    // 2. Find campaigns that need settlement
+    // 2. Find campaigns that need settlement (24 hours)
+    console.log(`📊 Checking campaigns older than: ${oneDayAgo.toISOString()} (1 day ago) for settlement`);
+    
     // NOTE: Campaigns with messages that were just expired in Step 1 will now have pending=0
     // and will be settled in this run (no need to wait for next run)
     const campaignsToSettle = await Campaign.find({
       $or: [
-        { status: 'completed', createdAt: { $lt: twoDaysAgo } },
-        { status: { $in: ['pending', 'processing', 'running'] }, createdAt: { $lt: twoDaysAgo } }
+        { status: 'completed', createdAt: { $lt: oneDayAgo } },
+        { status: { $in: ['pending', 'processing', 'running'] }, createdAt: { $lt: oneDayAgo } }
       ]
     }).select('_id name status createdAt blockedAmount userId');
 
