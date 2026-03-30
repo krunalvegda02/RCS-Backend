@@ -52,6 +52,17 @@ async function expirePendingMessages() {
         const campaignId = oldCampaignIds[i];
         
         try {
+          // First check how many pending messages this campaign has
+          const pendingForCampaign = await ContactCampaignMessage.countDocuments({
+            status: { $in: ['pending', 'draft', 'queued'] },
+            campaignId: campaignId
+          });
+          
+          if (pendingForCampaign === 0) {
+            // Skip campaigns with no pending messages
+            continue;
+          }
+          
           const batchResult = await ContactCampaignMessage.updateMany(
             {
               status: { $in: ['pending', 'draft', 'queued'] },
@@ -69,6 +80,11 @@ async function expirePendingMessages() {
           );
           
           totalExpired += batchResult.modifiedCount;
+          
+          // Log individual campaign results for debugging
+          if (batchResult.modifiedCount > 0) {
+            console.log(`✅ Campaign ${campaignId}: Expired ${batchResult.modifiedCount} messages`);
+          }
           
           // Log progress every 50 campaigns
           if ((i + 1) % 50 === 0 || i === oldCampaignIds.length - 1) {
