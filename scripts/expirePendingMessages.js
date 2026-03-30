@@ -23,6 +23,10 @@ async function expirePendingMessages() {
     console.log(`📅 Expiring messages older than: ${oneDayAgo.toISOString()} (1 day ago)`);
 
     // Find campaigns older than 24 hours
+    const pendingCount = await ContactCampaignMessage.countDocuments({
+      status: { $in: ['pending', 'draft', 'queued'] }
+    });
+    
     const oldCampaigns = await Campaign.find({
       createdAt: { $lt: oneDayAgo }
     }).select('_id createdAt').lean();
