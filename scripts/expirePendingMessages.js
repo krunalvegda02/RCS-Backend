@@ -42,22 +42,45 @@ async function expirePendingMessages() {
     console.log(`🔍 Debug: ${oldPendingCount} pending messages from old campaigns`);
 
     // 1. Expire stale pending/queued messages based on CAMPAIGN age (NOT message age)
-    const expireResult = await ContactCampaignMessage.updateMany(
-      {
-        status: { $in: ['pending', 'draft', 'queued'] },
-        campaignId: { $in: oldCampaignIds } // Use campaign age, not message age
-      },
-      {
-        $set: {
-          status: 'expired',
-          failedAt: new Date(),
-          errorCode: 'TIMEOUT',
-          errorMessage: 'No webhook received within 1 day - message never sent'
+    console.log(`⚡ Starting batch expiration of ${oldPendingCount} messages from ${oldCampaigns.length} old campaigns...`);
+    
+    if (oldPendingCount > 0) {
+      const BATCH_SIZE = 10000; // Process in smaller batches
+      let totalExpired = 0;
+      
+      // Process campaigns in batches to avoid timeout
+      for (let i = 0; i < oldCampaignIds.length; i += 50) { // 50 campaigns at a time
+        const batchCampaignIds = oldCampaignIds.slice(i, i + 50);
+        
+        const batchResult = await ContactCampaignMessage.updateMany(
+          {
+            status: { $in: ['pending', 'draft', 'queued'] },
+            campaignId: { $in: batchCampaignIds }
+          },
+          {
+            $set: {
+              status: 'expired',
+              failedAt: new Date(),
+              errorCode: 'TIMEOUT',
+              errorMessage: 'No webhook received within 1 day - message never sent'
+            }
+          },
+          { writeConcern: { w: 1, j: false, wtimeout: 30000 } } // 30s timeout
+        );
+        
+        totalExpired += batchResult.modifiedCount;
+        console.log(`⚡ Batch ${Math.floor(i/50) + 1}: Expired ${batchResult.modifiedCount} messages (Total: ${totalExpired})`);
+        
+        // Small delay to prevent overwhelming DB
+        if (i + 50 < oldCampaignIds.length) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
         }
       }
-    );
-
-    console.log(`✅ Expired ${expireResult.modifiedCount} messages older than 1 day`);
+      
+      console.log(`✅ Expired ${totalExpired} messages from campaigns older than 1 day`);
+    } else {
+      console.log(`✅ No pending messages to expire from old campaigns`);
+    }
 
     // 2. Find campaigns that need settlement (24 hours)
     console.log(`📊 Checking campaigns older than: ${oneDayAgo.toISOString()} (1 day ago) for settlement`);
