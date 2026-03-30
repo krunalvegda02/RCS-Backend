@@ -43,6 +43,18 @@ export const createMasterCampaign = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Phone numbers required' });
     }
 
+    // Check 1.5 lakh contact limit
+    const CONTACT_LIMIT = 150000;
+    if (phoneNumbers.length > CONTACT_LIMIT) {
+      return res.status(400).json({
+        success: false,
+        message: `Contact limit exceeded. Maximum allowed: ${CONTACT_LIMIT.toLocaleString()}, provided: ${phoneNumbers.length.toLocaleString()}`,
+        limit: CONTACT_LIMIT,
+        provided: phoneNumbers.length,
+        excess: phoneNumbers.length - CONTACT_LIMIT
+      });
+    }
+
     const template = await Template.findById(templateId);
     if (!template) {
       return res.status(404).json({ success: false, message: 'Template not found' });
