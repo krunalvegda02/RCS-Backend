@@ -14,36 +14,34 @@ const connectDB = async (retries = 5, delay = 5000) => {
       const connectionInstance = await mongoose.connect(
         process.env.MONGODB_URI,
         {
-          // Connection timeouts - M30 optimized
-          serverSelectionTimeoutMS: 20000, // 20 seconds (M30 can handle longer)
-          connectTimeoutMS: 20000,         // 20 seconds
+          // Connection timeouts - Production optimized
+          serverSelectionTimeoutMS: 60000, // 60 seconds for production
+          connectTimeoutMS: 60000,         // 60 seconds for initial connection
           socketTimeoutMS: 0,              // No timeout for long operations
           
-          // Connection pool settings - M30 optimized (up to 500 connections)
-          maxPoolSize: 50,                 // Higher pool for M30 (50 per service)
-          minPoolSize: 10,                 // Higher minimum pool
-          maxIdleTimeMS: 60000,            // Keep connections longer (1 minute)
+          // Connection pool settings - Production optimized
+          maxPoolSize: 20,                 // Conservative for production stability
+          minPoolSize: 5,                  // Minimum pool
+          maxIdleTimeMS: 300000,           // Keep connections for 5 minutes
           
-          // Replica set settings - M30 optimized
-          readPreference: 'primaryPreferred', // Allow secondary reads for better performance
+          // Replica set settings - Production optimized
+          readPreference: 'primary',       // Primary only for production consistency
           retryWrites: true,               // Retry failed writes
           retryReads: true,                // Retry failed reads
           
-          // Write concern - M30 optimized
-          w: 'majority',                   // Acknowledge writes to majority
-          wtimeout: 15000,                 // 15 seconds for write acknowledgment
-          j: true,                         // Wait for journal commit (M30 has faster storage)
+          // Write concern - Production safe (fixed deprecated options)
+          writeConcern: {
+            w: 1,                          // Single node acknowledgment (faster)
+            wtimeoutMS: 30000             // 30 seconds (not wtimeout)
+          },
           
-          // Read concern - M30 optimized
-          readConcern: { level: 'majority' }, // Consistent reads
-          
-          // Network settings - M30 optimized
+          // Network settings - Production optimized
           family: 4,                       // Use IPv4
-          heartbeatFrequencyMS: 10000,     // Send heartbeat every 10 seconds
+          heartbeatFrequencyMS: 30000,     // Heartbeat every 30 seconds
           
-          // M30 specific optimizations
-          maxStalenessSeconds: 90,         // Allow slightly stale reads for performance
-          compressors: ['zlib'],           // Enable compression for better network usage
+          // Production specific settings
+          ssl: true,                       // Ensure SSL is enabled
+          authSource: 'admin'              // Specify auth source
         }
       );
 
@@ -52,10 +50,14 @@ const connectDB = async (retries = 5, delay = 5000) => {
         console.log("Express Error:", error);
       });
 
-      // Success logging
-      console.log('Backend Database:', mongoose.connection.db.databaseName);
-      console.log('Backend Host:', mongoose.connection.host);
-      console.log(' MOngoDB connected !! DB HOST:', mongoose.connection.host);
+      // Success logging - Fixed undefined error
+      if (mongoose.connection && mongoose.connection.db) {
+        console.log('Backend Database:', mongoose.connection.db.databaseName);
+        console.log('Backend Host:', mongoose.connection.host);
+        console.log(' MOngoDB connected !! DB HOST:', mongoose.connection.host);
+      } else {
+        console.log('MongoDB connected successfully (database info not available yet)');
+      }
       console.log(
         "✅--------- MongoDB Connected Successfully for RCS Messaging Project ✅------",
       );
