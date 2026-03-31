@@ -1,73 +1,60 @@
+import { connectWithRetry, closeConnection, setupGracefulShutdown } from './mongoConnection.js';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
-import path from 'path';
-import { fileURLToPath } from 'url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+dotenv.config();
 
-// Load environment variables from parent directory
-dotenv.config({ path: path.join(__dirname, '..', '.env') });
+// Setup graceful shutdown
+setupGracefulShutdown();
 
-const testConnection = async () => {
+async function testConnection() {
   try {
-    console.log('🔍 Testing MongoDB Connection...');
-    console.log('📍 Environment:', process.env.NODE_ENV || 'development');
-    console.log('📍 MONGODB_URI:', process.env.MONGODB_URI ? 'SET' : 'NOT SET');
+    console.log('🧪 Testing MongoDB connection and queries...');
     
-    if (!process.env.MONGODB_URI) {
-      console.error('❌ MONGODB_URI environment variable is not set');
-      process.exit(1);
-    }
-
-    // Show partial connection string for verification (hide password)
-    const uri = process.env.MONGODB_URI;
-    const maskedUri = uri.replace(/:([^@]+)@/, ':****@');
-    console.log('📍 Connection String:', maskedUri);
-
-    // Test connection
-    console.log('🔌 Connecting to MongoDB...');
-    const connection = await mongoose.connect(uri, {
-      serverSelectionTimeoutMS: 10000,
-      connectTimeoutMS: 10000,
+    await connectWithRetry();
+    
+    // Test basic query operations
+    const testSchema = new mongoose.Schema({
+      name: String,
+      role: String,
+      createdAt: Date
     });
-
-    console.log('✅ MongoDB Connected Successfully!');
-    console.log('📊 Database Name:', connection.connection.name);
-    console.log('🏠 Host:', connection.connection.host);
-    console.log('🔢 Port:', connection.connection.port);
-    console.log('📈 Ready State:', connection.connection.readyState);
-
-    // Test a simple query
-    console.log('🧪 Testing database query...');
-    const collections = await mongoose.connection.db.listCollections().toArray();
-    console.log('📁 Collections found:', collections.length);
-    console.log('📋 Collection names:', collections.map(c => c.name).join(', '));
-
-    // Test specific collections
-    const Campaign = mongoose.model('Campaign', new mongoose.Schema({}, { strict: false }));
-    const campaignCount = await Campaign.countDocuments();
-    console.log('📊 Total campaigns:', campaignCount);
-
-    console.log('✅ All tests passed! Database is working correctly.');
+    
+    const TestModel = mongoose.model('Test', testSchema);
+    
+    // Test query with $ne operator
+    console.log('🧪 Testing $ne query...');
+    const result1 = await TestModel.find({ role: { $ne: 'ADMIN' } }).limit(1);
+    console.log('✅ $ne query works');
+    
+    // Test query with date range
+    console.log('🧪 Testing date range query...');
+    const now = new Date();
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    
+    const result2 = await TestModel.find({
+      createdAt: {
+        $gte: yesterday,
+        $lte: now
+      }
+    }).limit(1);
+    console.log('✅ Date range query works');
+    
+    console.log('🎉 All tests passed! MongoDB connection is working correctly.');
     
   } catch (error) {
-    console.error('❌ Connection failed:', error.message);
-    
-    if (error.message.includes('authentication failed')) {
-      console.error('🔐 Authentication issue - check username/password');
-    } else if (error.message.includes('ENOTFOUND')) {
-      console.error('🌐 DNS resolution failed - check cluster URL');
-    } else if (error.message.includes('timeout')) {
-      console.error('⏰ Connection timeout - check network/firewall');
-    }
-    
-    process.exit(1);
+    console.error('❌ Test failed:', error.message);
+    console.error('Error details:', {
+      name: error.name,
+      code: error.code,
+      path: error.path,
+      value: error.value
+    });
   } finally {
-    await mongoose.disconnect();
-    console.log('🔌 Disconnected from MongoDB');
+    await closeConnection();
+    console.log('🔌 Connection closed');
     process.exit(0);
   }
-};
+}
 
 testConnection();

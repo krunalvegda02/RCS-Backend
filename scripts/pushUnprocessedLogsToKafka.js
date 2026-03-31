@@ -3,6 +3,7 @@ import { Kafka } from 'kafkajs';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { connectWithRetry, closeConnection, setupGracefulShutdown } from './mongoConnection.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -14,9 +15,8 @@ async function pushUnprocessedLogs() {
   try {
     console.log('🚀 Starting unprocessed logs push to Kafka...');
     
-    // Connect to MongoDB directly
-    await mongoose.connect(process.env.MONGODB_URI);
-    console.log('✅ MongoDB connected');
+    // Connect to MongoDB with robust settings
+    await connectWithRetry();
 
     const MessageLog = (await import('../src/models/messageLog.model.js')).default;
 
@@ -77,13 +77,17 @@ async function pushUnprocessedLogs() {
     console.log(`✅ Successfully pushed ${processed} logs to Kafka`);
     console.log('💡 Stats consumers will now process these logs');
 
-    await mongoose.connection.close();
+    await closeConnection();
     process.exit(0);
 
   } catch (error) {
     console.error('❌ Error:', error);
+    await closeConnection();
     process.exit(1);
   }
 }
+
+// Setup graceful shutdown
+setupGracefulShutdown();
 
 pushUnprocessedLogs();

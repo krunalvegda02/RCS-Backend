@@ -4,9 +4,8 @@ import app from "../app.js";
 const connectDB = async (retries = 5, delay = 5000) => {
   for (let i = 0; i < retries; i++) {
     try {
-      // Set mongoose options before connecting - Fixed
-      mongoose.set('strictQuery', false);
-      mongoose.set('bufferCommands', false);
+      // Set minimal mongoose options to avoid query casting issues
+      mongoose.set('strictQuery', false);  // Allow flexible queries
       
       const connectionInstance = await mongoose.connect(
         process.env.MONGODB_URI,

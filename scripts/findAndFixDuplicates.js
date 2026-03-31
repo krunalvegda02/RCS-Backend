@@ -1,11 +1,12 @@
+import { connectWithRetry, closeConnection, setupGracefulShutdown } from './mongoConnection.js';
 import mongoose from 'mongoose';
+
+// Setup graceful shutdown
+setupGracefulShutdown();
 
 async function findAndFixCampaign() {
   try {
-    // Direct MongoDB connection
-    const MONGODB_URI = 'mongodb+srv://sikarwarvishal75_db_user:Gama%40123@cluster0.whqwih.mongodb.net/rcs?retryWrites=true&w=majority';
-    
-    await mongoose.connect(MONGODB_URI);
+    await connectWithRetry();
     console.log('✅ MongoDB connected');
 
     const contactCollection = mongoose.connection.db.collection('contact_campaign_messages');
@@ -131,7 +132,7 @@ async function findAndFixCampaign() {
   } catch (error) {
     console.error('❌ Error:', error);
   } finally {
-    await mongoose.connection.close();
+    await closeConnection();
     process.exit(0);
   }
 }

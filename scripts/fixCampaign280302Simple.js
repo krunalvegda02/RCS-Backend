@@ -1,11 +1,12 @@
+import { connectWithRetry, closeConnection, setupGracefulShutdown } from './mongoConnection.js';
 import mongoose from 'mongoose';
+
+// Setup graceful shutdown
+setupGracefulShutdown();
 
 async function fixCampaign280302() {
   try {
-    // Direct MongoDB connection
-    const MONGODB_URI = 'mongodb+srv://sikarwarvishal75_db_user:Gama%40123@cluster0.whqwih.mongodb.net/rcs?retryWrites=true&w=majority';
-    
-    await mongoose.connect(MONGODB_URI);
+    await connectWithRetry();
     console.log('✅ MongoDB connected');
     console.log('🔍 Fixing duplicates for campaign 280302...');
 
@@ -98,7 +99,7 @@ async function fixCampaign280302() {
   } catch (error) {
     console.error('❌ Error fixing campaign 280302:', error);
   } finally {
-    await mongoose.connection.close();
+    await closeConnection();
     process.exit(0);
   }
 }

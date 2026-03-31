@@ -1,8 +1,8 @@
+import { connectWithRetry, closeConnection, setupGracefulShutdown } from './mongoConnection.js';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import connectDB from '../src/db/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -10,9 +10,12 @@ const __dirname = path.dirname(__filename);
 // Load environment variables from parent directory
 dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
+// Setup graceful shutdown
+setupGracefulShutdown();
+
 async function expirePendingMessages() {
   try {
-    await connectDB();
+    await connectWithRetry();
     console.log('🔄 Starting pending message expiration job...');
     console.log(`⏰ Current time: ${new Date().toISOString()}`);
 
@@ -190,11 +193,11 @@ async function expirePendingMessages() {
     console.log(`  ❌ Errors: ${errorCount}`);
     console.log(`\n✅ Job completed successfully`);
 
-    await mongoose.connection.close();
+    await closeConnection();
     process.exit(0);
   } catch (error) {
     console.error('❌ Fatal error:', error);
-    await mongoose.connection.close();
+    await closeConnection();
     process.exit(1);
   }
 }

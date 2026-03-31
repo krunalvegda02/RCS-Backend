@@ -1,3 +1,4 @@
+import { connectWithRetry, closeConnection, setupGracefulShutdown } from './mongoConnection.js';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
@@ -8,11 +9,14 @@ const __dirname = dirname(__filename);
 
 dotenv.config({ path: join(__dirname, '..', '.env') });
 
+// Setup graceful shutdown
+setupGracefulShutdown();
+
 async function handleExpiredPayments() {
   try {
     console.log('🔍 Checking for expired payments...');
     
-    await mongoose.connect(process.env.MONGODB_URI);
+    await connectWithRetry();
     console.log('✅ MongoDB connected');
 
     const Payment = (await import('../src/models/payment.model.js')).default;
@@ -104,11 +108,12 @@ async function handleExpiredPayments() {
       });
     }
 
-    await mongoose.connection.close();
+    await closeConnection();
     console.log('\n🎉 Expired payment cleanup complete');
 
   } catch (error) {
     console.error('❌ Error:', error);
+    await closeConnection();
     process.exit(1);
   }
 }

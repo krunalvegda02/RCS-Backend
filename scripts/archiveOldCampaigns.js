@@ -1,3 +1,4 @@
+import { connectWithRetry, closeConnection, setupGracefulShutdown } from './mongoConnection.js';
 import mongoose from 'mongoose';
 import ExcelJS from 'exceljs';
 import { v2 as cloudinary } from 'cloudinary';
@@ -30,9 +31,12 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
+// Setup graceful shutdown
+setupGracefulShutdown();
+
 async function archiveOldCampaigns() {
   try {
-    await mongoose.connect(MONGODB_URI);
+    await connectWithRetry();
     console.log('[ArchiveCron] Connected to MongoDB');
 
     // Import models
@@ -275,12 +279,12 @@ async function archiveOldCampaigns() {
     }
 
     console.log('[ArchiveCron] ✅ Archive process completed');
-    await mongoose.disconnect();
+    await closeConnection();
     process.exit(0);
 
   } catch (error) {
     console.error('[ArchiveCron] ❌ Fatal error:', error);
-    await mongoose.disconnect();
+    await closeConnection();
     process.exit(1);
   }
 }

@@ -1,9 +1,12 @@
+import { connectWithRetry, closeConnection, setupGracefulShutdown } from './mongoConnection.js';
 import mongoose from 'mongoose';
-import connectDB from '../src/db/index.js';
+
+// Setup graceful shutdown
+setupGracefulShutdown();
 
 async function removeDuplicateContacts() {
   try {
-    await connectDB();
+    await connectWithRetry();
     console.log('🔍 Starting duplicate removal process...');
 
     const collection = mongoose.connection.db.collection('contact_campaign_messages');
@@ -55,7 +58,7 @@ async function removeDuplicateContacts() {
   } catch (error) {
     console.error('❌ Error removing duplicates:', error);
   } finally {
-    await mongoose.connection.close();
+    await closeConnection();
     process.exit(0);
   }
 }

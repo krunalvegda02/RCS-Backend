@@ -1,9 +1,12 @@
+import { connectWithRetry, closeConnection, setupGracefulShutdown } from './mongoConnection.js';
 import mongoose from 'mongoose';
-import connectDB from '../src/db/index.js';
+
+// Setup graceful shutdown
+setupGracefulShutdown();
 
 async function checkCampaignCompletion() {
   try {
-    await connectDB();
+    await connectWithRetry();
     
     const Campaign = (await import('../src/models/campaign.model.js')).default;
     const collection = mongoose.connection.db.collection('contact_campaign_messages');
@@ -58,7 +61,7 @@ async function checkCampaignCompletion() {
   } catch (error) {
     console.error('[CampaignChecker] Error:', error);
   } finally {
-    await mongoose.connection.close();
+    await closeConnection();
   }
 }
 

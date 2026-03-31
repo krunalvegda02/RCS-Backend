@@ -1,3 +1,4 @@
+import { connectWithRetry, closeConnection, setupGracefulShutdown } from './mongoConnection.js';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -8,9 +9,12 @@ const __dirname = path.dirname(__filename);
 
 dotenv.config({ path: path.join(__dirname, '../.env') });
 
+// Setup graceful shutdown
+setupGracefulShutdown();
+
 const connectDB = async () => {
   try {
-    await mongoose.connect(process.env.MONGODB_URI);
+    await connectWithRetry();
     console.log('✅ MongoDB connected');
     console.log('📊 Database:', mongoose.connection.db.databaseName);
   } catch (error) {
@@ -115,7 +119,7 @@ const main = async () => {
     console.log(`📈 ✅ ${synced} synced, ⚠️ ${skipped} skipped (mode: ${mode})`);
   }
 
-  await mongoose.connection.close();
+  await closeConnection();
   console.log('\n✅ Done');
   process.exit(0);
 };

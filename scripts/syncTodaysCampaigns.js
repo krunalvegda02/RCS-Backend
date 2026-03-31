@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { connectWithRetry, closeConnection, setupGracefulShutdown } from './mongoConnection.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -10,8 +11,7 @@ dotenv.config({ path: path.join(__dirname, '../.env') });
 
 const connectDB = async () => {
   try {
-    await mongoose.connect(process.env.MONGODB_URI);
-    console.log('✅ MongoDB connected');
+    await connectWithRetry();
   } catch (error) {
     console.error('❌ MongoDB connection error:', error);
     process.exit(1);
@@ -111,7 +111,7 @@ const main = async () => {
 
     if (todaysCampaigns.length === 0) {
       console.log('📊 No campaigns found for the specified date range');
-      await mongoose.connection.close();
+      await closeConnection();
       return;
     }
 
@@ -149,12 +149,15 @@ const main = async () => {
     console.log(`❌ Failed: ${failed} campaigns`);
     console.log(`📊 Total processed: ${todaysCampaigns.length} campaigns`);
 
-    await mongoose.connection.close();
+    await closeConnection();
   } catch (error) {
     console.error('❌ Script error:', error);
-    await mongoose.connection.close();
+    await closeConnection();
     process.exit(1);
   }
 };
+
+// Setup graceful shutdown
+setupGracefulShutdown();
 
 main();

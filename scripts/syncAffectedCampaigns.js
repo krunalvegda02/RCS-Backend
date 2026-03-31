@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { connectWithRetry, closeConnection, setupGracefulShutdown } from './mongoConnection.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -10,8 +11,7 @@ dotenv.config({ path: path.join(__dirname, '../.env') });
 
 const connectDB = async () => {
   try {
-    await mongoose.connect(process.env.MONGODB_URI);
-    console.log('✅ MongoDB connected');
+    await connectWithRetry();
   } catch (error) {
     console.error('❌ MongoDB connection error:', error);
     process.exit(1);
@@ -77,7 +77,7 @@ const syncCampaignStats = async (campaignId, Campaign, ContactCampaignMessage) =
 
 const main = async () => {
   try {
-    await connectDB();
+    await connectWithRetry();
 
     const Campaign = mongoose.model('Campaign', new mongoose.Schema({}, { strict: false }));
     const ContactCampaignMessage = mongoose.model('ContactCampaignMessage', new mongoose.Schema({}, { strict: false, collection: 'contact_campaign_messages' }));
@@ -100,7 +100,7 @@ const main = async () => {
 
     if (todaysCampaigns.length === 0) {
       console.log('📊 No campaigns found for today');
-      await mongoose.connection.close();
+      await closeConnection();
       return;
     }
 
@@ -108,7 +108,7 @@ const main = async () => {
 
     if (affectedCampaigns.length === 0) {
       console.log('📊 No campaigns with recent updates');
-      await mongoose.connection.close();
+      await closeConnection();
       return;
     }
 
@@ -127,13 +127,16 @@ const main = async () => {
     }
 
     console.log(`📈 ✅ ${synced} today's campaigns synced`);
-    await mongoose.connection.close();
+    await closeConnection();
   } catch (error) {
     console.error('❌ Script error:', error);
-    await mongoose.connection.close();
+    await closeConnection();
     process.exit(1);
   }
 };
+
+// Setup graceful shutdown
+setupGracefulShutdown();
 
 main();
 
