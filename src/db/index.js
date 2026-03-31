@@ -4,44 +4,49 @@ import app from "../app.js";
 const connectDB = async (retries = 5, delay = 5000) => {
   for (let i = 0; i < retries; i++) {
     try {
-      // Set mongoose options before connecting - M30 optimized
+      // Set mongoose options before connecting - Fixed
       mongoose.set('strictQuery', false);
       mongoose.set('bufferCommands', false);
-      mongoose.set('maxTimeMS', 30000);        // 30 second query timeout for M30
-      mongoose.set('sanitizeFilter', true);    // Enable filter sanitization
-      mongoose.set('runValidators', true);     // Run validators on updates
       
       const connectionInstance = await mongoose.connect(
         process.env.MONGODB_URI,
         {
-          // Connection timeouts - Production optimized
-          serverSelectionTimeoutMS: 60000, // 60 seconds for production
-          connectTimeoutMS: 60000,         // 60 seconds for initial connection
+          // Connection timeouts - Optimized for faster connection
+          serverSelectionTimeoutMS: 30000, // 30 seconds
+          connectTimeoutMS: 30000,         // 30 seconds
           socketTimeoutMS: 0,              // No timeout for long operations
           
-          // Connection pool settings - Production optimized
-          maxPoolSize: 20,                 // Conservative for production stability
+          // Connection pool settings - Optimized
+          maxPoolSize: 20,                 // Conservative pool size
           minPoolSize: 5,                  // Minimum pool
           maxIdleTimeMS: 300000,           // Keep connections for 5 minutes
           
-          // Replica set settings - Production optimized
-          readPreference: 'primary',       // Primary only for production consistency
+          // Replica set settings - Optimized for speed
+          readPreference: 'primaryPreferred', // Allow secondary if primary slow
           retryWrites: true,               // Retry failed writes
           retryReads: true,                // Retry failed reads
           
-          // Write concern - Production safe (fixed deprecated options)
+          // Write concern - Fast and reliable
           writeConcern: {
-            w: 1,                          // Single node acknowledgment (faster)
-            wtimeoutMS: 30000             // 30 seconds (not wtimeout)
+            w: 1,                          // Single node acknowledgment (fastest)
+            wtimeoutMS: 30000             // 10 seconds timeout
           },
           
-          // Network settings - Production optimized
-          family: 4,                       // Use IPv4
-          heartbeatFrequencyMS: 30000,     // Heartbeat every 30 seconds
+          // Network settings - DNS optimized
+          family: 4,                       // Force IPv4 (prevents DNS issues)
+          heartbeatFrequencyMS: 10000,     // Heartbeat every 10 seconds
           
-          // Production specific settings
-          ssl: true,                       // Ensure SSL is enabled
-          authSource: 'admin'              // Specify auth source
+          // DNS and connection optimizations
+          directConnection: false,         // Use SRV records (but with optimizations)
+          ssl: true,                       // SSL enabled
+          authSource: 'admin',             // Auth source
+          
+          // Additional optimizations for faster connection
+          maxConnecting: 2,                // Limit concurrent connections
+          waitQueueTimeoutMS: 10000,       // Wait queue timeout
+          
+          // Disable compression for faster initial connection
+          compressors: []                  // No compression for speed
         }
       );
 
@@ -69,7 +74,7 @@ const connectDB = async (retries = 5, delay = 5000) => {
         error.message,
       );
       
-      // Enhanced error logging
+      // Enhanced error logging with DNS-specific handling
       if (error.name === 'MongoServerSelectionError') {
         console.error('🔴 Server Selection Error - Check if MongoDB Atlas is accessible');
         console.error('🔴 Verify IP whitelist and connection string');
@@ -77,6 +82,11 @@ const connectDB = async (retries = 5, delay = 5000) => {
         console.error('🔴 Connection String Parse Error - Check MONGODB_URI format');
       } else if (error.name === 'MongoNetworkError') {
         console.error('🔴 Network Error - Check internet connection and firewall');
+      } else if (error.code === 'ESERVFAIL' || error.message.includes('querySrv')) {
+        console.error('🔴 DNS Resolution Error - MongoDB Atlas SRV record lookup failed');
+        console.error('🔴 This is usually a temporary network/DNS issue');
+      } else if (error.name === 'MongoNetworkTimeoutError') {
+        console.error('🔴 Network Timeout - Connection is slow or unstable');
       }
       
       console.error('Error details:', {
@@ -103,10 +113,10 @@ mongoose.connection.on("connected", () => {
 });
 
 mongoose.connection.on("disconnected", () => {
-  console.warn("⚠️ MongoDB disconnected. Attempting reconnect in 10s...");
+  console.warn("⚠️ MongoDB disconnected. Attempting reconnect in 5s...");
   setTimeout(() => {
-    connectDB(3, 10000); // 3 retries with 10s initial delay
-  }, 10000);
+    connectDB(3, 5000); // 3 retries with 5s initial delay (faster reconnect)
+  }, 5000);
 });
 
 mongoose.connection.on("reconnected", () => {
