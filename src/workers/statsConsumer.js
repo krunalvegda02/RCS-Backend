@@ -652,16 +652,17 @@ async function startStatsConsumer() {
 
             const isUserInteraction = logEventType === 'user_interaction' || entityType === 'USER_MESSAGE';
 
-            // Status priority: replied > read > delivered > sent > pending
+            // Status priority: replied > read > delivered > sent > pending > failed
+            // Failed should be upgradable to any successful status (sent/delivered/read/replied)
             const statusPriority = {
               'pending': 1,
               'queued': 1,
-              'sent': 2,
-              'delivered': 3,
-              'read': 4,
-              'replied': 5,
-              'failed': 6,
-              'expired': 6
+              'failed': 2,      // Failed can be upgraded to any successful status
+              'sent': 3,
+              'delivered': 4,
+              'read': 5,
+              'replied': 6,
+              'expired': 7      // Expired is final, cannot be upgraded
             };
 
             if (isUserInteraction) {
