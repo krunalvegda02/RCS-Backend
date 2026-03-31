@@ -1249,12 +1249,16 @@ export const getAllCampaignMessagesForExport = async (req, res) => {
     }
 
     // Get all messages for this campaign using flat model
+    // Only filter by campaignId since we already verified campaign ownership
+    console.log('[Campaign] Querying messages with campaignId:', campaign._id);
+    
     const messages = await ContactCampaignMessage.find({
-      campaignId: campaign._id,
-      userId: campaign.userId
+      campaignId: campaign._id
     })
       .select('recipientPhoneNumber status sentAt deliveredAt readAt clickedAction userText suggestionResponse userClickCount userReplyCount errorMessage errorCode')
       .lean();
+
+    console.log('[Campaign] Query result: Found', messages.length, 'messages');
 
     // Format for export
     const formattedMessages = messages.map(msg => ({
