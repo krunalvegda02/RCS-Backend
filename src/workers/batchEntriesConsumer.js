@@ -204,10 +204,10 @@ async function startBatchEntriesConsumer() {
             });
 
             try {
-              // 🥇 3. NATIVE MONGO DRIVER - 2x-4x speed boost
+              // 🥇 3. NATIVE MONGO DRIVER - 2x-4x speed boost (M30 optimized)
               const result = await collection.bulkWrite(bulkOps, { 
                 ordered: false,
-                writeConcern: { w: 1 }
+                writeConcern: { w: 'majority', j: true, wtimeout: 15000 } // M30 optimized
               });
               
               console.log(`[BatchConsumer] ✅ Inserted ${result.insertedCount} contacts`);
