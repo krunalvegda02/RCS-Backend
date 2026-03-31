@@ -13,20 +13,20 @@ const connectDB = async (retries = 5, delay = 5000) => {
           heartbeatFrequencyMS: 5000,
           family: 4, // Force IPv4 — fixes EAI_AGAIN & timeouts
           maxPoolSize: 50,  // Reduced for better connection management
-          minPoolSize: 10,   // Lower minimum pool
+          minPoolSize: 5,   // Lower minimum pool
           maxIdleTimeMS: 30000,
           retryWrites: true,
           retryReads: true,
           writeConcern: { w: 'majority', wtimeout: 10000 }, // Use majority for Atlas
           readConcern: { level: 'majority' }, // Use majority for Atlas
-          readPreference: 'primaryPreferred', // Prefer primary but allow secondary
-          bufferCommands: false, // Disable mongoose buffering
-          bufferMaxEntries: 0    // Disable mongoose buffering
+          readPreference: 'primaryPreferred' // Prefer primary but allow secondary
         }
       );
 
       mongoose.set('debug', false);
       mongoose.set('strictQuery', false);
+      mongoose.set('bufferCommands', false); // Disable mongoose buffering
+      mongoose.set('bufferMaxEntries', 0);   // Disable mongoose buffering
 
       app.on("error", (error) => {
         console.log("Express Error:", error);
