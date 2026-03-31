@@ -21,6 +21,7 @@ async function expirePendingMessages() {
 
     const ContactCampaignMessage = (await import('../src/models/contactMessage.model.js')).default;
     const Campaign = (await import('../src/models/campaign.model.js')).default;
+    const User = (await import('../src/models/user.model.js')).default; // Import User model
 
     const oneDayAgo = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000);
     console.log(`📅 Expiring messages older than: ${oneDayAgo.toISOString()} (1 day ago)`);
