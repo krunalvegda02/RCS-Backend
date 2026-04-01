@@ -83,6 +83,12 @@ const main = async () => {
     const ContactCampaignMessage = mongoose.model('ContactCampaignMessage', new mongoose.Schema({}, { strict: false, collection: 'contact_campaign_messages' }));
     const MessageLog = mongoose.model('MessageLog', new mongoose.Schema({}, { strict: false, collection: 'message_logs' }));
 
+    // CAMPAIGNS TO EXCLUDE FROM SYNC (manual stats)
+    const EXCLUDED_CAMPAIGNS = [
+      '69cbd4a46a73a08e733df0b9', // MAHADEV 4 - messages deleted, manual stats
+      // Add more campaign IDs here if needed
+    ];
+
     // Find campaigns from today (instead of last 10 minutes)
     const today = new Date();
     const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 0, 0, 0, 0);
@@ -95,7 +101,11 @@ const main = async () => {
       $or: [
         { createdAt: { $gte: startOfDay, $lte: endOfDay } },
         { updatedAt: { $gte: startOfDay, $lte: endOfDay } }
-      ]
+      ],
+      // EXCLUDE campaigns with status 'settled' - they have manual stats
+      status: { $ne: 'settled' },
+      // EXCLUDE specific campaigns from the exclusion list
+      _id: { $nin: EXCLUDED_CAMPAIGNS.map(id => new mongoose.Types.ObjectId(id)) }
     }).select('_id').lean();
 
     if (todaysCampaigns.length === 0) {
