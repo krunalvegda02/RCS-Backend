@@ -1067,7 +1067,21 @@ export const getAllForAdmin = async (req, res) => {
 
     // Search filter in MongoDB
     if (search && search.trim()) {
-      query.$or = [{ name: { $regex: search.trim(), $options: 'i' } }];
+      // First get user IDs that match the email search
+      const User = mongoose.model('User');
+      const matchingUsers = await User.find({
+        $or: [
+          { email: { $regex: search.trim(), $options: 'i' } },
+          { name: { $regex: search.trim(), $options: 'i' } }
+        ]
+      }).select('_id').lean();
+      
+      const userIds = matchingUsers.map(u => u._id);
+      
+      query.$or = [
+        { name: { $regex: search.trim(), $options: 'i' } },
+        ...(userIds.length > 0 ? [{ userId: { $in: userIds } }] : [])
+      ];
     }
 
     const sortOrder = sort === 'oldest' ? 1 : -1;
@@ -1881,6 +1895,75 @@ export const completeCampaign = async (req, res) => {
     });
   }
 };
+// Restart completed campaign (change status from completed to pending)
+export const restartCompletedCampaign = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+    const isAdmin = req.user.role === 'admin' || req.user.role === 'ADMIN';
+
+    // Find campaign
+    let campaign;
+    if (isAdmin) {
+      campaign = await Campaign.findById(id);
+    } else {
+      campaign = await Campaign.findOne({ _id: id, userId });
+    }
+
+    if (!campaign) {
+      return res.status(404).json({
+        success: false,
+        message: 'Campaign not found'
+      });
+    }
+
+    // Check if campaign is completed
+    if (campaign.status !== 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Only completed campaigns can be restarted'
+      });
+    }
+
+    // Check if campaign was completed today
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const completedAt = new Date(campaign.completedAt || campaign.updatedAt);
+    completedAt.setHours(0, 0, 0, 0);
+
+    if (completedAt.getTime() !== today.getTime()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Only campaigns completed today can be restarted'
+      });
+    }
+
+    // Change status to pending
+    campaign.status = 'pending';
+    campaign.startedAt = null;
+    await campaign.save();
+
+    console.log(`[Campaign] Campaign ${id} restarted from completed to pending`);
+
+    res.json({
+      success: true,
+      message: 'Campaign restarted successfully',
+      data: {
+        _id: campaign._id,
+        name: campaign.name,
+        status: campaign.status,
+        previousStatus: 'completed'
+      }
+    });
+  } catch (error) {
+    console.error('[Campaign] Restart completed campaign error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
 // Manual refresh campaign stats
 export const refreshStats = async (req, res) => {
   try {

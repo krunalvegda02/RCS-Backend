@@ -53,6 +53,7 @@ router.get('/:id/messages', cacheMiddleware, CampaignController.getCampaignMessa
 router.post('/:id/start', CampaignController.start);
 router.post('/:id/pause', CampaignController.pause);
 router.post('/:id/restart', CampaignController.restart);
+router.post('/:id/restart-completed', CampaignController.restartCompletedCampaign);
 router.post('/:id/complete', CampaignController.completeCampaign);
 
 export default router;
