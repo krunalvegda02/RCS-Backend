@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import jioRCSService from "./services/JioRCS.service.js";
+import cron from "node-cron";
 // import { createAdmin } from "./utils/createAdmin.js"; 
 
 const app = express();
@@ -12,6 +13,14 @@ console.log('Jio RCS Service initialized');
 
 // Create admin on startup
 // createAdmin(); 
+
+// Initialize Cron Jobs
+import('./utils/initCronJobs.js').then(module => {
+  module.default();
+  console.log('✅ Cron jobs initialized');
+}).catch(err => {
+  console.error('❌ Failed to initialize cron jobs:', err);
+}); 
 
 app.use(
   cors(
