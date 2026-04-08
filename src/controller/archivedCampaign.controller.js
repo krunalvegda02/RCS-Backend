@@ -49,9 +49,18 @@ export const getArchivedCampaigns = async (req, res) => {
   try {
     const { page = 1, limit = 20, search, userId, startDate, endDate } = req.query;
 
+    console.log('[ArchivedCampaign] Query params:', { page, limit, search, userId, startDate, endDate });
+
     const query = {};
     
-    if (userId) query.userId = userId;
+    // IMPORTANT: Filter by userId if provided - convert to ObjectId
+    if (userId) {
+      // Import mongoose at the top if not already imported
+      const mongoose = (await import('mongoose')).default;
+      query.userId = new mongoose.Types.ObjectId(userId);
+      console.log('[ArchivedCampaign] Filtering by userId (ObjectId):', query.userId);
+    }
+    
     if (search) {
       query.$or = [
         { campaignName: { $regex: search, $options: 'i' } },
@@ -67,13 +76,17 @@ export const getArchivedCampaigns = async (req, res) => {
       if (endDate) query.campaignCreatedAt.$lte = new Date(endDate);
     }
 
+    console.log('[ArchivedCampaign] Final query:', JSON.stringify(query));
+
     const archives = await ArchivedCampaign.find(query)
-      .sort({ campaignCreatedAt: -1 }) // Sort by campaign creation date instead of archived date
+      .sort({ campaignCreatedAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit)
       .lean();
 
     const total = await ArchivedCampaign.countDocuments(query);
+
+    console.log('[ArchivedCampaign] Found', archives.length, 'campaigns, total:', total);
 
     res.json({
       success: true,

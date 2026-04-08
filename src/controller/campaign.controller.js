@@ -963,8 +963,7 @@ export const getUserCampaignReports = async (req, res) => {
       };
     });
 
-    // OPTIMIZATION: Calculate aggregate stats using Campaign collection stats field
-    // This aggregates the stats.delivered, stats.failed, etc. from all matching campaigns
+    // OPTIMIZATION: Calculate aggregate stats from BOTH active and archived campaigns
     console.log('[Campaign] Aggregating stats for query:', JSON.stringify(query));
     
     // Convert userId to ObjectId for aggregation
@@ -973,29 +972,67 @@ export const getUserCampaignReports = async (req, res) => {
       aggregationQuery.userId = new mongoose.Types.ObjectId(aggregationQuery.userId);
     }
     
+    // Get stats from active campaigns
     const statsAggregation = await Campaign.aggregate([
-      { $match: aggregationQuery }, // Match with ObjectId userId
+      { $match: aggregationQuery },
       {
         $group: {
           _id: null,
           totalSent: { $sum: '$stats.sent' },
-          totalDelivered: { $sum: '$stats.delivered' }, // Already includes delivered, read, replied
+          totalDelivered: { $sum: '$stats.delivered' },
           totalFailed: { $sum: '$stats.failed' },
           totalExpired: { $sum: '$stats.expired' }
         }
       }
     ]);
 
-    console.log('[Campaign] Stats aggregation result:', JSON.stringify(statsAggregation));
-
-    const aggregateStats = statsAggregation[0] || {
+    const activeStats = statsAggregation[0] || {
       totalSent: 0,
       totalDelivered: 0,
       totalFailed: 0,
-      totalExpired: 0,
-      totalPending: 0,
-      totalRead: 0
+      totalExpired: 0
     };
+
+    // Get stats from archived campaigns for the same user
+    const ArchivedCampaign = mongoose.model('ArchivedCampaign');
+    const archivedQuery = { userId: aggregationQuery.userId };
+    
+    // Apply same date filters to archived campaigns
+    if (query.createdAt) {
+      archivedQuery.campaignCreatedAt = query.createdAt;
+    }
+    
+    const archivedStatsAggregation = await ArchivedCampaign.aggregate([
+      { $match: archivedQuery },
+      {
+        $group: {
+          _id: null,
+          totalSent: { $sum: '$stats.sent' },
+          totalDelivered: { $sum: '$stats.delivered' },
+          totalFailed: { $sum: '$stats.failed' },
+          totalExpired: { $sum: '$stats.expired' }
+        }
+      }
+    ]);
+
+    const archivedStats = archivedStatsAggregation[0] || {
+      totalSent: 0,
+      totalDelivered: 0,
+      totalFailed: 0,
+      totalExpired: 0
+    };
+
+    // Combine active and archived stats
+    const aggregateStats = {
+      totalSent: activeStats.totalSent + archivedStats.totalSent,
+      totalDelivered: activeStats.totalDelivered + archivedStats.totalDelivered,
+      totalFailed: activeStats.totalFailed + archivedStats.totalFailed,
+      totalExpired: activeStats.totalExpired + archivedStats.totalExpired
+    };
+
+    console.log('[Campaign] Active stats:', JSON.stringify(activeStats));
+    console.log('[Campaign] Archived stats:', JSON.stringify(archivedStats));
+    console.log('[Campaign] Combined stats:', JSON.stringify(aggregateStats));
 
     res.json({
       success: true,
@@ -1030,6 +1067,9 @@ export const getAllForAdmin = async (req, res) => {
     let { status, type, user, search, sort = 'newest', startDate, endDate } = req.query;
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
+
+    console.log('[Campaign] getAllForAdmin - Filters received:', { status, type, user, search, sort, startDate, endDate, page, limit });
+    console.log('[Campaign] getAllForAdmin - Date range:', startDate && endDate ? `${new Date(startDate).toISOString()} to ${new Date(endDate).toISOString()}` : 'No date filter');
 
     if (Array.isArray(search)) search = search[0];
 
@@ -1128,8 +1168,12 @@ export const getAllForAdmin = async (req, res) => {
       };
     });
 
-    // Aggregate stats using Campaign collection stats field
+    // Aggregate stats from BOTH active and archived campaigns
     const aggregationQuery = { ...query };
+    
+    console.log('[Campaign] Admin - Active campaigns aggregation query:', JSON.stringify(aggregationQuery));
+    
+    // Get stats from active campaigns
     const statsAggregation = await Campaign.aggregate([
       { $match: aggregationQuery },
       {
@@ -1138,12 +1182,66 @@ export const getAllForAdmin = async (req, res) => {
           totalSent: { $sum: '$stats.sent' },
           totalDelivered: { $sum: '$stats.delivered' },
           totalFailed: { $sum: '$stats.failed' },
-          totalExpired: { $sum: '$stats.expired' }
+          totalExpired: { $sum: '$stats.expired' },
+          count: { $sum: 1 }
         }
       }
     ]);
 
-    const aggregateStats = statsAggregation[0] || { totalSent: 0, totalDelivered: 0, totalFailed: 0, totalExpired: 0 };
+    const activeStats = statsAggregation[0] || { totalSent: 0, totalDelivered: 0, totalFailed: 0, totalExpired: 0, count: 0 };
+    console.log('[Campaign] Admin - Active campaigns stats:', JSON.stringify(activeStats));
+
+    // Get stats from archived campaigns
+    const ArchivedCampaign = mongoose.model('ArchivedCampaign');
+    const archivedQuery = {};
+    
+    // Apply same date filters to archived campaigns (use campaignCreatedAt instead of createdAt)
+    if (query.createdAt) {
+      archivedQuery.campaignCreatedAt = query.createdAt;
+      console.log('[Campaign] Admin - Date filter applied to archived campaigns:', JSON.stringify(archivedQuery));
+    } else {
+      console.log('[Campaign] Admin - No date filter, showing all archived campaigns');
+    }
+    
+    // Apply type filter to archived campaigns if present
+    if (query.templateId) {
+      archivedQuery.templateId = query.templateId;
+      console.log('[Campaign] Admin - Type filter applied to archived campaigns');
+    }
+    
+    // Apply status filter to archived campaigns if present
+    if (query.status) {
+      archivedQuery.status = query.status;
+      console.log('[Campaign] Admin - Status filter applied to archived campaigns');
+    }
+    
+    const archivedStatsAggregation = await ArchivedCampaign.aggregate([
+      { $match: archivedQuery },
+      {
+        $group: {
+          _id: null,
+          totalSent: { $sum: '$stats.sent' },
+          totalDelivered: { $sum: '$stats.delivered' },
+          totalFailed: { $sum: '$stats.failed' },
+          totalExpired: { $sum: '$stats.expired' },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    const archivedStats = archivedStatsAggregation[0] || { totalSent: 0, totalDelivered: 0, totalFailed: 0, totalExpired: 0, count: 0 };
+    console.log('[Campaign] Admin - Archived campaigns query:', JSON.stringify(archivedQuery));
+    console.log('[Campaign] Admin - Archived campaigns stats:', JSON.stringify(archivedStats));
+
+    // Combine active and archived stats
+    const aggregateStats = {
+      totalSent: activeStats.totalSent + archivedStats.totalSent,
+      totalDelivered: activeStats.totalDelivered + archivedStats.totalDelivered,
+      totalFailed: activeStats.totalFailed + archivedStats.totalFailed,
+      totalExpired: activeStats.totalExpired + archivedStats.totalExpired
+    };
+
+    console.log('[Campaign] Admin stats - Active:', JSON.stringify(activeStats), 'Archived:', JSON.stringify(archivedStats), 'Combined:', JSON.stringify(aggregateStats));
 
     res.json({
       success: true,
