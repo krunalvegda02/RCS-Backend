@@ -23,7 +23,18 @@ const archivedCampaignSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  excelParts: [{
+    url: String,
+    publicId: String,
+    size: Number,
+    partNumber: Number,
+    totalParts: Number,
+    rowsStart: Number,
+    rowsEnd: Number
+  }],
   cloudinaryPublicId: String,
+  fileSize: Number,
+  totalMessages: Number,
   stats: {
     total: { type: Number, default: 0 },
     sent: { type: Number, default: 0 },
