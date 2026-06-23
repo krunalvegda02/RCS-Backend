@@ -406,3 +406,118 @@ export const addWalletRequest = async (req, res) => {
     message: 'Wallet requests are no longer supported. Please use Razorpay payment gateway for wallet recharge.'
   });
 };
+
+// Get monthly campaign statistics
+export const getMonthlyStats = async (req, res) => {
+  try {
+    const { monthsBack = 1 } = req.query;
+    const ArchivedCampaign = mongoose.model('ArchivedCampaign');
+
+    const now = new Date();
+    const targetDate = new Date(now.getFullYear(), now.getMonth() - monthsBack, 1);
+    const startDate = new Date(targetDate.getFullYear(), targetDate.getMonth(), 1);
+    const endDate = new Date(targetDate.getFullYear(), targetDate.getMonth() + 1, 0, 23, 59, 59, 999);
+
+    // Active campaigns
+    const [activeCampaigns, archivedCampaigns, topUsers, statusBreakdown] = await Promise.all([
+      Campaign.aggregate([
+        { $match: { createdAt: { $gte: startDate, $lte: endDate } } },
+        {
+          $group: {
+            _id: null,
+            totalCampaigns: { $sum: 1 },
+            totalMessages: { $sum: '$stats.total' },
+            totalSent: { $sum: '$stats.sent' },
+            totalDelivered: { $sum: '$stats.delivered' },
+            totalRead: { $sum: '$stats.read' },
+            totalReplied: { $sum: '$stats.replied' },
+            totalFailed: { $sum: '$stats.failed' },
+            totalExpired: { $sum: '$stats.expired' },
+            totalCost: { $sum: '$actualCost' },
+            totalRefunded: { $sum: '$refundedAmount' }
+          }
+        }
+      ]),
+
+      // Archived campaigns
+      ArchivedCampaign.aggregate([
+        { $match: { campaignCreatedAt: { $gte: startDate, $lte: endDate } } },
+        {
+          $group: {
+            _id: null,
+            totalCampaigns: { $sum: 1 },
+            totalMessages: { $sum: '$stats.total' },
+            totalSent: { $sum: '$stats.sent' },
+            totalDelivered: { $sum: '$stats.delivered' },
+            totalRead: { $sum: '$stats.read' },
+            totalFailed: { $sum: '$stats.failed' },
+            totalExpired: { $sum: '$stats.expired' },
+            totalCost: { $sum: '$actualCost' },
+            totalRefunded: { $sum: '$refundedAmount' }
+          }
+        }
+      ]),
+
+      // Top users by campaigns
+      Campaign.aggregate([
+        { $match: { createdAt: { $gte: startDate, $lte: endDate } } },
+        { $group: { _id: '$userId', count: { $sum: 1 }, totalMessages: { $sum: '$stats.total' }, totalCost: { $sum: '$actualCost' } } },
+        { $sort: { count: -1 } },
+        { $limit: 5 },
+        { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'user' } },
+        { $unwind: '$user' },
+        { $project: { name: '$user.name', email: '$user.email', campaigns: '$count', messages: '$totalMessages', cost: '$totalCost' } }
+      ]),
+
+      // Campaign status breakdown
+      Campaign.aggregate([
+        { $match: { createdAt: { $gte: startDate, $lte: endDate } } },
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+        { $sort: { count: -1 } }
+      ])
+    ]);
+
+    const active = activeCampaigns[0] || { totalCampaigns: 0, totalMessages: 0, totalSent: 0, totalDelivered: 0, totalRead: 0, totalReplied: 0, totalFailed: 0, totalExpired: 0, totalCost: 0, totalRefunded: 0 };
+    const archived = archivedCampaigns[0] || { totalCampaigns: 0, totalMessages: 0, totalSent: 0, totalDelivered: 0, totalRead: 0, totalFailed: 0, totalExpired: 0, totalCost: 0, totalRefunded: 0 };
+
+    const combined = {
+      totalCampaigns: active.totalCampaigns + archived.totalCampaigns,
+      activeCampaigns: active.totalCampaigns,
+      archivedCampaigns: archived.totalCampaigns,
+      totalMessages: active.totalMessages + archived.totalMessages,
+      totalSent: active.totalSent + archived.totalSent,
+      totalDelivered: active.totalDelivered + archived.totalDelivered,
+      totalRead: active.totalRead + archived.totalRead,
+      totalReplied: active.totalReplied || 0,
+      totalFailed: active.totalFailed + archived.totalFailed,
+      totalExpired: active.totalExpired + archived.totalExpired,
+      totalCost: active.totalCost + archived.totalCost,
+      totalRefunded: active.totalRefunded + archived.totalRefunded,
+      netRevenue: (active.totalCost + archived.totalCost) - (active.totalRefunded + archived.totalRefunded),
+      deliveryRate: active.totalMessages + archived.totalMessages > 0 ? ((active.totalDelivered + archived.totalDelivered) / (active.totalMessages + archived.totalMessages) * 100).toFixed(2) : 0,
+      readRate: active.totalMessages + archived.totalMessages > 0 ? ((active.totalRead + archived.totalRead) / (active.totalMessages + archived.totalMessages) * 100).toFixed(2) : 0,
+      failureRate: active.totalMessages + archived.totalMessages > 0 ? ((active.totalFailed + archived.totalFailed) / (active.totalMessages + archived.totalMessages) * 100).toFixed(2) : 0
+    };
+
+    res.json({
+      success: true,
+      data: {
+        period: {
+          start: startDate,
+          end: endDate,
+          monthName: startDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+        },
+        stats: combined,
+        topUsers,
+        statusBreakdown
+      }
+    });
+  } catch (error) {
+    console.error('Monthly stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch monthly stats',
+      error: error.message
+    });
+  }
+};

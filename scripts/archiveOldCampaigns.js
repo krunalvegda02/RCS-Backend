@@ -52,7 +52,7 @@ async function archiveOldCampaigns() {
     if (campaignId) {
       console.log(`[ArchiveCron] Archiving specific campaign: ${campaignId}`);
       const campaign = await Campaign.findById(campaignId).lean();
-      
+
       if (!campaign) {
         console.log('[ArchiveCron] Campaign not found');
         await mongoose.disconnect();
@@ -66,12 +66,12 @@ async function archiveOldCampaigns() {
       } else {
         campaign.userId = { name: 'Unknown User', email: 'N/A' };
       }
-      
+
       oldCampaigns = [campaign];
     } else {
-      // Calculate cutoff date (1 month ago)
+      // Calculate cutoff date (15 days ago)
       const cutoffDate = new Date();
-      cutoffDate.setMonth(cutoffDate.getMonth() - 1);
+      cutoffDate.setDate(cutoffDate.getDate() - 15);
 
       console.log(`[ArchiveCron] Finding campaigns older than ${cutoffDate.toISOString()}`);
 
@@ -108,102 +108,33 @@ async function archiveOldCampaigns() {
         const totalMessages = await ContactCampaignMessage.countDocuments({ campaignId: campaign._id });
         console.log(`[ArchiveCron] Campaign has ${totalMessages} messages`);
 
-        // Create Excel workbook (matching Orders.jsx format)
-        const workbook = new ExcelJS.Workbook();
-        const sheet = workbook.addWorksheet('Campaign Messages');
-        
-        // Define columns matching Orders.jsx export format
-        sheet.columns = [
-          { header: 'S.No', key: 'sno', width: 8 },
-          { header: 'Phone Number', key: 'phone', width: 15 },
-          { header: 'Status', key: 'status', width: 12 },
-          { header: 'Template Type', key: 'templateType', width: 15 },
-          { header: 'Queued At', key: 'queuedAt', width: 20 },
-          { header: 'Sent At', key: 'sentAt', width: 20 },
-          { header: 'Delivered At', key: 'deliveredAt', width: 20 },
-          { header: 'Read At', key: 'readAt', width: 20 },
-          { header: 'Failed At', key: 'failedAt', width: 20 },
-          { header: 'Interactions', key: 'interactions', width: 12 },
-          { header: 'Replies', key: 'replies', width: 10 },
-          { header: 'User Response', key: 'userResponse', width: 30 },
-          { header: 'Error', key: 'error', width: 30 }
-        ];
-
-        // Fetch and add messages in batches to avoid memory issues
-        const BATCH_SIZE = 5000;
-        let processedCount = 0;
-        let rowIndex = 1;
-
-        for (let skip = 0; skip < totalMessages; skip += BATCH_SIZE) {
-          const messages = await ContactCampaignMessage.find({ campaignId: campaign._id })
-            .skip(skip)
-            .limit(BATCH_SIZE)
-            .lean();
-
-          const rows = messages.map(msg => ({
-            sno: rowIndex++,
-            phone: msg.recipientPhoneNumber || 'N/A',
-            status: msg.status?.toUpperCase() || 'N/A',
-            templateType: 'RCS',
-            queuedAt: msg.queuedAt ? new Date(msg.queuedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'N/A',
-            sentAt: msg.sentAt ? new Date(msg.sentAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'N/A',
-            deliveredAt: msg.deliveredAt ? new Date(msg.deliveredAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'N/A',
-            readAt: msg.readAt ? new Date(msg.readAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'N/A',
-            failedAt: msg.failedAt ? new Date(msg.failedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'N/A',
-            interactions: msg.userClickCount || 0,
-            replies: msg.userReplyCount || 0,
-            userResponse: msg.userText || msg.clickedAction || msg.suggestionResponse?.plainText || 'N/A',
-            error: (msg.status === 'failed' || msg.status === 'bounced') ? (msg.errorMessage || msg.errorCode || 'Unknown') : 'N/A'
-          }));
-
-          sheet.addRows(rows);
-          processedCount += messages.length;
-          console.log(`[ArchiveCron] Added ${processedCount}/${totalMessages} messages to Excel`);
-        }
-
-        // Style header row
-        sheet.getRow(1).font = { bold: true };
-        sheet.getRow(1).fill = {
-          type: 'pattern',
-          pattern: 'solid',
-          fgColor: { argb: 'FFE0E0E0' }
-        };
-
-        // Generate Excel buffer
-        console.log('[ArchiveCron] Generating Excel file...');
-        const buffer = await workbook.xlsx.writeBuffer();
-        const fileSizeInMB = buffer.length / 1024 / 1024;
-        console.log(`[ArchiveCron] Excel file size: ${fileSizeInMB.toFixed(2)} MB`);
-
-        // Check if file size exceeds 10MB (use 9.5MB as safe threshold)
-        const MAX_FILE_SIZE_MB = 9.5; // Safe margin below Cloudinary's 10MB limit
-        const CLOUDINARY_LIMIT_BYTES = 10485760; // Cloudinary's actual limit in bytes
+        // Constants
+        const CLOUDINARY_LIMIT_BYTES = 10485760; // 10MB
+        const SAFE_ROWS_PER_FILE = 150000; // 1.5 lakh rows per file
+        const ESTIMATED_BYTES_PER_ROW = 200; // Conservative estimate
         let uploadResults = [];
 
-        if (fileSizeInMB > MAX_FILE_SIZE_MB) {
-          console.log(`[ArchiveCron] File size exceeds ${MAX_FILE_SIZE_MB}MB, splitting into chunks...`);
-          
-          // Calculate rows per chunk with safety margin
-          const totalRows = totalMessages;
-          const avgBytesPerRow = buffer.length / totalRows;
-          const safeRowsPerChunk = Math.floor((CLOUDINARY_LIMIT_BYTES * 0.95) / avgBytesPerRow); // 95% of limit for safety
-          const totalChunks = Math.ceil(totalRows / safeRowsPerChunk);
-          
-          console.log(`[ArchiveCron] Average bytes per row: ${avgBytesPerRow.toFixed(2)}`);
-          console.log(`[ArchiveCron] Splitting ${totalRows} rows into ${totalChunks} chunks (~${safeRowsPerChunk} rows each)`);
+        // Check if chunking is needed based on message count
+        const needsChunking = totalMessages > SAFE_ROWS_PER_FILE;
 
-          // Create chunks
+        if (needsChunking) {
+          console.log(`[ArchiveCron] Campaign has ${totalMessages} messages, chunking required`);
+          
+          const totalChunks = Math.ceil(totalMessages / SAFE_ROWS_PER_FILE);
+          console.log(`[ArchiveCron] Splitting into ${totalChunks} chunks (~${SAFE_ROWS_PER_FILE} rows each)`);
+
+          // Process each chunk
           for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-            const startRow = chunkIndex * safeRowsPerChunk;
-            const endRow = Math.min(startRow + safeRowsPerChunk, totalRows);
-            
+            const startRow = chunkIndex * SAFE_ROWS_PER_FILE;
+            const endRow = Math.min(startRow + SAFE_ROWS_PER_FILE, totalMessages);
+            const rowsInChunk = endRow - startRow;
+
             console.log(`[ArchiveCron] Creating chunk ${chunkIndex + 1}/${totalChunks} (rows ${startRow + 1}-${endRow})`);
-            
-            // Create new workbook for this chunk
+
+            // Create workbook for this chunk
             const chunkWorkbook = new ExcelJS.Workbook();
             const chunkSheet = chunkWorkbook.addWorksheet('Campaign Messages');
-            
-            // Define columns
+
             chunkSheet.columns = [
               { header: 'S.No', key: 'sno', width: 8 },
               { header: 'Phone Number', key: 'phone', width: 15 },
@@ -220,14 +151,127 @@ async function archiveOldCampaigns() {
               { header: 'Error', key: 'error', width: 30 }
             ];
 
-            // Fetch messages for this chunk
-            const chunkMessages = await ContactCampaignMessage.find({ campaignId: campaign._id })
-              .skip(startRow)
-              .limit(safeRowsPerChunk)
+            // Fetch messages in smaller batches to avoid memory issues
+            const FETCH_BATCH_SIZE = 5000;
+            let processedInChunk = 0;
+
+            for (let batchStart = startRow; batchStart < endRow; batchStart += FETCH_BATCH_SIZE) {
+              const batchLimit = Math.min(FETCH_BATCH_SIZE, endRow - batchStart);
+              const messages = await ContactCampaignMessage.find({ campaignId: campaign._id })
+                .skip(batchStart)
+                .limit(batchLimit)
+                .lean();
+
+              const rows = messages.map((msg, idx) => ({
+                sno: batchStart + idx + 1,
+                phone: msg.recipientPhoneNumber || 'N/A',
+                status: msg.status?.toUpperCase() || 'N/A',
+                templateType: 'RCS',
+                queuedAt: msg.queuedAt ? new Date(msg.queuedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'N/A',
+                sentAt: msg.sentAt ? new Date(msg.sentAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'N/A',
+                deliveredAt: msg.deliveredAt ? new Date(msg.deliveredAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'N/A',
+                readAt: msg.readAt ? new Date(msg.readAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'N/A',
+                failedAt: msg.failedAt ? new Date(msg.failedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'N/A',
+                interactions: msg.userClickCount || 0,
+                replies: msg.userReplyCount || 0,
+                userResponse: msg.userText || msg.clickedAction || msg.suggestionResponse?.plainText || 'N/A',
+                error: (msg.status === 'failed' || msg.status === 'bounced') ? (msg.errorMessage || msg.errorCode || 'Unknown') : 'N/A'
+              }));
+
+              chunkSheet.addRows(rows);
+              processedInChunk += messages.length;
+              console.log(`[ArchiveCron] Chunk ${chunkIndex + 1}: Added ${processedInChunk}/${rowsInChunk} rows`);
+            }
+
+            // Style header
+            chunkSheet.getRow(1).font = { bold: true };
+            chunkSheet.getRow(1).fill = {
+              type: 'pattern',
+              pattern: 'solid',
+              fgColor: { argb: 'FFE0E0E0' }
+            };
+
+            // Generate buffer
+            console.log(`[ArchiveCron] Chunk ${chunkIndex + 1}: Generating Excel file...`);
+            const chunkBuffer = await chunkWorkbook.xlsx.writeBuffer();
+            const chunkSizeMB = chunkBuffer.length / 1024 / 1024;
+            console.log(`[ArchiveCron] Chunk ${chunkIndex + 1}: ${chunkSizeMB.toFixed(2)} MB`);
+
+            if (chunkBuffer.length > CLOUDINARY_LIMIT_BYTES) {
+              console.error(`[ArchiveCron] ❌ Chunk ${chunkIndex + 1} exceeds limit: ${chunkBuffer.length} > ${CLOUDINARY_LIMIT_BYTES}`);
+              throw new Error(`Chunk ${chunkIndex + 1} exceeds Cloudinary limit`);
+            }
+
+            // Upload
+            console.log(`[ArchiveCron] Uploading chunk ${chunkIndex + 1}/${totalChunks}...`);
+            const uploadResult = await new Promise((resolve, reject) => {
+              const uploadStream = cloudinary.uploader.upload_stream(
+                {
+                  resource_type: 'raw',
+                  folder: 'archived_campaigns',
+                  public_id: `campaign-${campaign.name.replace(/[^a-zA-Z0-9]/g, '_')}-${campaign._id}-part${chunkIndex + 1}-${Date.now()}`,
+                  format: 'xlsx',
+                  access_mode: 'public',
+                  flags: 'attachment'
+                },
+                (error, result) => {
+                  if (error) reject(error);
+                  else {
+                    console.log(`[ArchiveCron] Chunk ${chunkIndex + 1} uploaded: ${result.secure_url}`);
+                    resolve(result);
+                  }
+                }
+              );
+              Readable.from(chunkBuffer).pipe(uploadStream);
+            });
+
+            uploadResults.push({
+              url: uploadResult.secure_url,
+              publicId: uploadResult.public_id,
+              size: chunkBuffer.length,
+              partNumber: chunkIndex + 1,
+              totalParts: totalChunks,
+              rowsStart: startRow + 1,
+              rowsEnd: endRow
+            });
+          }
+
+          console.log(`[ArchiveCron] ✅ All ${totalChunks} chunks uploaded`);
+        } else {
+          // Single file processing
+          console.log('[ArchiveCron] Processing as single file...');
+          
+          const workbook = new ExcelJS.Workbook();
+          const sheet = workbook.addWorksheet('Campaign Messages');
+
+          sheet.columns = [
+            { header: 'S.No', key: 'sno', width: 8 },
+            { header: 'Phone Number', key: 'phone', width: 15 },
+            { header: 'Status', key: 'status', width: 12 },
+            { header: 'Template Type', key: 'templateType', width: 15 },
+            { header: 'Queued At', key: 'queuedAt', width: 20 },
+            { header: 'Sent At', key: 'sentAt', width: 20 },
+            { header: 'Delivered At', key: 'deliveredAt', width: 20 },
+            { header: 'Read At', key: 'readAt', width: 20 },
+            { header: 'Failed At', key: 'failedAt', width: 20 },
+            { header: 'Interactions', key: 'interactions', width: 12 },
+            { header: 'Replies', key: 'replies', width: 10 },
+            { header: 'User Response', key: 'userResponse', width: 30 },
+            { header: 'Error', key: 'error', width: 30 }
+          ];
+
+          // Fetch in batches
+          const BATCH_SIZE = 5000;
+          let processedCount = 0;
+
+          for (let skip = 0; skip < totalMessages; skip += BATCH_SIZE) {
+            const messages = await ContactCampaignMessage.find({ campaignId: campaign._id })
+              .skip(skip)
+              .limit(BATCH_SIZE)
               .lean();
 
-            const chunkRows = chunkMessages.map((msg, idx) => ({
-              sno: startRow + idx + 1,
+            const rows = messages.map((msg, idx) => ({
+              sno: skip + idx + 1,
               phone: msg.recipientPhoneNumber || 'N/A',
               status: msg.status?.toUpperCase() || 'N/A',
               templateType: 'RCS',
@@ -242,74 +286,26 @@ async function archiveOldCampaigns() {
               error: (msg.status === 'failed' || msg.status === 'bounced') ? (msg.errorMessage || msg.errorCode || 'Unknown') : 'N/A'
             }));
 
-            chunkSheet.addRows(chunkRows);
-
-            // Style header row
-            chunkSheet.getRow(1).font = { bold: true };
-            chunkSheet.getRow(1).fill = {
-              type: 'pattern',
-              pattern: 'solid',
-              fgColor: { argb: 'FFE0E0E0' }
-            };
-
-            // Generate chunk buffer
-            const chunkBuffer = await chunkWorkbook.xlsx.writeBuffer();
-            const chunkSizeMB = chunkBuffer.length / 1024 / 1024;
-            const chunkSizeBytes = chunkBuffer.length;
-            console.log(`[ArchiveCron] Chunk ${chunkIndex + 1} size: ${chunkSizeMB.toFixed(2)} MB (${chunkSizeBytes} bytes)`);
-
-            // Verify chunk is under Cloudinary limit
-            if (chunkSizeBytes > CLOUDINARY_LIMIT_BYTES) {
-              console.error(`[ArchiveCron] ❌ Chunk ${chunkIndex + 1} exceeds Cloudinary limit! ${chunkSizeBytes} > ${CLOUDINARY_LIMIT_BYTES}`);
-              throw new Error(`Chunk ${chunkIndex + 1} size ${chunkSizeBytes} bytes exceeds Cloudinary limit of ${CLOUDINARY_LIMIT_BYTES} bytes`);
-            }
-
-            // Upload chunk to Cloudinary
-            console.log(`[ArchiveCron] Uploading chunk ${chunkIndex + 1}/${totalChunks} to Cloudinary...`);
-            const chunkUploadResult = await new Promise((resolve, reject) => {
-              const uploadStream = cloudinary.uploader.upload_stream(
-                {
-                  resource_type: 'raw',
-                  folder: 'archived_campaigns',
-                  public_id: `campaign-${campaign.name.replace(/[^a-zA-Z0-9]/g, '_')}-${campaign._id}-part${chunkIndex + 1}-${Date.now()}`,
-                  format: 'xlsx',
-                  access_mode: 'public',
-                  flags: 'attachment'
-                },
-                (error, result) => {
-                  if (error) {
-                    console.error(`[ArchiveCron] Cloudinary upload error for chunk ${chunkIndex + 1}:`, error);
-                    reject(error);
-                  } else {
-                    console.log(`[ArchiveCron] Chunk ${chunkIndex + 1} uploaded: ${result.secure_url}`);
-                    resolve(result);
-                  }
-                }
-              );
-              
-              const stream = Readable.from(chunkBuffer);
-              stream.on('error', (error) => {
-                console.error(`[ArchiveCron] Stream error for chunk ${chunkIndex + 1}:`, error);
-                reject(error);
-              });
-              
-              stream.pipe(uploadStream);
-            });
-
-            uploadResults.push({
-              url: chunkUploadResult.secure_url,
-              publicId: chunkUploadResult.public_id,
-              size: chunkBuffer.length,
-              partNumber: chunkIndex + 1,
-              totalParts: totalChunks,
-              rowsStart: startRow + 1,
-              rowsEnd: endRow
-            });
+            sheet.addRows(rows);
+            processedCount += messages.length;
+            console.log(`[ArchiveCron] Added ${processedCount}/${totalMessages} messages`);
           }
 
-          console.log(`[ArchiveCron] ✅ All ${totalChunks} chunks uploaded successfully`);
-        } else {
-          // File is under 10MB, upload as single file
+          // Style header
+          sheet.getRow(1).font = { bold: true };
+          sheet.getRow(1).fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: 'FFE0E0E0' }
+          };
+
+          // Generate buffer
+          console.log('[ArchiveCron] Generating Excel file...');
+          const buffer = await workbook.xlsx.writeBuffer();
+          const fileSizeMB = buffer.length / 1024 / 1024;
+          console.log(`[ArchiveCron] Excel file size: ${fileSizeMB.toFixed(2)} MB`);
+
+          // Upload
           console.log('[ArchiveCron] Uploading to Cloudinary...');
           const uploadResult = await new Promise((resolve, reject) => {
             const uploadStream = cloudinary.uploader.upload_stream(
@@ -322,23 +318,14 @@ async function archiveOldCampaigns() {
                 flags: 'attachment'
               },
               (error, result) => {
-                if (error) {
-                  console.error('[ArchiveCron] Cloudinary upload error:', error);
-                  reject(error);
-                } else {
-                  console.log('[ArchiveCron] Cloudinary upload success:', result.secure_url);
+                if (error) reject(error);
+                else {
+                  console.log('[ArchiveCron] Upload success:', result.secure_url);
                   resolve(result);
                 }
               }
             );
-            
-            const stream = Readable.from(buffer);
-            stream.on('error', (error) => {
-              console.error('[ArchiveCron] Stream error:', error);
-              reject(error);
-            });
-            
-            stream.pipe(uploadStream);
+            Readable.from(buffer).pipe(uploadStream);
           });
 
           uploadResults.push({
@@ -392,7 +379,7 @@ async function archiveOldCampaigns() {
 
         // Delete messages in batches to avoid overload
         console.log('[ArchiveCron] Deleting messages in batches...');
-        const DELETE_BATCH_SIZE = 1000;
+        const DELETE_BATCH_SIZE = 5000;
         let deletedCount = 0;
 
         while (deletedCount < totalMessages) {
@@ -401,13 +388,13 @@ async function archiveOldCampaigns() {
             .select('_id')
             .limit(DELETE_BATCH_SIZE)
             .lean();
-          
+
           if (messagesToDelete.length === 0) break;
-          
+
           const ids = messagesToDelete.map(m => m._id);
           const result = await ContactCampaignMessage.deleteMany({ _id: { $in: ids } });
           deletedCount += result.deletedCount;
-          
+
           console.log(`[ArchiveCron] Deleted ${deletedCount}/${totalMessages} messages`);
           await new Promise(resolve => setTimeout(resolve, 100)); // Small delay between batches
         }
