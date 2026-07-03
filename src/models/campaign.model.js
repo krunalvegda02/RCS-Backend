@@ -256,7 +256,7 @@ campaignSchema.statics.findAvailableBot = async function () {
 
   if (lastCampaign && lastCampaign.botId) {
     const lastBotNum = parseInt(lastCampaign.botId.replace('bot', ''));
-    const nextBotNum = lastBotNum === TOTAL_BOTS ? 1 : lastBotNum + 1;
+    const nextBotNum = lastBotNum >= TOTAL_BOTS ? 1 : lastBotNum + 1;
     const nextBotId = `bot${nextBotNum}`;
 
     console.log(`[BotAssignment] Round-robin: Last bot was ${lastCampaign.botId}, assigning ${nextBotId}`);
