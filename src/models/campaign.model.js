@@ -249,7 +249,7 @@ campaignSchema.methods.syncStats = async function () {
 
 // Find available bot (bot1-bot5) with Round-Robin + Load Balancing
 campaignSchema.statics.findAvailableBot = async function () {
-  const TOTAL_BOTS = 5;
+  const TOTAL_BOTS = 1;
 
   // 1. Get last campaign's bot for round-robin
   const lastCampaign = await this.findOne().sort({ createdAt: -1 }).select('botId').lean();
